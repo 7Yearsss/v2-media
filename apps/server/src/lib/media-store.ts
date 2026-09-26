@@ -211,12 +211,14 @@ export async function pruneMedia(deps: Deps): Promise<void> {
   const objects = await deps.r2.list("img/");
   if (!objects.length) return;
   const referenced = await referencedKeys(deps);
+  // 宽限期：对象刚 PUT 而 persist 的 DB 回写还在路上时，不能被当无引用删掉
+  const graceBefore = Date.now() - 10 * 60_000;
   let removed = 0;
   const kept: typeof objects = [];
   for (const o of objects) {
-    if (!referenced.has(o.key)) {
-      await deps.r2.delete(o.key).catch(() => {});
-      removed++;
+    if (!referenced.has(o.key) && o.lastModified < graceBefore) {
+      if (await deps.r2.delete(o.key).catch(() => false)) removed++;
+      else kept.push(o);
     } else {
       kept.push(o);
     }
@@ -227,9 +229,11 @@ export async function pruneMedia(deps: Deps): Promise<void> {
     kept.sort((a, b) => a.lastModified - b.lastModified);
     for (const o of kept) {
       if (total <= cap) break;
-      await deps.r2!.delete(o.key).catch(() => {});
-      total -= o.size;
-      removed++;
+      // 删除失败不扣容量——失败的对象还占着桶
+      if (await deps.r2!.delete(o.key).catch(() => false)) {
+        total -= o.size;
+        removed++;
+      }
     }
   }
   if (removed)

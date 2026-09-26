@@ -266,6 +266,16 @@ async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
 }
 
 async function pollPendingJobs() {
+  // 超时兜底先做：停用期间也要回收卡死的已认领任务，不随总开关停
+  for (const [id, t] of trackedJobs) {
+    if ((t.state === "opening" || t.state === "running") && Date.now() > t.deadline) {
+      trackedJobs.delete(id);
+      await api(`/api/ext/publish/${id}/result`, {
+        body: { status: "failed", error: "插件执行超时（发布页未回传结果）" },
+      }).catch(() => {});
+      if (t.tabId) chrome.tabs.remove(t.tabId).catch(() => {});
+    }
+  }
   if (!(await getSettings()).enabled) return; // 总开关关闭：不领发布任务
   const auth = await getAuth();
   if (!auth) return;
@@ -282,16 +292,6 @@ async function pollPendingJobs() {
       await claimAndOpen(job);
     } catch (e) {
       console.warn(`[v2m] claim job ${job.id} failed:`, e);
-    }
-  }
-  // 超时兜底：内容脚本一直没回传 -> failed
-  for (const [id, t] of trackedJobs) {
-    if ((t.state === "opening" || t.state === "running") && Date.now() > t.deadline) {
-      trackedJobs.delete(id);
-      await api(`/api/ext/publish/${id}/result`, {
-        body: { status: "failed", error: "插件执行超时（发布页未回传结果）" },
-      }).catch(() => {});
-      if (t.tabId) chrome.tabs.remove(t.tabId).catch(() => {});
     }
   }
 }

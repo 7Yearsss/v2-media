@@ -14,7 +14,8 @@ export interface R2Storage {
   put(key: string, body: ArrayBuffer, contentType: string): Promise<void>;
   get(key: string): Promise<Response | null>;
   list(prefix: string): Promise<R2Object[]>;
-  delete(key: string): Promise<void>;
+  /** true = 已不存在/删除成功；false = 删除失败（对象可能还在）。 */
+  delete(key: string): Promise<boolean>;
 }
 
 export function createR2(): R2Storage | null {
@@ -79,7 +80,7 @@ export function createR2(): R2Storage | null {
     },
     async delete(key) {
       const res = await client.fetch(url(key), { method: "DELETE" });
-      if (!res.ok && res.status !== 404) throw new Error(`r2 delete ${res.status}`);
+      return res.ok || res.status === 404;
     },
   };
 }

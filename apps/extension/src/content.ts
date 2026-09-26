@@ -81,7 +81,13 @@ if (isWww) {
     applySettings();
   });
   onSettingsChanged((s) => {
+    const wasAuto = cfg.autoCollect;
     cfg = s;
+    // 关掉自动采集：已经在排队的那批也不能再发出去
+    if (wasAuto && !s.autoCollect && flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+    }
     applySettings();
   });
 
