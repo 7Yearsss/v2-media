@@ -44,8 +44,8 @@ async function render() {
   deepEl.onchange = async () => {
     await setSettings({ deepCollect: deepEl.checked });
     statusEl.textContent = deepEl.checked
-      ? "深度采集已开：采集后会自动补评论"
-      : "深度采集已关";
+      ? "深度采集已开：自动/批量采集也会补评论"
+      : "深度采集已关（手动点采集仍会补评论）";
   };
   autoEl.onchange = async () => {
     await setSettings({ autoCollect: autoEl.checked });

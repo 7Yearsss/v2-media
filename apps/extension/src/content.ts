@@ -200,6 +200,34 @@ if (isWww) {
   // 归因任务页（URL 带 __v2m_task=N）：嗅探到的笔记数据直接回传后台，不走采集入库
   const taskMarker = location.href.match(/__v2m_task=(\d+)/)?.[1];
 
+  // 详情补齐：对只有卡片的笔记后台拉详情页 HTML（SSR 里有 tags/正文/发布时间/
+  // 互动数/图集）。fetchDetail 成功会再发一条 EVT_NOTES（detail 批次），回到这里入缓存。
+  const detailRequested = new Set<string>();
+  /** 发起一次详情补齐；返回 promise 便于批量并发等待。失败/空结果放行重试。 */
+  function requestDetail(it: NoteCard) {
+    detailRequested.add(it.noteId);
+    return mainRequest<CachedNote>("fetchDetail", { url: it.url }, 15_000)
+      .then((r) => {
+        if (!r?.detail) detailRequested.delete(it.noteId); // 解析不到详情也放行重试
+      })
+      .catch(() => detailRequested.delete(it.noteId)); // 失败放行：下次事件可再试
+  }
+  function backfillDetails(items: NoteCard[]) {
+    for (const it of items) {
+      if (
+        detailRequested.has(it.noteId) ||
+        details.has(it.noteId) ||
+        uploadedDetails.has(it.noteId) ||
+        !it.url
+      )
+        continue;
+      void requestDetail(it);
+    }
+  }
+
+  // 采集时用的库（按笔记记）：后续补传要跟原批次同一个库，防止换库后补传把笔记挪走
+  const colOfUpload = new Map<string, number | null>();
+
   document.addEventListener(EVT_NOTES, (ev) => {
     if (!cfg.enabled) return; // 总开关关：不动
     const batch = (ev as CustomEvent<CollectBatch>).detail;
@@ -230,9 +258,34 @@ if (isWww) {
         cards.set(it.noteId, it);
       }
     }
-    for (const d of batch.details ?? []) details.set(d.noteId, d);
+    for (const d of batch.details ?? []) {
+      // 评论可能先于详情到（隐藏页/详情浏览）：合并进缓存，后续上传带上
+      const cms = commentsMap.get(d.noteId);
+      details.set(
+        d.noteId,
+        (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail,
+      );
+      // 手动模式下，晚到的详情对已采卡片做补传（autoCollect 走 queueUpload 已覆盖）；
+      // 沿用卡片入库时的库，不取当前选择（用户可能已换库）
+      if (
+        !cfg.autoCollect &&
+        !collectFlag &&
+        !uploadedDetails.has(d.noteId) &&
+        uploadedCards.has(d.noteId)
+      ) {
+        pendingDetails.set(d.noteId, {
+          data: details.get(d.noteId)!,
+          colId: colOfUpload.get(d.noteId) ?? cfg.collectionId ?? null,
+        });
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
+    }
     refreshCount();
-    if (cfg.autoCollect) queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
+    if (cfg.autoCollect) {
+      backfillDetails(batch.items); // 自动采集也补齐详情（只多发一次页面 fetch，不开页）
+      queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
+    }
     scheduleScan();
   });
 
@@ -259,7 +312,7 @@ if (isWww) {
     if (det2) {
       pendingDetails.set(d.noteId, {
         data: det2,
-        colId: cfg.collectionId ?? null,
+        colId: colOfUpload.get(d.noteId) ?? cfg.collectionId ?? null,
       });
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
@@ -392,9 +445,19 @@ if (isWww) {
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       uploadedCards.add(noteId);
+      colOfUpload.set(noteId, cfg.collectionId ?? null);
       if (detail) uploadedDetails.add(noteId);
-      // 上传飞行期间到达的评论：手动采集成功后补传一次（in-flight 时 collected 还
-      // 不满足，EVT_COMMENTS 只进了缓存）
+      // 上传飞行期间到达的评论/详情：手动采集成功后补传一次（in-flight 时 collected/
+      // uploadedCards 还不满足，EVT_COMMENTS / EVT_NOTES 只进了缓存）
+      const lateDetail = details.get(noteId);
+      if (lateDetail && !uploadedDetails.has(noteId)) {
+        pendingDetails.set(noteId, {
+          data: lateDetail,
+          colId: cfg.collectionId ?? null,
+        });
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
       const late = commentsMap.get(noteId);
       if (
         detail &&
@@ -403,16 +466,16 @@ if (isWww) {
       ) {
         pendingDetails.set(noteId, {
           data: { ...detail, commentsData: late } as NoteDetail,
-          colId: cfg.collectionId ?? null,
+          colId: colOfUpload.get(noteId) ?? cfg.collectionId ?? null,
         });
         if (flushTimer) clearTimeout(flushTimer);
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
-      // 深度采集：开隐藏标签页进详情页，让页面自己发评论接口被嗅探。
+      // 手动点采集 = 明确要这篇，始终深度补评论：后台排队开隐藏标签页进详情页，
+      // 让页面自己发签名评论接口被嗅探（隐藏页会等评论到齐再回执）。
       // collectFlag 页本身就在详情页、不再套娃触发。
       if (
-        cfg.deepCollect &&
         !collectFlag &&
         !commentsMap.get(noteId)?.length &&
         (card?.url || detail?.url)
@@ -443,6 +506,17 @@ if (isWww) {
       ).catch(() => ({ cards: [], details: [] }));
       for (const c of res.cards) cards.set(c.noteId, c);
       for (const d of res.details) details.set(d.noteId, d);
+      // 对缺详情的卡片全部发起补齐（4 并发泵在后台跑，不取消）：上传只等 15s，
+      // 之后到达的详情走 EVT_NOTES 补传通道 / 上报后兜底扫一遍
+      const missing = [...cards.values()].filter(
+        (c) => !details.has(c.noteId) && !detailRequested.has(c.noteId) && c.url,
+      );
+      const pump = (async () => {
+        for (let i = 0; i < missing.length; i += 4) {
+          await Promise.all(missing.slice(i, i + 4).map((c) => requestDetail(c)));
+        }
+      })();
+      await Promise.race([pump, new Promise((r) => setTimeout(r, 15_000))]);
       refreshCount();
       const items = [...cards.values()];
       const dets = [...details.values()];
@@ -459,8 +533,17 @@ if (isWww) {
         details: dets.length ? dets : undefined,
       };
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
+      const batchColId = cfg.collectionId ?? null;
       for (const it of items) uploadedCards.add(it.noteId);
       for (const d of dets) uploadedDetails.add(d.noteId);
+      for (const n of [...items, ...dets]) colOfUpload.set(n.noteId, batchColId);
+      // 上传飞行期间到的详情：兜底扫一遍（fetchDetail 在飞的响应可能刚好卡在边界）
+      for (const d of details.values()) {
+        if (uploadedCards.has(d.noteId) && !uploadedDetails.has(d.noteId)) {
+          pendingDetails.set(d.noteId, { data: d, colId: batchColId });
+          uploadedDetails.add(d.noteId); // 防 EVT_NOTES 补传重复入队
+        }
+      }
       // 同 collectOne：飞行期间晚到的评论补传
       for (const d of dets) {
         const late = commentsMap.get(d.noteId);
@@ -468,7 +551,7 @@ if (isWww) {
         if (late?.length && !sent.commentsData?.length) {
           pendingDetails.set(d.noteId, {
             data: { ...d, commentsData: late } as NoteDetail,
-            colId: cfg.collectionId ?? null,
+            colId: batchColId,
           });
         }
       }
@@ -477,6 +560,21 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
+      // 深度采集开：给还没有评论的笔记排队开隐藏页补评论（背景顺序执行）；
+      // 逐条等回执计数，队列满了被拒的不会算进去
+      if (cfg.deepCollect) {
+        let queued = 0;
+        for (const n of [...items, ...dets]) {
+          const url = n.url;
+          if (!url || commentsMap.get(n.noteId)?.length) continue;
+          const r = await sendToBackground<{ queued?: boolean }>({
+            type: "DEEP_COLLECT",
+            url,
+          }).catch(() => null);
+          if (r?.queued) queued++;
+        }
+        if (queued) toast(`深度补评论已排队 ${queued} 篇（较慢，后台进行）`);
+      }
     } catch (e) {
       toast(`入库失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);
     } finally {
@@ -545,6 +643,7 @@ if (isWww) {
       void sendToBackground({ type: "COLLECT_URL_DONE", ok, noteId: noteId ?? undefined, error });
     };
     const started = Date.now();
+    let dataSince: number | undefined; // 数据就绪时刻：评论再等最多 8s
     const tick = async () => {
       if (done) return;
       cfg = await getSettings(); // 同步 cfg 可能还没加载，这里每次拿最新的
@@ -553,8 +652,15 @@ if (isWww) {
         return;
       }
       if (noteId && (cards.has(noteId) || details.has(noteId))) {
-        finish(await collectOne(noteId));
-        return;
+        dataSince ??= Date.now();
+        // 等评论接口回来再收：评论随 collectOne 一起上传，不靠事后补传竞态
+        if (
+          (commentsMap.get(noteId)?.length ?? 0) > 0 ||
+          Date.now() - dataSince > 8000
+        ) {
+          finish(await collectOne(noteId));
+          return;
+        }
       }
       // 还没嗅探到：催 main world 重扫 __INITIAL_STATE__，再等嗅探响应
       await mainRequest("reparseInitialState").catch(() => undefined);
