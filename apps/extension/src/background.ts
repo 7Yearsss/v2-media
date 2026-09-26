@@ -471,6 +471,19 @@ chrome.runtime.onMessage.addListener(
         );
       case "SITE_COLLECT_URL":
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
+      case "DEEP_COLLECT":
+        // 总开关约束同样适用：停用期间不开任何隐藏标签页。
+        // 失败不回传错误：深度采集是尽力而为的补充通道
+        return reply(
+          getSettings()
+            .then((s) => {
+              if (!s.enabled) return { queued: false };
+              return collectByUrl(String(msg.url ?? ""))
+                .then(() => ({ queued: true }))
+                .catch(() => ({ queued: false }));
+            }),
+          sendResponse,
+        );
       case "SITE_RUN_PUBLISH_JOB":
         return reply(runPublishJobById(Number(msg.jobId)), sendResponse);
 
@@ -509,8 +522,13 @@ async function collectByUrl(url: string) {
       }
     }, 25000);
   });
-  await chrome.tabs.create({ url: target, active: false });
+  const tab = await chrome.tabs.create({ url: target, active: false });
   const r = await done;
+  // 等评论接口多给 3s（COLLECT_URL_DONE 在详情入库时就回执，评论可能还在路上），
+  // 然后收掉隐藏标签页
+  setTimeout(() => {
+    if (tab.id) chrome.tabs.remove(tab.id).catch(() => {});
+  }, 3000);
   if (!r.ok) throw new Error(r.error ?? "采集失败");
   return { collected: true, noteId: r.noteId };
 }

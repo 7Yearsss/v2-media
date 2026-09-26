@@ -70,7 +70,7 @@ if (isWww) {
   shadow.append(overlay, bar);
 
   // ---------- 启停开关（popup 写入 chrome.storage.local.v2m_settings） ----------
-  let cfg: ExtSettings = { enabled: true, autoCollect: true, collectionId: null };
+  let cfg: ExtSettings = { enabled: true, autoCollect: true, collectionId: null, deepCollect: false };
   function applySettings() {
     // 停用：隐藏全部注入 UI，嗅探只记内存不上报
     bar.style.display = cfg.enabled ? "" : "none";
@@ -163,28 +163,36 @@ if (isWww) {
       if (!uploadedDetails.has(d.noteId)) pendingDetails.set(d.noteId, { data: d, colId });
     }
     if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = window.setTimeout(() => {
-      // 按入队时的库分组：去抖期间换过库的就拆成多批发
-      const groups = new Map<
-        string,
-        { colId: number | null; items: NoteCard[]; dets: NoteDetail[] }
-      >();
-      const push = <T>(
-        p: Pending<T>,
-        pick: (g: { items: NoteCard[]; dets: NoteDetail[] }) => T[],
-      ) => {
-        const k = String(p.colId);
-        const g = groups.get(k) ?? { colId: p.colId, items: [], dets: [] };
-        pick(g).push(p.data as never);
-        groups.set(k, g);
-      };
-      for (const p of pendingItems.values()) push(p, (g) => g.items);
-      for (const p of pendingDetails.values()) push(p, (g) => g.dets);
-      pendingItems = new Map();
-      pendingDetails = new Map();
-      for (const g of groups.values())
-        void uploadBatch(g.items, g.dets, batch.source, batch.context ?? lastContext, g.colId);
-    }, 1500);
+    flushTimer = window.setTimeout(
+      () => flushQueue(batch.source, batch.context ?? lastContext),
+      1500,
+    );
+  }
+
+  function flushQueue(
+    source: CollectBatch["source"],
+    context: CollectBatch["context"],
+  ) {
+    // 按入队时的库分组：去抖期间换过库的就拆成多批发
+    const groups = new Map<
+      string,
+      { colId: number | null; items: NoteCard[]; dets: NoteDetail[] }
+    >();
+    const push = <T>(
+      p: Pending<T>,
+      pick: (g: { items: NoteCard[]; dets: NoteDetail[] }) => T[],
+    ) => {
+      const k = String(p.colId);
+      const g = groups.get(k) ?? { colId: p.colId, items: [], dets: [] };
+      pick(g).push(p.data as never);
+      groups.set(k, g);
+    };
+    for (const p of pendingItems.values()) push(p, (g) => g.items);
+    for (const p of pendingDetails.values()) push(p, (g) => g.dets);
+    pendingItems = new Map();
+    pendingDetails = new Map();
+    for (const g of groups.values())
+      void uploadBatch(g.items, g.dets, source, context, g.colId);
   }
 
   // ---------- 事件接入 ----------
@@ -208,7 +216,31 @@ if (isWww) {
   document.addEventListener(EVT_COMMENTS, (ev) => {
     if (!cfg.enabled) return;
     const d = (ev as CustomEvent<CommentsEventDetail>).detail;
-    if (d?.noteId) commentsMap.set(d.noteId, d.comments);
+    if (!d?.noteId) return;
+    commentsMap.set(d.noteId, d.comments);
+    // 缓存里的详情同步带上评论：后续任何详情重传都不会丢评论
+    const det = details.get(d.noteId);
+    if (det) details.set(d.noteId, { ...det, commentsData: d.comments } as NoteDetail);
+    // 只补「已经采过」的笔记（手动采集过 / 自动模式已入库）：关自动采集时
+    // 逛详情页不应产生上传。评论仍进 commentsMap，下次手动采集会带上。
+    const collected =
+      cfg.autoCollect || uploadedCards.has(d.noteId) || uploadedDetails.has(d.noteId);
+    if (!collected) return;
+    // 已排队的详情要就地合并评论（不能跳过，否则 flush 出去的是无评论版本）
+    const pending = pendingDetails.get(d.noteId);
+    if (pending) {
+      pending.data = { ...pending.data, commentsData: d.comments } as NoteDetail;
+      return;
+    }
+    const det2 = details.get(d.noteId);
+    if (det2) {
+      pendingDetails.set(d.noteId, {
+        data: det2,
+        colId: cfg.collectionId ?? null,
+      });
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+    }
   });
 
   // ---------- 卡片浮层按钮（site DOM 之外，fixed 对齐） ----------
@@ -305,6 +337,19 @@ if (isWww) {
         /* 页面数据读不到 */
       }
     }
+    // 只有卡片没有详情：后台拉详情页 HTML 补齐（tags/正文/发布时间/互动数），不用点进去
+    if (!detail && card?.url) {
+      try {
+        const res = await mainRequest<CachedNote>(
+          "fetchDetail",
+          { url: card.url },
+          15_000,
+        );
+        detail = detail ?? res.detail;
+      } catch {
+        /* 详情拉不到就按卡片上报 */
+      }
+    }
     if (!card && !detail) {
       toast("未嗅探到该笔记数据，稍等页面加载完再试", false);
       return false;
@@ -325,7 +370,35 @@ if (isWww) {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       uploadedCards.add(noteId);
       if (detail) uploadedDetails.add(noteId);
+      // 上传飞行期间到达的评论：手动采集成功后补传一次（in-flight 时 collected 还
+      // 不满足，EVT_COMMENTS 只进了缓存）
+      const late = commentsMap.get(noteId);
+      if (
+        detail &&
+        late?.length &&
+        !(detail as NoteDetail & { commentsData?: unknown[] }).commentsData?.length
+      ) {
+        pendingDetails.set(noteId, {
+          data: { ...detail, commentsData: late } as NoteDetail,
+          colId: cfg.collectionId ?? null,
+        });
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
+      // 深度采集：开隐藏标签页进详情页，让页面自己发评论接口被嗅探。
+      // collectFlag 页本身就在详情页、不再套娃触发。
+      if (
+        cfg.deepCollect &&
+        !collectFlag &&
+        !commentsMap.get(noteId)?.length &&
+        (card?.url || detail?.url)
+      ) {
+        void sendToBackground({
+          type: "DEEP_COLLECT",
+          url: card?.url || detail!.url,
+        }).catch(() => {});
+      }
       return true;
     } catch (e) {
       toast(`采集失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);
@@ -365,6 +438,21 @@ if (isWww) {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       for (const it of items) uploadedCards.add(it.noteId);
       for (const d of dets) uploadedDetails.add(d.noteId);
+      // 同 collectOne：飞行期间晚到的评论补传
+      for (const d of dets) {
+        const late = commentsMap.get(d.noteId);
+        const sent = d as NoteDetail & { commentsData?: unknown[] };
+        if (late?.length && !sent.commentsData?.length) {
+          pendingDetails.set(d.noteId, {
+            data: { ...d, commentsData: late } as NoteDetail,
+            colId: cfg.collectionId ?? null,
+          });
+        }
+      }
+      if (pendingDetails.size) {
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
     } catch (e) {
       toast(`入库失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);

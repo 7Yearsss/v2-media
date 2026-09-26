@@ -210,6 +210,10 @@ export function extModule(deps: Deps) {
               title: realTitle || existing.title || values.title,
               titleFallback: !realTitle && existing.titleFallback,
               hasDetail: true,
+              // 详情重传可能不带评论（嗅探时机），空数组不覆盖已有评论
+              commentsData: values.commentsData.length
+                ? values.commentsData
+                : existing.commentsData,
               publishedAt: values.publishedAt ?? existing.publishedAt,
               ipLocation: values.ipLocation || existing.ipLocation,
               sourceKeyword: values.sourceKeyword || existing.sourceKeyword,
