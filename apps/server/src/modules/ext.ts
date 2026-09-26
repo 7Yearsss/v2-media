@@ -195,7 +195,7 @@ export function extModule(deps: Deps) {
       }
     }
     // 后台把 xhscdn 图转存 R2 并回写（不占采集响应时间；失败降级保留原图床链接）
-    void persistCollectedMedia(deps, ids, publicBase(c.req.url)).catch(() => {});
+    void persistCollectedMedia(deps, ids, publicBase(c.req)).catch(() => {});
     return c.json({ saved: ids.length, ids });
   });
 
