@@ -325,6 +325,7 @@ if (isWww) {
   const NOTE_LINK =
     'a[href*="/explore/"], a[href*="/search_result/"], a[href*="/discovery/item/"]';
   const pickBtns = new Map<Element, { btn: HTMLElement; noteId: string }>();
+  const cardEls = new Map<string, Element>();
   let rafScheduled = false;
 
   function noteIdFromCard(section: Element): string | null {
@@ -339,6 +340,7 @@ if (isWww) {
       const noteId = noteIdFromCard(section);
       if (!noteId) continue;
       seen.add(section);
+      cardEls.set(noteId, section);
       if (!pickBtns.has(section)) {
         const btn = el("button", { class: "pick", onclick: () => void collectOne(noteId) }, "采集本篇");
         overlay.append(btn);
@@ -350,6 +352,7 @@ if (isWww) {
       if (!seen.has(section) || !document.contains(section)) {
         rec.btn.remove();
         pickBtns.delete(section);
+        cardEls.delete(rec.noteId);
       }
     }
     reposition();
@@ -394,6 +397,117 @@ if (isWww) {
   function pageNoteId(): string | null {
     const m = location.pathname.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i);
     return m?.[1] ?? null;
+  }
+
+  const detectChallenge = () => {
+    if (/\/404\/sec_|\/sec_[a-z]/i.test(location.pathname)) return true;
+    const text = document.body?.innerText ?? "";
+    return (
+      /请完成验证|安全验证|拖动滑块|拖动箭头|验证后继续|Security Verification|完成拼图/i.test(text) ||
+      Boolean(document.querySelector('iframe[src*="captcha"], iframe[src*="verify"]'))
+    );
+  };
+
+  const advanceComments = () => {
+    const roots = document.querySelectorAll<HTMLElement>(
+      '.comments-container, [class*="comments-container"], [class*="comment-list"], [class*="comments-list"], .parent-comment',
+    );
+    const candidates = new Set<HTMLElement>();
+    for (const root of roots) {
+      let current: HTMLElement | null = root;
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        const style = getComputedStyle(current);
+        if (
+          current.scrollHeight - current.clientHeight > 50 &&
+          current.offsetParent !== null &&
+          /(auto|scroll)/.test(style.overflowY)
+        ) {
+          candidates.add(current);
+          break;
+        }
+        current = current.parentElement;
+      }
+    }
+    const noteScroller = document.querySelector<HTMLElement>(".note-scroller");
+    if (
+      noteScroller &&
+      noteScroller.scrollHeight - noteScroller.clientHeight > 50 &&
+      noteScroller.offsetParent !== null
+    ) {
+      candidates.add(noteScroller);
+    }
+    const target = [...candidates].reduce<HTMLElement | null>((best, el) => {
+      const range = el.scrollHeight - el.clientHeight;
+      const bestRange = best ? best.scrollHeight - best.clientHeight : 0;
+      return range > Math.max(50, bestRange) ? el : best;
+    }, null);
+    const fallback = document.scrollingElement as HTMLElement | null;
+    const scrollTarget = target ?? fallback;
+    if (!scrollTarget) return;
+    const top = 400 + Math.round(Math.random() * 300);
+    scrollTarget.scrollBy({ top, behavior: "smooth" });
+    scrollTarget.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: top }));
+  };
+
+  let modalCollecting = false;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // 原地详情弹窗采集：点当前页的笔记卡片打开原生 modal（不新开 tab），
+  // modal 自己发签名接口被嗅探；滚动评论容器翻页；验证码也在当前可见页由用户处理
+  async function deepCollectInline(noteId: string): Promise<boolean> {
+    if (modalCollecting || collectFlag) return false;
+    const section = cardEls.get(noteId);
+    const link = section?.querySelector<HTMLAnchorElement>(NOTE_LINK);
+    if (!section || !link || !document.contains(section)) return false;
+    modalCollecting = true;
+    let challengeToastShown = false;
+    try {
+      link.click();
+      const startAt = Date.now();
+      let challengeMs = 0;
+      let challengeSince: number | undefined;
+      let lastCount = commentsMap.get(noteId)?.length ?? 0;
+      let stableSince = Date.now();
+      while (Date.now() - startAt - challengeMs < 30_000 && Date.now() - startAt < 120_000) {
+        if (detectChallenge()) {
+          if (!challengeToastShown) {
+            challengeToastShown = true;
+            toast("需要验证：请在当前页面完成，完成后自动继续", true);
+          }
+          challengeSince ??= Date.now();
+          await sleep(1500);
+          continue;
+        }
+        if (challengeSince) {
+          challengeMs += Date.now() - challengeSince;
+          challengeSince = undefined;
+        }
+        const count = commentsMap.get(noteId)?.length ?? 0;
+        if (count > lastCount) {
+          lastCount = count;
+          stableSince = Date.now();
+        } else if (count > 0 && Date.now() - stableSince > 3500) {
+          break;
+        }
+        advanceComments();
+        await sleep(1200);
+      }
+      try {
+        const res = await mainRequest<CachedNote>("getNote", { noteId });
+        if (res.card) cards.set(noteId, res.card);
+        if (res.detail) {
+          verifiedDetailIds.add(noteId);
+          details.set(noteId, res.detail);
+        }
+        if (res.comments?.length) commentsMap.set(noteId, res.comments);
+      } catch {
+        /* 收尾读取失败就按已缓存的上传 */
+      }
+      return Boolean(commentsMap.get(noteId)?.length);
+    } finally {
+      modalCollecting = false;
+      if (pageNoteId() === noteId) history.back();
+    }
   }
 
   async function collectOne(noteId: string): Promise<boolean> {
@@ -500,18 +614,23 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
-      // 手动点采集 = 明确要这篇，始终深度补评论：后台排队开隐藏标签页进详情页，
-      // 让页面自己发签名评论接口被嗅探（隐藏页会等评论到齐再回执）。
+      // 手动点采集 = 明确要这篇，始终深度补评论。优先在当前列表页原地打开
+      // 笔记详情弹窗采集（不新开 tab，验证码也只在当前可见页弹）；卡片不在
+      // DOM 里打不开弹窗时退回后台隐藏页通道。
       // collectFlag 页本身就在详情页、不再套娃触发。
       if (
         !collectFlag &&
         !commentsMap.get(noteId)?.length &&
         (card?.url || detail?.url)
       ) {
-        void sendToBackground({
-          type: "DEEP_COLLECT",
-          url: card?.url || detail!.url,
-        }).catch(() => {});
+        const url = card?.url || detail!.url;
+        void deepCollectInline(noteId).then(async (got) => {
+          if (got) {
+            await collectOne(noteId); // 重传一次带评论明细的详情
+          } else {
+            void sendToBackground({ type: "DEEP_COLLECT", url }).catch(() => {});
+          }
+        });
       }
       return true;
     } catch (e) {
@@ -588,19 +707,39 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
-      // 深度采集开：给还没有评论的笔记排队开隐藏页补评论（背景顺序执行）；
-      // 逐条等回执计数，队列满了被拒的不会算进去
+      // 深度采集开：缺评论的笔记优先原地弹窗补（可见页面，验证码可直接人工处理）；
+      // 卡片不在 DOM 里的退回后台隐藏页队列
       if (cfg.deepCollect) {
+        let inline = 0;
         let queued = 0;
         for (const n of [...items, ...dets]) {
-          const url = n.url;
-          if (!url || commentsMap.get(n.noteId)?.length) continue;
-          const r = await sendToBackground<{ queued?: boolean }>({
-            type: "DEEP_COLLECT",
-            url,
-          }).catch(() => null);
-          if (r?.queued) queued++;
+          if (commentsMap.get(n.noteId)?.length) continue;
+          if (cardEls.has(n.noteId)) {
+            const got = await deepCollectInline(n.noteId);
+            if (got) {
+              inline++;
+              const d = details.get(n.noteId);
+              const late = commentsMap.get(n.noteId);
+              if (d && late?.length) {
+                pendingDetails.set(n.noteId, {
+                  data: { ...d, commentsData: late } as NoteDetail,
+                  colId: batchColId,
+                });
+              }
+            }
+          } else if (n.url) {
+            const r = await sendToBackground<{ queued?: boolean }>({
+              type: "DEEP_COLLECT",
+              url: n.url,
+            }).catch(() => null);
+            if (r?.queued) queued++;
+          }
         }
+        if (pendingDetails.size) {
+          if (flushTimer) clearTimeout(flushTimer);
+          flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+        }
+        if (inline) toast(`弹窗补评论完成 ${inline} 篇`);
         if (queued) toast(`深度补评论已排队 ${queued} 篇（较慢，后台进行）`);
       }
     } catch (e) {
@@ -672,54 +811,6 @@ if (isWww) {
       null;
     let done = false;
     let challengeNotified = false;
-    const detectChallenge = () => {
-      if (/\/404\/sec_|\/sec_[a-z]/i.test(location.pathname)) return true;
-      const text = document.body?.innerText ?? "";
-      return (
-        /请完成验证|安全验证|拖动滑块|拖动箭头|验证后继续|Security Verification|完成拼图/i.test(text) ||
-        Boolean(document.querySelector('iframe[src*="captcha"], iframe[src*="verify"]'))
-      );
-    };
-    const advanceComments = () => {
-      const roots = document.querySelectorAll<HTMLElement>(
-        '.comments-container, [class*="comments-container"], [class*="comment-list"], [class*="comments-list"], .parent-comment',
-      );
-      const candidates = new Set<HTMLElement>();
-      for (const root of roots) {
-        let current: HTMLElement | null = root;
-        for (let depth = 0; current && depth < 6; depth += 1) {
-          const style = getComputedStyle(current);
-          if (
-            current.scrollHeight - current.clientHeight > 50 &&
-            current.offsetParent !== null &&
-            /(auto|scroll)/.test(style.overflowY)
-          ) {
-            candidates.add(current);
-            break;
-          }
-          current = current.parentElement;
-        }
-      }
-      const noteScroller = document.querySelector<HTMLElement>(".note-scroller");
-      if (
-        noteScroller &&
-        noteScroller.scrollHeight - noteScroller.clientHeight > 50 &&
-        noteScroller.offsetParent !== null
-      ) {
-        candidates.add(noteScroller);
-      }
-      const target = [...candidates].reduce<HTMLElement | null>((best, el) => {
-        const range = el.scrollHeight - el.clientHeight;
-        const bestRange = best ? best.scrollHeight - best.clientHeight : 0;
-        return range > Math.max(50, bestRange) ? el : best;
-      }, null);
-      const fallback = document.scrollingElement as HTMLElement | null;
-      const scrollTarget = target ?? fallback;
-      if (!scrollTarget) return;
-      const top = 400 + Math.round(Math.random() * 300);
-      scrollTarget.scrollBy({ top, behavior: "smooth" });
-      scrollTarget.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: top }));
-    };
     const finish = (
       ok: boolean,
       error?: string,
