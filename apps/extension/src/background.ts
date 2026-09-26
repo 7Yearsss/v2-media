@@ -699,6 +699,17 @@ chrome.runtime.onMessage.addListener(
         );
       case "SITE_COLLECT_URL":
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
+      case "TRUSTED_CLICK":
+        // 内容脚本的 .click() 是不可信事件，XHS 的弹窗 handler 会忽略；
+        // 用 chrome.debugger 派发真实鼠标点击来打开笔记详情弹窗
+        return reply(
+          Promise.resolve(sender?.tab?.id).then(async (tid) =>
+            tid == null
+              ? { ok: false }
+              : { ok: await trustedClick(tid, Number(msg.x), Number(msg.y)) },
+          ),
+          sendResponse,
+        );
       case "DEEP_COLLECT":
         // 总开关约束同样适用：停用期间不开任何隐藏标签页。
         // 失败不回传错误：深度采集是尽力而为的补充通道；进顺序队列逐篇执行
@@ -723,6 +734,33 @@ chrome.runtime.onMessage.addListener(
     return false;
   },
 );
+
+// chrome.debugger 真实点击：dispatchMouseEvent 产生 isTrusted 事件，
+// 是 XHS 弹窗 handler 唯一认的触发方式（合成 .click() 会被忽略走默认跳转）
+async function trustedClick(tabId: number, x: number, y: number): Promise<boolean> {
+  const target = { tabId };
+  try {
+    await chrome.debugger.attach(target, "1.3");
+    for (const type of ["mousePressed", "mouseReleased"] as const) {
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type,
+        x,
+        y,
+        button: "left",
+        clickCount: 1,
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      await chrome.debugger.detach(target);
+    } catch {
+      /* 已分离 */
+    }
+  }
+}
 
 // ---------- COLLECT_URL：工作台点名采集某篇 ----------
 

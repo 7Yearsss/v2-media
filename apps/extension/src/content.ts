@@ -462,7 +462,29 @@ if (isWww) {
     modalCollecting = true;
     let challengeToastShown = false;
     try {
-      link.click();
+      // .click() 是非受信任事件会被 XHS 弹窗 handler 忽略（走默认跳转被 302）；
+      // 必须滚动到可见后用 chrome.debugger 发真实鼠标点击
+      link.scrollIntoView({ block: "center" });
+      await sleep(500);
+      const rect = link.getBoundingClientRect();
+      const cx = Math.round(rect.left + rect.width / 2);
+      const cy = Math.round(rect.top + rect.height / 2);
+      const clickRes = await sendToBackground<{ ok?: boolean }>({
+        type: "TRUSTED_CLICK",
+        x: cx,
+        y: cy,
+      }).catch(() => null);
+      if (!clickRes?.ok) return false;
+      // 等弹窗路由生效（URL pushState 到 /explore/<id>）
+      let opened = false;
+      for (let i = 0; i < 10; i++) {
+        await sleep(500);
+        if (pageNoteId() === noteId) {
+          opened = true;
+          break;
+        }
+      }
+      if (!opened) return false;
       const startAt = Date.now();
       let challengeMs = 0;
       let challengeSince: number | undefined;
