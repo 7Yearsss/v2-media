@@ -22,7 +22,7 @@ function parseInsight(text: string) {
   try {
     const j = JSON.parse(m[0]);
     const arr = (v: unknown) => (Array.isArray(v) ? v.map(String).filter(Boolean) : []);
-    return {
+    const insight = {
       summary: typeof j.summary === "string" ? j.summary : "",
       topNotes: Array.isArray(j.topNotes)
         ? j.topNotes
@@ -33,6 +33,14 @@ function parseInsight(text: string) {
       opportunities: arr(j.opportunities),
       actions: arr(j.actions),
     };
+    // 模型返回了无关 JSON（如 {"error":...}）时视为解析失败，走原文兜底
+    const usable =
+      insight.summary ||
+      insight.topNotes.length ||
+      insight.patterns.length ||
+      insight.opportunities.length ||
+      insight.actions.length;
+    return usable ? insight : null;
   } catch {
     return null;
   }

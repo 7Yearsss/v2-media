@@ -9,7 +9,7 @@ import {
   Target,
   TrendingUp,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CollectionAnalysis } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
@@ -25,13 +25,24 @@ import { useToast } from "@/lib/toast";
 type AnalysisMeta = Omit<CollectionAnalysis, "report" | "data">;
 
 /** 指标卡：动画数字 + 副标题。 */
-function StatCard({ label, value, hint }: { label: string; value: number; hint: string }) {
+function StatCard({
+  label,
+  value,
+  hint,
+  suffix,
+}: {
+  label: string;
+  value: number;
+  hint: string;
+  suffix?: string;
+}) {
   return (
     <div className="rounded-2xl border border-border bg-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
       <NumberTicker
         value={value}
         locale
+        suffix={suffix}
         className="mt-1 block text-2xl font-semibold tabular-nums"
       />
       <div className="mt-1 text-xs text-muted-foreground">{hint}</div>
@@ -182,7 +193,7 @@ function AnalysisView({ a }: { a: CollectionAnalysis }) {
         <StatCard label="分析笔记" value={a.noteCount} hint="本库互动 top" />
         <StatCard label="总互动量" value={totalEngagement} hint="赞 + 藏 + 评 + 分享" />
         <StatCard label="平均互动" value={stats.avgEngagement} hint="每篇笔记" />
-        <StatCard label="评赞比" value={commentRate} hint="越高讨论度越强" />
+        <StatCard label="评赞比" value={commentRate} hint="越高讨论度越强" suffix="%" />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -259,6 +270,9 @@ export default function AnalysisPage() {
   const queryClient = useQueryClient();
   const [colId, setColId] = useState<number | null>(null);
   const [active, setActive] = useState<CollectionAnalysis | null>(null);
+  // 当前选中库的快照：异步返回时用它丢弃过期结果（换库后旧库报告不顶上来）
+  const colIdRef = useRef<number | null>(null);
+  colIdRef.current = colId;
 
   const cols = useQuery({ queryKey: ["collections"], queryFn: api.collections });
   const analyses = useQuery({
@@ -269,15 +283,22 @@ export default function AnalysisPage() {
   const loadAnalysis = useMutation({
     mutationFn: ({ cid, aid }: { cid: number; aid: number }) =>
       api.collectionAnalysis(cid, aid),
-    onSuccess: setActive,
+    onSuccess: (row) => {
+      if (row.collectionId === colIdRef.current) setActive(row);
+    },
     onError: (e) => toast.error("读取报告失败", e instanceof Error ? e.message : undefined),
   });
   const analyze = useMutation({
     mutationFn: (id: number) => api.analyzeCollection(id),
     onSuccess: (row) => {
-      setActive(row);
-      void queryClient.invalidateQueries({ queryKey: ["analyses", colId] });
-      toast.success("分析完成");
+      // 期间用户可能已切库：报告只对「当时的库」显示/刷新历史
+      void queryClient.invalidateQueries({ queryKey: ["analyses", row.collectionId] });
+      if (row.collectionId === colIdRef.current) {
+        setActive(row);
+        toast.success("分析完成");
+      } else {
+        toast.success("分析完成（在对应库的历史里查看）");
+      }
     },
     onError: (e) => toast.error("分析失败", e instanceof Error ? e.message : undefined),
   });
@@ -349,6 +370,9 @@ export default function AnalysisPage() {
           <div className="flex flex-col gap-2">
             <div className="text-xs font-medium text-muted-foreground">历史报告</div>
             {analyses.isLoading && <PageLoading />}
+            {analyses.isError && (
+              <PageError error={analyses.error} onRetry={() => void analyses.refetch()} />
+            )}
             {(analyses.data?.items ?? []).map((a: AnalysisMeta) => (
               <button
                 key={a.id}
