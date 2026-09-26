@@ -667,9 +667,10 @@ if (isWww) {
     let done = false;
     let challengeNotified = false;
     const detectChallenge = () => {
+      if (/\/404\/sec_|\/sec_[a-z]/i.test(location.pathname)) return true;
       const text = document.body?.innerText ?? "";
       return (
-        /请完成验证|安全验证|拖动滑块|验证后继续/.test(text) ||
+        /请完成验证|安全验证|拖动滑块|拖动箭头|验证后继续|Security Verification|完成拼图/i.test(text) ||
         Boolean(document.querySelector('iframe[src*="captcha"], iframe[src*="verify"]'))
       );
     };
