@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at timestamp DEFAULT now() NOT NULL,
   finished_at timestamp
 );
+-- 幂等约束修补：删采集笔记保留草稿（SET NULL），删草稿/账号联动删除发布任务（CASCADE）
+ALTER TABLE drafts DROP CONSTRAINT IF EXISTS drafts_collected_note_id_fkey;
+ALTER TABLE drafts ADD CONSTRAINT drafts_collected_note_id_fkey FOREIGN KEY (collected_note_id) REFERENCES collected_notes(id) ON DELETE SET NULL;
+ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_draft_id_fkey;
+ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE;
+ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_account_id_fkey;
+ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE CASCADE;
 `;
 
 export async function migrate(db: Db) {

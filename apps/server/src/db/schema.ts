@@ -48,7 +48,7 @@ export const collectedNotes = pgTable("collected_notes", {
 export const drafts = pgTable("drafts", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id),
+  collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id, { onDelete: "set null" }),
   title: varchar("title", { length: 512 }).notNull().default(""),
   content: text("content").notNull().default(""),
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
@@ -61,8 +61,8 @@ export const drafts = pgTable("drafts", {
 export const publishJobs = pgTable("publish_jobs", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  draftId: integer("draft_id").notNull().references(() => drafts.id),
-  accountId: integer("account_id").notNull().references(() => hostedAccounts.id),
+  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
+  accountId: integer("account_id").notNull().references(() => hostedAccounts.id, { onDelete: "cascade" }),
   status: varchar("status", { length: 32 }).notNull().default("pending"),
   scheduledAt: timestamp("scheduled_at"),
   visibility: varchar("visibility", { length: 32 }).notNull().default("public"),

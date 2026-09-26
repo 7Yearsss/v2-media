@@ -31,7 +31,9 @@ if (isWww) {
   const cards = new Map<string, NoteCard>();
   const details = new Map<string, NoteDetail>();
   const commentsMap = new Map<string, NoteComment[]>();
-  const uploadedIds = new Set<string>(); // 已上报过的 noteId（含 detail 则不再重复）
+  // 卡片/详情分开记：卡片已传不阻挡后续到达的详情（详情含完整正文/图集/评论）
+  const uploadedCards = new Set<string>();
+  const uploadedDetails = new Set<string>();
   let lastContext: CollectBatch["context"];
 
   // ---------- UI：一个 shadow host 装卡片按钮层 + 浮动条 ----------
@@ -88,8 +90,8 @@ if (isWww) {
     const batch: CollectBatch = { source, context, items, details: dets.length ? dets : undefined };
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
-      for (const it of items) uploadedIds.add(it.noteId);
-      for (const d of dets) uploadedIds.add(d.noteId);
+      for (const it of items) uploadedCards.add(it.noteId);
+      for (const d of dets) uploadedDetails.add(d.noteId);
       if (typeof r?.saved === "number" && r.saved > 0) {
         toast(`已入库 ${r.saved} 条`);
       }
@@ -101,10 +103,11 @@ if (isWww) {
 
   function queueUpload(batch: CollectBatch) {
     for (const it of batch.items) {
-      if (!uploadedIds.has(it.noteId)) pendingItems.set(it.noteId, it);
+      if (!uploadedCards.has(it.noteId) && !uploadedDetails.has(it.noteId))
+        pendingItems.set(it.noteId, it);
     }
     for (const d of batch.details ?? []) {
-      if (!uploadedIds.has(d.noteId)) pendingDetails.set(d.noteId, d);
+      if (!uploadedDetails.has(d.noteId)) pendingDetails.set(d.noteId, d);
     }
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = window.setTimeout(() => {
@@ -245,7 +248,8 @@ if (isWww) {
     };
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
-      uploadedIds.add(noteId);
+      uploadedCards.add(noteId);
+      if (detail) uploadedDetails.add(noteId);
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
       return true;
     } catch (e) {
@@ -279,7 +283,8 @@ if (isWww) {
         details: dets.length ? dets : undefined,
       };
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
-      for (const it of items) uploadedIds.add(it.noteId);
+      for (const it of items) uploadedCards.add(it.noteId);
+      for (const d of dets) uploadedDetails.add(d.noteId);
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
     } catch (e) {
       toast(`入库失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);

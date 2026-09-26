@@ -174,13 +174,33 @@ async function heartbeat() {
 const trackedJobs = new Map<number, TrackedJob>();
 const JOB_TIMEOUT_MS = 10 * 60 * 1000;
 
-async function fetchPendingJobs(): Promise<PublishJobPayload[]> {
-  const res = await api<PendingPublishJobsResponse>("/api/ext/publish/pending");
+async function fetchPendingJobs(includeFuture = false): Promise<PublishJobPayload[]> {
+  const res = await api<PendingPublishJobsResponse>(
+    `/api/ext/publish/pending${includeFuture ? "?all=1" : ""}`,
+  );
   return res.jobs ?? [];
+}
+
+/** 任务指定了托管账号时，当前浏览器登录的小红书号必须一致，否则会发到别的号上。 */
+async function accountMismatch(job: PublishJobPayload): Promise<string | null> {
+  const want = job.xhsUserId;
+  if (!want) return null;
+  const { lastAccount } = (await chrome.storage.local.get("lastAccount")) as {
+    lastAccount?: DetectedAccount;
+  };
+  if (!lastAccount?.xhsUserId) return null; // 探测不到时不拦（拿不到就不比对）
+  return lastAccount.xhsUserId === want
+    ? null
+    : `任务绑定账号 ${want}，当前浏览器登录 ${lastAccount.xhsUserId}`;
 }
 
 async function claimAndOpen(job: PublishJobPayload) {
   if (trackedJobs.has(job.id)) return;
+  const mismatch = await accountMismatch(job);
+  if (mismatch) {
+    console.warn(`[v2m] job ${job.id} skipped: ${mismatch}`);
+    return;
+  }
   await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: SW_ID } });
   const tracked: TrackedJob = {
     jobId: job.id,
@@ -231,14 +251,14 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
   // 已认领的任务优先用内存里的 payload（pending 列表不再返回它）。
   const tracked = trackedJobs.get(jobId);
   if (tracked) return tracked.payload;
-  // 未认领（手动打开 ?job_id=N 或 SW 重启丢了状态）：从 pending 找并认领。
-  // TODO(契约): pending 列表是唯一能拿到草稿全文的接口；已 claim 任务被过滤，
-  // SW 重启后 trackedJobs 丢失即拿不到 payload —— 契约需补 GET /api/ext/publish/:id
-  //（或 claim 响应直接回草稿）。
-  const jobs = await fetchPendingJobs();
-  const job = jobs.find((j) => j.id === jobId);
+  // 未认领（手动打开 ?job_id=N 或 SW 重启丢了状态）：单条接口能恢复 pending/running 任务
+  const job = await api<PublishJobPayload>(`/api/ext/publish/${jobId}`).catch(
+    async () => (await fetchPendingJobs()).find((j) => j.id === jobId),
+  );
   if (!job) throw new Error(`服务端没有 job ${jobId} 的待发布任务`);
-  await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: SW_ID } });
+  if (job.status === "pending") {
+    await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: SW_ID } });
+  }
   trackedJobs.set(job.id, {
     jobId: job.id,
     state: "running",
@@ -250,8 +270,11 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
 }
 
 async function runPublishJobById(jobId: number) {
-  const job = (await fetchPendingJobs()).find((j) => j.id === jobId);
+  const job =
+    (await fetchPendingJobs(true).then((js) => js.find((j) => j.id === jobId))) ??
+    (await api<PublishJobPayload>(`/api/ext/publish/${jobId}`).catch(() => null));
   if (!job) throw new Error(`任务 ${jobId} 不在待发布列表（可能已被认领/执行）`);
+  job.scheduledAt = undefined; // Run Now 语义：忽略定时，立即发
   await claimAndOpen(job);
   return { opened: true, jobId };
 }

@@ -344,7 +344,13 @@ async function awaitResult(): Promise<{ resultUrl?: string }> {
   const startUrl = location.href;
   const r = await waitFor(
     () => {
-      if (location.href !== startUrl) return location.href;
+      if (location.href !== startUrl) {
+        // 跳转出创作平台 = 登录失效/被风控，不是发布成功
+        if (!location.host.includes("creator.xiaohongshu.com")) {
+          throw new Error(`发布页被重定向（${location.host}）——账号登录态可能失效`);
+        }
+        return location.href;
+      }
       const link = qVisible(SEL.successMark) as HTMLAnchorElement | null;
       if (link?.href) return link.href;
       // 站点 toast：发布成功/审核中
@@ -379,9 +385,11 @@ async function runJob(job: PublishJobPayload) {
 
   await addTags(draft.tags ?? []);
 
-  if (job.scheduledAt) {
+  // 定时已到点（或一分钟内）：服务端已释放任务，直接发不再设创作者侧定时
+  const scheduleAt = job.scheduledAt;
+  if (scheduleAt && scheduleAt > Date.now() + 60_000) {
     step("schedule", "设置定时发布");
-    await applySchedule(job.scheduledAt);
+    await applySchedule(scheduleAt);
     step("schedule", "定时已设置", "ok");
   }
   if (job.visibility && job.visibility !== "public") {

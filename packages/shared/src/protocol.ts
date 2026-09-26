@@ -131,9 +131,9 @@ export interface PublishJobCreateRequest {
   visibility?: "public" | "private" | "friends";
 }
 
-/** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。 */
+/** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。xhsUserId 供插件比对当前浏览器登录的托管账号。 */
 export interface PendingPublishJobsResponse {
-  jobs: Array<PublishJob & { draft: { title: string; content: string; tags: string[]; images: { url: string }[] } }>;
+  jobs: Array<PublishJob & { xhsUserId: string; draft: { title: string; content: string; tags: string[]; images: { url: string }[] } }>;
 }
 
 /** POST /api/ext/publish/:id/result */
