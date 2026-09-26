@@ -6,7 +6,7 @@ import { Button } from "@/components/motion/button";
 import { TiltCard } from "@/components/motion/tilt-card";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { useExtensionStatus } from "@/components/app/app-shell";
-import { API_BASE, api, getToken, mediaUrl } from "@/lib/api";
+import { api, getToken, mediaUrl } from "@/lib/api";
 import { bridge } from "@/lib/bridge";
 import { ACCOUNT_STATUS_META, timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
@@ -111,7 +111,8 @@ export default function AccountsPage() {
       return;
     }
     try {
-      await bridge.setAuth({ apiBase: API_BASE, token });
+      // 插件校验 apiBase === 页面 origin（只信任工作台同源），经 vite/同源代理访问 API
+      await bridge.setAuth({ apiBase: window.location.origin, token });
       toast.success("插件已授权", "扩展已拿到 API 地址与登录令牌");
     } catch (err) {
       toast.error(

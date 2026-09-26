@@ -30,7 +30,7 @@ export function draftsModule(deps: Deps) {
       .from(drafts)
       .where(eq(drafts.userId, c.get("userId")))
       .orderBy(desc(drafts.updatedAt));
-    return c.json({ items: rows });
+    return c.json(rows);
   });
 
   /** 从内容库深拷贝为草稿（或创建空草稿）。 */

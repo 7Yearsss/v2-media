@@ -35,8 +35,8 @@ describe("accounts heartbeat", () => {
     });
     expect((await app.request("/api/ext/accounts/heartbeat", hb)).status).toBe(200);
     const list = (await (await app.request("/api/accounts", authed(token))).json()) as any;
-    expect(list.items).toHaveLength(1);
-    expect(list.items[0].nickname).toBe("小薯");
+    expect(list).toHaveLength(1);
+    expect(list[0].nickname).toBe("小薯");
   });
 });
 
@@ -52,9 +52,10 @@ describe("collect + notes", () => {
       ],
     };
     const r1 = (await (await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify(payload) }))).json()) as any;
-    expect(r1.received).toBe(2);
+    expect(r1.saved).toBe(2);
+    expect(r1.ids).toHaveLength(2);
     const r2 = (await (await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify(payload) }))).json()) as any;
-    expect(r2.inserted).toBe(0);
+    expect(r2.ids).toEqual(r1.ids);
 
     const list = (await (await app.request("/api/notes", authed(token))).json()) as any;
     expect(list.items).toHaveLength(2);
@@ -90,7 +91,7 @@ describe("drafts + ai + publish", () => {
         items: [{ noteId: "n1", title: "原始标题", author: {}, cover: "https://cdn/c.jpg" }],
       }),
     }));
-    const accounts = (await (await app.request("/api/accounts", authed(token))).json()) as any;
+    const accounts = (await (await app.request("/api/accounts", authed(token))).json()) as any[];
     const notes = (await (await app.request("/api/notes", authed(token))).json()) as any;
 
     const draft = (await (await app.request("/api/drafts", authed(token, {
@@ -106,29 +107,36 @@ describe("drafts + ai + publish", () => {
     }))).json()) as any;
     expect(rw.title).toBe("改写后的标题");
 
-    const job = (await (await app.request("/api/publish", authed(token, {
+    const job = (await (await app.request("/api/publish/jobs", authed(token, {
       method: "POST",
-      body: JSON.stringify({ draftId: draft.id, accountId: accounts.items[0].id }),
+      body: JSON.stringify({ draftId: draft.id, accountId: accounts[0]!.id }),
     }))).json()) as any;
     expect(job.status).toBe("pending");
 
     const pending = (await (await app.request(
-      `/api/ext/publish/pending?accountId=${accounts.items[0].id}`,
+      "/api/ext/publish/pending",
       authed(token),
     )).json()) as any;
     expect(pending.jobs).toHaveLength(1);
     expect(pending.jobs[0].draft.title).toBe("原始标题");
 
     expect((await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ accountId: accounts.items[0].id }),
+      method: "POST", body: JSON.stringify({ claimedBy: "sw-test" }),
     }))).status).toBe(200);
     expect((await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done", postUrl: "https://xhs/n1" }),
+      method: "POST", body: JSON.stringify({ status: "done", resultUrl: "https://xhs/n1" }),
     }))).status).toBe(200);
 
-    const jobs = (await (await app.request("/api/publish", authed(token))).json()) as any;
-    expect(jobs.items[0].status).toBe("done");
+    const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
+    expect(jobs[0].status).toBe("done");
     const drafts = (await (await app.request("/api/drafts", authed(token))).json()) as any;
-    expect(drafts.items[0].status).toBe("published");
+    expect(drafts[0].status).toBe("published");
+
+    const ov = (await (await app.request("/api/overview", authed(token))).json()) as any;
+    expect(ov.notes).toBe(1);
+    expect(ov.accounts).toBe(1);
+    expect(ov.publishSuccessRate).toBe(100);
+    expect(ov.trend).toHaveLength(7);
+    expect(Object.values(ov.trend[6].sources).reduce((s: number, n) => s + (n as number), 0)).toBe(1);
   });
 });

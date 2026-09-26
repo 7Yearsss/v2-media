@@ -27,7 +27,7 @@ export function accountsModule(deps: Deps) {
       .select()
       .from(hostedAccounts)
       .where(eq(hostedAccounts.userId, userId));
-    return c.json({ items: rows });
+    return c.json(rows);
   });
 
   app.delete("/:id", async (c) => {

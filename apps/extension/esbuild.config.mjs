@@ -10,8 +10,19 @@ const origins = (process.env.EXT_APP_ORIGINS ?? "http://localhost:5173,http://12
   .split(",")
   .map((o) => o.trim().replace(/\/$/, ""))
   .filter(Boolean);
-for (const o of origins) {
-  if (!/^https?:\/\/[^/]+$/.test(o)) throw new Error(`bad origin in EXT_APP_ORIGINS: ${o}`);
+
+/**
+ * API origins the service worker may fetch (apiBase from SET_AUTH).
+ * Dev default is the Hono server.
+ *   EXT_API_ORIGINS=https://api.example.com npm run build:ext
+ */
+const apiOrigins = (process.env.EXT_API_ORIGINS ?? "http://127.0.0.1:3000,http://localhost:3000")
+  .split(",")
+  .map((o) => o.trim().replace(/\/$/, ""))
+  .filter(Boolean);
+
+for (const o of [...origins, ...apiOrigins]) {
+  if (!/^https?:\/\/[^/]+$/.test(o)) throw new Error(`bad origin: ${o}`);
 }
 
 await build({
@@ -32,7 +43,7 @@ await build({
 cpSync("static", "dist", { recursive: true });
 const manifest = JSON.parse(readFileSync("static/manifest.json", "utf8"));
 const patterns = origins.map((o) => `${o}/*`);
-manifest.host_permissions.push(...patterns);
+manifest.host_permissions.push(...patterns, ...apiOrigins.map((o) => `${o}/*`));
 manifest.content_scripts.find((cs) => cs.js.includes("site-bridge.js")).matches = patterns;
 writeFileSync("dist/manifest.json", JSON.stringify(manifest, null, 2));
 console.log(`extension built -> dist/ (app origins: ${origins.join(", ")})`);

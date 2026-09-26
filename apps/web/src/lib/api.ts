@@ -297,8 +297,15 @@ export const api = {
   overview: () => request<unknown>("/api/overview").then(normalizeOverview),
 };
 
-/** 封面/图片地址：相对路径（/api/media/...）交给 vite 代理，绝对地址直出。 */
+/** 封面/图片地址：xhscdn/xiaohongshu 需要 Referer，走服务端代理；其余直出。 */
 export function mediaUrl(u?: string): string {
   if (!u) return "";
+  try {
+    const host = new URL(u).hostname;
+    if (/(^|\.)xhscdn\.com$|(^|\.)xiaohongshu\.com$/.test(host))
+      return `/api/media/proxy?url=${encodeURIComponent(u)}`;
+  } catch {
+    // 非法 URL 直出
+  }
   return u;
 }

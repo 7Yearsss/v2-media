@@ -18,34 +18,58 @@ const heartbeatSchema = z.object({
   ),
 });
 
-const collectSchema = z.object({
-  source: z.string().default("homefeed"),
-  sourceUrl: z.string().default(""),
-  items: z.array(
-    z.object({
-      noteId: z.string(),
-      xsecToken: z.string().default(""),
-      type: z.enum(["video", "image", "unknown"]).default("image"),
-      title: z.string().default(""),
-      desc: z.string().optional(),
-      author: z.object({ id: z.string().default(""), name: z.string().default(""), avatar: z.string().default("") }),
-      cover: z.string().default(""),
-      likes: z.number().default(0),
-      collects: z.number().default(0),
-      comments: z.number().default(0),
-      shares: z.number().default(0),
-      url: z.string().default(""),
-    }),
-  ),
-  detail: z.object({ noteId: z.string(), title: z.string().default(""), content: z.string().default(""), images: z.array(z.string()).default([]), tags: z.array(z.string()).default([]), videoUrl: z.string().optional() }).optional(),
-  comments: z.array(z.object({ commentId: z.string().default(""), nickname: z.string().default(""), avatar: z.string().default(""), content: z.string().default(""), likes: z.number().default(0), subComments: z.array(z.object({ content: z.string() })).optional() })).optional(),
-  raw: z.any().optional(),
+const commentSchema = z.object({
+  commentId: z.string().default(""),
+  nickname: z.string().default(""),
+  avatar: z.string().default(""),
+  content: z.string().default(""),
+  likes: z.number().default(0),
+  subComments: z.array(z.object({ content: z.string() })).optional(),
 });
 
-const claimSchema = z.object({ accountId: z.number().int() });
+const cardSchema = z.object({
+  noteId: z.string(),
+  xsecToken: z.string().default(""),
+  type: z.enum(["video", "image", "unknown"]).default("image"),
+  title: z.string().default(""),
+  desc: z.string().default(""),
+  author: z
+    .object({ userId: z.string().default(""), nickname: z.string().default(""), avatar: z.string().default("") })
+    .default({ userId: "", nickname: "", avatar: "" }),
+  cover: z.string().default(""),
+  likes: z.number().default(0),
+  collects: z.number().default(0),
+  comments: z.number().default(0),
+  shares: z.number().default(0),
+  url: z.string().default(""),
+});
+
+const detailSchema = cardSchema.extend({
+  content: z.string().default(""),
+  tags: z.array(z.string()).default([]),
+  images: z.array(z.object({ url: z.string() })).default([]),
+  videoUrl: z.string().optional(),
+  commentsData: z.array(commentSchema).optional(),
+});
+
+/** CollectBatch（packages/shared/types.ts）。 */
+const collectSchema = z.object({
+  source: z.string().default("homefeed"),
+  context: z
+    .object({
+      keyword: z.string().optional(),
+      authorId: z.string().optional(),
+      pageUrl: z.string().optional(),
+    })
+    .optional(),
+  items: z.array(cardSchema),
+  details: z.array(detailSchema).optional(),
+});
+
+const claimSchema = z.object({ claimedBy: z.string().default("ext") });
 const resultSchema = z.object({
   status: z.enum(["done", "failed"]),
-  postUrl: z.string().optional(),
+  resultUrl: z.string().optional(),
   error: z.string().optional(),
 });
 
@@ -98,37 +122,40 @@ export function extModule(deps: Deps) {
     return c.json({ ok: true });
   });
 
-  /** 卡片批量 upsert；detail/comments 落到对应 noteId 的行。 */
+  /** 卡片批量 upsert；details 里同 noteId 的详情/评论落到对应行。 */
   app.post("/collect", async (c) => {
     const userId = c.get("userId");
     const parsed = collectSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const p = parsed.data;
-    let inserted = 0;
-    for (const item of p.items) {
-      const content = item.desc ?? "";
-      const detail = p.detail && p.detail.noteId === item.noteId ? p.detail : null;
-      const comments = p.comments && p.detail?.noteId === item.noteId ? p.comments : [];
+    const detailMap = new Map(p.details?.map((d) => [d.noteId, d]) ?? []);
+    const cardMap = new Map(p.items.map((i) => [i.noteId, i]));
+    // detail-only 批（单篇采集）也要落库：detailSchema 含全部卡片字段
+    const noteIds = new Set([...cardMap.keys(), ...detailMap.keys()]);
+    const ids: number[] = [];
+    for (const noteId of noteIds) {
+      const detail = detailMap.get(noteId);
+      const item = cardMap.get(noteId) ?? detail!;
       const values = {
         userId,
         noteId: item.noteId,
         type: item.type === "unknown" ? "image" : item.type,
         title: item.title,
-        content: detail?.content || content || item.title,
-        authorName: item.author.name,
-        authorId: item.author.id,
+        content: detail?.content || item.desc || item.title,
+        authorName: item.author.nickname,
+        authorId: item.author.userId,
         cover: item.cover,
-        images: (detail?.images?.length ? detail.images : [item.cover].filter(Boolean)).map((url) => ({ url })),
+        images: detail?.images?.length ? detail.images : [{ url: item.cover }].filter((i) => i.url),
         videoUrl: detail?.videoUrl ?? null,
         likes: item.likes,
         collects: item.collects,
         comments: item.comments,
         shares: item.shares,
         tags: detail?.tags ?? [],
-        commentsData: comments,
+        commentsData: detail?.commentsData ?? [],
         source: p.source,
-        sourceUrl: p.sourceUrl || item.url,
-        rawJson: p.raw ?? null,
+        sourceUrl: p.context?.pageUrl || item.url,
+        rawJson: null as any,
       };
       const [existing] = await deps.db
         .select({ id: collectedNotes.id })
@@ -140,19 +167,18 @@ export function extModule(deps: Deps) {
           .update(collectedNotes)
           .set({ ...values, savedAt: deps.now() })
           .where(eq(collectedNotes.id, existing.id));
+        ids.push(existing.id);
       } else {
-        await deps.db.insert(collectedNotes).values(values);
-        inserted++;
+        const [row] = await deps.db.insert(collectedNotes).values(values).returning({ id: collectedNotes.id });
+        ids.push(row!.id);
       }
     }
-    return c.json({ ok: true, received: p.items.length, inserted });
+    return c.json({ saved: ids.length, ids });
   });
 
-  /** 给某个账号拉一批 pending 且到期可发（或无调度）的任务，返回任务 + 草稿快照。 */
+  /** 该用户所有 pending 且到期的任务（含草稿全文），插件自行按托管账号认领执行。 */
   app.get("/publish/pending", async (c) => {
     const userId = c.get("userId");
-    const accountId = Number(c.req.query("accountId"));
-    if (!accountId) return c.json({ error: "accountId required" }, 400);
     const rows = await deps.db
       .select({ job: publishJobs, draft: drafts })
       .from(publishJobs)
@@ -160,7 +186,6 @@ export function extModule(deps: Deps) {
       .where(
         and(
           eq(publishJobs.userId, userId),
-          eq(publishJobs.accountId, accountId),
           eq(publishJobs.status, "pending"),
           or(isNull(publishJobs.scheduledAt), lt(publishJobs.scheduledAt, deps.now())),
         ),
@@ -169,10 +194,9 @@ export function extModule(deps: Deps) {
       .limit(10);
     return c.json({
       jobs: rows.map((r) => ({
-        id: r.job.id,
-        visibility: r.job.visibility,
+        ...r.job,
+        scheduledAt: r.job.scheduledAt?.getTime(),
         draft: {
-          id: r.draft.id,
           title: r.draft.title,
           content: r.draft.content,
           tags: r.draft.tags,
@@ -189,7 +213,7 @@ export function extModule(deps: Deps) {
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const [row] = await deps.db
       .update(publishJobs)
-      .set({ status: "running", claimedBy: `ext-${parsed.data.accountId}`, updatedAt: deps.now() })
+      .set({ status: "running", claimedBy: parsed.data.claimedBy, updatedAt: deps.now() })
       .where(
         and(eq(publishJobs.id, id), eq(publishJobs.userId, userId), eq(publishJobs.status, "pending")),
       )
@@ -207,7 +231,7 @@ export function extModule(deps: Deps) {
       .update(publishJobs)
       .set({
         status: parsed.data.status,
-        resultUrl: parsed.data.postUrl,
+        resultUrl: parsed.data.resultUrl,
         error: parsed.data.error,
         updatedAt: deps.now(),
       })

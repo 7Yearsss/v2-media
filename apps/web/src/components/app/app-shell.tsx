@@ -56,7 +56,7 @@ import {
   PopoverTrigger,
 } from "@/components/motion/popover";
 import { ThemeToggle } from "@/components/motion/theme-toggle";
-import { API_BASE, api, getToken } from "@/lib/api";
+import { api, getToken } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { bridge, useExtensionOnline } from "@/lib/bridge";
 import { JOB_STATUS_META } from "@/lib/format";
@@ -111,7 +111,8 @@ export function AppShell() {
       return;
     }
     try {
-      await bridge.setAuth({ apiBase: API_BASE, token });
+      // 插件校验 apiBase === 页面 origin，经 vite/同源代理访问 API
+      await bridge.setAuth({ apiBase: window.location.origin, token });
       toast.success("插件已授权", "扩展已拿到 API 地址与登录令牌");
     } catch (err) {
       toast.error(

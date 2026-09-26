@@ -1,4 +1,4 @@
-import { and, eq, gt, ilike, or } from "drizzle-orm";
+import { and, eq, gt, ilike, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { Deps } from "../context";
@@ -14,12 +14,14 @@ export function notesModule(deps: Deps) {
     const cursor = Number(c.req.query("cursor") ?? 0);
     const keyword = (c.req.query("keyword") ?? "").trim();
     const source = (c.req.query("source") ?? "").trim();
+    const tag = (c.req.query("tag") ?? "").trim();
     const conds = [eq(collectedNotes.userId, userId), gt(collectedNotes.id, cursor)];
     if (keyword) {
       const like = `%${keyword}%`;
       conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
     }
     if (source) conds.push(eq(collectedNotes.source, source));
+    if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
     const rows = await deps.db
       .select()
       .from(collectedNotes)

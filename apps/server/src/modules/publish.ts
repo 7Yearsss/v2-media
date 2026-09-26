@@ -15,17 +15,17 @@ const createSchema = z.object({
 export function publishModule(deps: Deps) {
   const app = new Hono<{ Variables: { userId: number } }>();
 
-  app.get("/", async (c) => {
+  app.get("/jobs", async (c) => {
     const rows = await deps.db
       .select()
       .from(publishJobs)
       .where(eq(publishJobs.userId, c.get("userId")))
       .orderBy(desc(publishJobs.id))
       .limit(200);
-    return c.json({ items: rows });
+    return c.json(rows);
   });
 
-  app.post("/", async (c) => {
+  app.post("/jobs", async (c) => {
     const userId = c.get("userId");
     const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
@@ -57,7 +57,7 @@ export function publishModule(deps: Deps) {
     return c.json(job);
   });
 
-  app.post("/:id/cancel", async (c) => {
+  app.post("/jobs/:id/cancel", async (c) => {
     const id = Number(c.req.param("id"));
     const [row] = await deps.db
       .update(publishJobs)
