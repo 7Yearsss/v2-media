@@ -664,15 +664,11 @@ chrome.runtime.onMessage.addListener(
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
       case "DEEP_COLLECT":
         // 总开关约束同样适用：停用期间不开任何隐藏标签页。
-        // 失败不回传错误：深度采集是尽力而为的补充通道
+        // 失败不回传错误：深度采集是尽力而为的补充通道；进顺序队列逐篇执行
         return reply(
-          getSettings()
-            .then((s) => {
-              if (!s.enabled) return { queued: false };
-              return collectByUrl(String(msg.url ?? ""))
-                .then(() => ({ queued: true }))
-                .catch(() => ({ queued: false }));
-            }),
+          getSettings().then((s) => ({
+            queued: s.enabled ? queueDeepCollect(String(msg.url ?? "")) : false,
+          })),
           sendResponse,
         );
       case "SITE_RUN_PUBLISH_JOB":
@@ -709,19 +705,48 @@ async function collectByUrl(url: string) {
     collectWaiters.set(noteId, resolve);
     setTimeout(() => {
       if (collectWaiters.delete(noteId)) {
-        resolve({ ok: false, error: "采集超时（页面 20s 内未回执）" });
+        resolve({ ok: false, error: "采集超时（页面 32s 内未回执）" });
       }
-    }, 25000);
+    }, 33000); // 目标页会等评论接口到齐（数据就绪后再等 8s）才回执，给足时间
   });
   const tab = await chrome.tabs.create({ url: target, active: false });
   const r = await done;
-  // 等评论接口多给 3s（COLLECT_URL_DONE 在详情入库时就回执，评论可能还在路上），
-  // 然后收掉隐藏标签页
+  // 小宽限后收掉隐藏标签页（回执已尽量等评论到齐；个别慢包仍可能差几秒）
   setTimeout(() => {
     if (tab.id) chrome.tabs.remove(tab.id).catch(() => {});
-  }, 3000);
+  }, 2000);
   if (!r.ok) throw new Error(r.error ?? "采集失败");
   return { collected: true, noteId: r.noteId };
+}
+
+// ---------- DEEP_COLLECT 顺序队列：一次只开一个隐藏页，避免批量并发开 tab ----------
+
+const deepQueue: string[] = [];
+const deepQueuedIds = new Set<string>();
+let deepPumping = false;
+
+function queueDeepCollect(url: string): boolean {
+  const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
+  if (deepQueuedIds.has(id) || deepQueue.length >= 30) return false;
+  deepQueuedIds.add(id);
+  deepQueue.push(url);
+  void pumpDeepQueue();
+  return true;
+}
+
+async function pumpDeepQueue() {
+  if (deepPumping) return;
+  deepPumping = true;
+  try {
+    while (deepQueue.length) {
+      const url = deepQueue.shift()!;
+      const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
+      await collectByUrl(url).catch(() => {}); // 尽力而为：单篇失败不阻塞队列
+      deepQueuedIds.delete(id);
+    }
+  } finally {
+    deepPumping = false;
+  }
 }
 
 // ---------- 图片下载（creator-publish 用，绕 CORS） ----------

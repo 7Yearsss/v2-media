@@ -200,6 +200,25 @@ if (isWww) {
   // 归因任务页（URL 带 __v2m_task=N）：嗅探到的笔记数据直接回传后台，不走采集入库
   const taskMarker = location.href.match(/__v2m_task=(\d+)/)?.[1];
 
+  // 详情补齐：对只有卡片的笔记后台拉详情页 HTML（SSR 里有 tags/正文/发布时间/
+  // 互动数/图集）。fetchDetail 成功会再发一条 EVT_NOTES（detail 批次），回到这里入缓存。
+  const detailRequested = new Set<string>();
+  function backfillDetails(items: NoteCard[]) {
+    for (const it of items) {
+      if (
+        detailRequested.has(it.noteId) ||
+        details.has(it.noteId) ||
+        uploadedDetails.has(it.noteId) ||
+        !it.url
+      )
+        continue;
+      detailRequested.add(it.noteId);
+      void mainRequest<CachedNote>("fetchDetail", { url: it.url }, 15_000).catch(
+        () => detailRequested.delete(it.noteId), // 失败放行：下次事件可再试
+      );
+    }
+  }
+
   document.addEventListener(EVT_NOTES, (ev) => {
     if (!cfg.enabled) return; // 总开关关：不动
     const batch = (ev as CustomEvent<CollectBatch>).detail;
@@ -232,7 +251,10 @@ if (isWww) {
     }
     for (const d of batch.details ?? []) details.set(d.noteId, d);
     refreshCount();
-    if (cfg.autoCollect) queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
+    if (cfg.autoCollect) {
+      backfillDetails(batch.items); // 自动采集也补齐详情（只多发一次页面 fetch，不开页）
+      queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
+    }
     scheduleScan();
   });
 
@@ -409,10 +431,10 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
-      // 深度采集：开隐藏标签页进详情页，让页面自己发评论接口被嗅探。
+      // 手动点采集 = 明确要这篇，始终深度补评论：后台排队开隐藏标签页进详情页，
+      // 让页面自己发签名评论接口被嗅探（隐藏页会等评论到齐再回执）。
       // collectFlag 页本身就在详情页、不再套娃触发。
       if (
-        cfg.deepCollect &&
         !collectFlag &&
         !commentsMap.get(noteId)?.length &&
         (card?.url || detail?.url)
@@ -443,6 +465,16 @@ if (isWww) {
       ).catch(() => ({ cards: [], details: [] }));
       for (const c of res.cards) cards.set(c.noteId, c);
       for (const d of res.details) details.set(d.noteId, d);
+      // 先把缺详情的卡片补齐（正文/图集/tags/互动数）再上报 —— 4 并发拉详情页 HTML，
+      // fetchDetail 成功发出的 EVT_NOTES 会把详情写进 details 缓存
+      const missing = [...cards.values()].filter((c) => !details.has(c.noteId) && c.url);
+      for (let i = 0; i < missing.length; i += 4) {
+        await Promise.all(
+          missing.slice(i, i + 4).map((c) =>
+            mainRequest<CachedNote>("fetchDetail", { url: c.url }, 15_000).catch(() => null),
+          ),
+        );
+      }
       refreshCount();
       const items = [...cards.values()];
       const dets = [...details.values()];
@@ -477,6 +509,17 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
+      // 深度采集开：给还没有评论的笔记排队开隐藏页补评论（背景顺序执行）
+      if (cfg.deepCollect) {
+        let queued = 0;
+        for (const n of [...items, ...dets]) {
+          const url = n.url;
+          if (!url || commentsMap.get(n.noteId)?.length) continue;
+          void sendToBackground({ type: "DEEP_COLLECT", url }).catch(() => {});
+          queued++;
+        }
+        if (queued) toast(`深度补评论已排队 ${queued} 篇（较慢，后台进行）`);
+      }
     } catch (e) {
       toast(`入库失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);
     } finally {
@@ -545,6 +588,7 @@ if (isWww) {
       void sendToBackground({ type: "COLLECT_URL_DONE", ok, noteId: noteId ?? undefined, error });
     };
     const started = Date.now();
+    let dataSince: number | undefined; // 数据就绪时刻：评论再等最多 8s
     const tick = async () => {
       if (done) return;
       cfg = await getSettings(); // 同步 cfg 可能还没加载，这里每次拿最新的
@@ -553,8 +597,15 @@ if (isWww) {
         return;
       }
       if (noteId && (cards.has(noteId) || details.has(noteId))) {
-        finish(await collectOne(noteId));
-        return;
+        dataSince ??= Date.now();
+        // 等评论接口回来再收：评论随 collectOne 一起上传，不靠事后补传竞态
+        if (
+          (commentsMap.get(noteId)?.length ?? 0) > 0 ||
+          Date.now() - dataSince > 8000
+        ) {
+          finish(await collectOne(noteId));
+          return;
+        }
       }
       // 还没嗅探到：催 main world 重扫 __INITIAL_STATE__，再等嗅探响应
       await mainRequest("reparseInitialState").catch(() => undefined);
