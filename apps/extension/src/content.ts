@@ -119,7 +119,7 @@ if (isWww) {
     const batch: CollectBatch = {
       source,
       context,
-      collectionId: cfg.collectionId ?? undefined,
+      collectionId: cfg.collectionId ?? null,
       items,
       details: dets.length ? dets : undefined,
     };
@@ -286,7 +286,7 @@ if (isWww) {
     const batch: CollectBatch = {
       source: detail ? "detail" : card?.source ?? "detail",
       context: { pageUrl: location.href },
-      collectionId: cfg.collectionId ?? undefined,
+      collectionId: cfg.collectionId ?? null,
       items: card ? [card] : [],
       details: detailWithComments ? [detailWithComments] : undefined,
     };
@@ -327,7 +327,7 @@ if (isWww) {
       const batch: CollectBatch = {
         source: majority as CollectBatch["source"],
         context: { pageUrl: location.href },
-        collectionId: cfg.collectionId ?? undefined,
+        collectionId: cfg.collectionId ?? null,
         items,
         details: dets.length ? dets : undefined,
       };

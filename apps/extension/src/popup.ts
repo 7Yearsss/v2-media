@@ -50,8 +50,8 @@ async function render() {
     const s = await getSettings();
     const res = await sendToBackground<{ items?: { id: number; name: string }[] }>({
       type: "LIST_COLLECTIONS",
-    }).catch(() => ({ items: [] }));
-    const items = res.items ?? [];
+    }).catch(() => null);
+    const items = res?.items ?? [];
     colSel!.innerHTML = "";
     const add = (v: string, label: string) => {
       const o = document.createElement("option");
@@ -60,14 +60,21 @@ async function render() {
       colSel!.append(o);
     };
     add("", "不分组");
+    // 列表拉取失败时保住已选库：临时加一个占位项，等下次打开再核对
+    if (res === null && s.collectionId != null) {
+      add(String(s.collectionId), `已选库 #${s.collectionId}`);
+    }
     for (const c of items) add(String(c.id), c.name);
     add(NEW_OPT, "＋ 新建库…");
-    // 已选的库被删了就回退到不分组
-    const cur = s.collectionId != null && items.some((c) => c.id === s.collectionId)
-      ? String(s.collectionId)
-      : "";
+    // 列表拉到了才核对：已选的库被删了就回退到不分组；没拉到（res=null）不清
+    const cur =
+      res !== null && s.collectionId != null && !items.some((c) => c.id === s.collectionId)
+        ? ""
+        : String(s.collectionId ?? "");
     colSel!.value = cur;
-    if (cur === "" && s.collectionId != null) void setSettings({ collectionId: null });
+    if (res !== null && cur === "" && s.collectionId != null)
+      void setSettings({ collectionId: null });
+    if (res === null) statusEl!.textContent = "采集库列表加载失败（选择已保留，稍后再试）";
   }
   colSel.onchange = async () => {
     if (colSel!.value === NEW_OPT) {

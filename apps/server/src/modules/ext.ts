@@ -65,7 +65,7 @@ const collectSchema = z.object({
       pageUrl: z.string().optional(),
     })
     .optional(),
-  collectionId: z.number().int().positive().optional(),
+  collectionId: z.number().int().positive().nullish(),
   items: z.array(cardSchema),
   details: z.array(detailSchema).optional(),
 });
@@ -132,9 +132,10 @@ export function extModule(deps: Deps) {
     const parsed = collectSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const p = parsed.data;
-    // collectionId 必须是当前用户的库，越权/不存在一律 400
+    // collectionId 三态：undefined=老客户端不动分组；null=显式不分组；number=归库（校验归属）
+    const hasCollection = p.collectionId !== undefined;
     let collectionId: number | null = null;
-    if (p.collectionId != null) {
+    if (hasCollection && p.collectionId != null) {
       const [col] = await deps.db
         .select({ id: collections.id })
         .from(collections)
@@ -153,7 +154,8 @@ export function extModule(deps: Deps) {
       const item = cardMap.get(noteId) ?? detail!;
       const values = {
         userId,
-        collectionId,
+        // 未显式传（老客户端）时新行也不分组
+        collectionId: collectionId,
         noteId: item.noteId,
         type: item.type === "unknown" ? "image" : item.type,
         title: item.title,
@@ -199,8 +201,12 @@ export function extModule(deps: Deps) {
             };
         await deps.db
           .update(collectedNotes)
-          // collectionId 仅在显式指定时覆盖（重采到新库 = 移库；不带则不动原分组）
-          .set({ ...merged, savedAt: deps.now(), ...(collectionId != null ? { collectionId } : {}) })
+          // collectionId 显式传了才改分组（含 null=移回未分组）；缺省不动原分组
+          .set({
+            ...merged,
+            savedAt: deps.now(),
+            ...(hasCollection ? { collectionId } : {}),
+          })
           .where(eq(collectedNotes.id, existing.id));
         ids.push(existing.id);
       } else {

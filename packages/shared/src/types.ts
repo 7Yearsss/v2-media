@@ -66,8 +66,8 @@ export interface CollectBatch {
   source: CollectSource;
   /** 页面上下文信息：搜索词 / 作者主页等。 */
   context?: { keyword?: string; authorId?: string; pageUrl?: string };
-  /** 目标采集库 id；缺省 = 不分组进总池。 */
-  collectionId?: number;
+  /** 目标采集库 id：number=该库；null=显式不分组；缺省=老客户端不动原分组。 */
+  collectionId?: number | null;
   items: NoteCard[];
   /** 详情页采集时附带的完整正文。 */
   details?: NoteDetail[];
