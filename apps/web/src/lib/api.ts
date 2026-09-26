@@ -11,6 +11,7 @@ import type {
   AuthResponse,
   CollectedNote,
   Collection,
+  CollectionAnalysis,
   Draft,
   DraftCreateRequest,
   DraftUpdateRequest,
@@ -279,6 +280,12 @@ export const api = {
     request<Collection>(`/api/collections/${id}`, { method: "PATCH", body: { name } }),
   deleteCollection: (id: number) =>
     request<void>(`/api/collections/${id}`, { method: "DELETE" }),
+  analyzeCollection: (id: number) =>
+    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST" }),
+  collectionAnalyses: (id: number) =>
+    request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`),
+  collectionAnalysis: (id: number, aid: number) =>
+    request<CollectionAnalysis>(`/api/collections/${id}/analyses/${aid}`),
 
   note: (id: number) => request<NoteDetail>(`/api/notes/${id}`),
   deleteNote: (id: number) =>

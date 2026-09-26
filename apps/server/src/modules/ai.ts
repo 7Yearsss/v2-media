@@ -19,6 +19,8 @@ export function createOpenAiClient(
       if (!env.aiBaseUrl || !env.aiApiKey) throw new Error("AI not configured (AI_BASE_URL/AI_API_KEY)");
       const res = await fetchFn(`${env.aiBaseUrl}/chat/completions`, {
         method: "POST",
+        // 网关不响应时不能挂死请求（分析/改写都走这里）
+        signal: AbortSignal.timeout(env.aiTimeoutMs),
         headers: {
           Authorization: `Bearer ${env.aiApiKey}`,
           "Content-Type": "application/json",

@@ -29,6 +29,45 @@ export const collections = pgTable("collections", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/** AI 分析结果：对某个采集库的一轮分析快照（库被删时随库删除）。 */
+export const collectionAnalyses = pgTable("collection_analyses", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  collectionId: integer("collection_id").notNull().references(() => collections.id, { onDelete: "cascade" }),
+  noteCount: integer("note_count").notNull().default(0),
+  /** 结构化分析：{stats: 服务端算的确定性统计, insight: AI 产出的 JSON 洞察}。 */
+  data: jsonb("data").$type<{
+    stats: {
+      totalNotes: number;
+      totalLikes: number;
+      totalCollects: number;
+      totalComments: number;
+      totalShares: number;
+      avgEngagement: number;
+      topNotes: Array<{
+        noteId: string;
+        title: string;
+        likes: number;
+        collects: number;
+        comments: number;
+        shares: number;
+        engagement: number;
+      }>;
+      topTags: Array<{ tag: string; count: number }>;
+    };
+    insight: {
+      summary: string;
+      topNotes: Array<{ title: string; why: string }>;
+      patterns: string[];
+      opportunities: string[];
+      actions: string[];
+    } | null;
+  }>().notNull(),
+  /** AI 原始文本（JSON 解析失败时的兜底展示）。 */
+  report: text("report").notNull().default(""),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const collectedNotes = pgTable("collected_notes", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),

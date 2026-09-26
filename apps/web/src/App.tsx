@@ -9,6 +9,7 @@ import { AppShell } from "@/components/app/app-shell";
 import { NotFoundSpotlight } from "@/components/motion/not-found";
 import { useAuth } from "@/lib/auth";
 import AccountsPage from "@/pages/accounts";
+import AnalysisPage from "@/pages/analysis";
 import DashboardPage from "@/pages/dashboard";
 import DraftsPage from "@/pages/drafts";
 import ExtensionPage from "@/pages/extension";
@@ -38,6 +39,7 @@ export default function App() {
       >
         <Route index element={<DashboardPage />} />
         <Route path="library" element={<LibraryPage />} />
+        <Route path="analysis" element={<AnalysisPage />} />
         <Route path="drafts" element={<DraftsPage />} />
         <Route path="drafts/:id" element={<DraftsPage />} />
         <Route path="accounts" element={<AccountsPage />} />

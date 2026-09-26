@@ -107,6 +107,43 @@ describe("collect + notes", () => {
     expect(after.items[0].collectionId).toBeNull();
   });
 
+  it("collection analyze: AI 报告落库 + 越权 404 + 空库 400", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const col = (await (await app.request("/api/collections", authed(token, {
+      method: "POST", body: JSON.stringify({ name: "健身" }),
+    }))).json()) as any;
+    // 空库 → 400
+    expect((await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).status).toBe(400);
+    // 采两篇再分析
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        collectionId: col.id,
+        items: [
+          { noteId: "a1", title: "燃脂训练", author: {}, cover: "", likes: 9000, comments: 300 },
+          { noteId: "a2", title: "增肌餐", author: {}, cover: "", likes: 50 },
+        ],
+      }),
+    }));
+    const ana = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    expect(ana.noteCount).toBe(2);
+    expect(ana.report.length).toBeGreaterThan(0);
+    // 结构化统计：topNotes 按互动排序、total 正确
+    expect(ana.data.stats.totalNotes).toBe(2);
+    expect(ana.data.stats.topNotes[0].title).toBe("燃脂训练");
+    expect(ana.data.stats.totalLikes).toBe(9050);
+    // 历史列表 + 详情
+    const hist = (await (await app.request(`/api/collections/${col.id}/analyses`, authed(token))).json()) as any;
+    expect(hist.items).toHaveLength(1);
+    const detail = (await (await app.request(`/api/collections/${col.id}/analyses/${ana.id}`, authed(token))).json()) as any;
+    expect(detail.report).toBe(ana.report);
+    // 别人的库/报告 → 404
+    const { token: t2 } = await registerUser(app, "other@x.yz");
+    expect((await app.request(`/api/collections/${col.id}/analyze`, authed(t2, { method: "POST" }))).status).toBe(404);
+    expect((await app.request(`/api/collections/${col.id}/analyses`, authed(t2))).status).toBe(404);
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");

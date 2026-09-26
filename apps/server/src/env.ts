@@ -4,6 +4,8 @@ export const env = {
   aiBaseUrl: (process.env.AI_BASE_URL ?? "").replace(/\/$/, ""),
   aiApiKey: process.env.AI_API_KEY ?? "",
   aiModel: process.env.AI_MODEL ?? "gpt-4o-mini",
+  /** AI 网关单次请求超时（毫秒），网关不响应时防挂死。 */
+  aiTimeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 120_000),
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
   authSecret: process.env.AUTH_SECRET ?? "dev-only-secret",
   dataDir: process.env.DATA_DIR ?? new URL("../data", import.meta.url).pathname,

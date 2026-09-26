@@ -55,6 +55,17 @@ ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS collection_id integer;
 ALTER TABLE collected_notes DROP CONSTRAINT IF EXISTS collected_notes_collection_id_fkey;
 ALTER TABLE collected_notes ADD CONSTRAINT collected_notes_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS collected_notes_user_note ON collected_notes(user_id, note_id);
+CREATE TABLE IF NOT EXISTS collection_analyses (
+  id serial PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id),
+  collection_id integer NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  note_count integer NOT NULL DEFAULT 0,
+  data jsonb NOT NULL DEFAULT '{}',
+  report text NOT NULL DEFAULT '',
+  created_at timestamp DEFAULT now() NOT NULL
+);
+ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS data jsonb NOT NULL DEFAULT '{}';
+CREATE INDEX IF NOT EXISTS collection_analyses_col ON collection_analyses(user_id, collection_id);
 CREATE TABLE IF NOT EXISTS drafts (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users(id),
