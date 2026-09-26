@@ -107,7 +107,16 @@ export type PublishJobPayload = PendingPublishJobsResponse["jobs"][number];
 export type BgMessage =
   | { type: "EXT_COLLECT"; batch: CollectBatch }
   | { type: "GET_STATUS" }
-  | { type: "COLLECT_URL_DONE"; ok: boolean; noteId?: string; error?: string }
+  | {
+      type: "COLLECT_URL_DONE";
+      ok: boolean;
+      noteId?: string;
+      error?: string;
+      detailCaptured?: boolean;
+      commentsCaptured?: boolean;
+      imageCount?: number;
+    }
+  | { type: "COLLECT_URL_CHALLENGE"; noteId?: string }
   // 深度采集：后台开隐藏标签页进详情，嗅探评论接口后自动关闭
   | { type: "DEEP_COLLECT"; url: string }
   | { type: "GET_LOGIN_STATE" } // bg -> xhs content script
