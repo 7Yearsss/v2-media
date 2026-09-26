@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import type { Deps } from "../context";
 import { collectedNotes, drafts, hostedAccounts, publishJobs } from "../db/schema";
+import { persistCollectedMedia, publicBase } from "../lib/media-store";
 
 const heartbeatSchema = z.object({
   accounts: z.array(
@@ -193,6 +194,8 @@ export function extModule(deps: Deps) {
         ids.push(row!.id);
       }
     }
+    // 后台把 xhscdn 图转存 R2 并回写（不占采集响应时间；失败降级保留原图床链接）
+    void persistCollectedMedia(deps, ids, publicBase(c.req.url)).catch(() => {});
     return c.json({ saved: ids.length, ids });
   });
 

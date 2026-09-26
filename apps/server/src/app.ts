@@ -22,6 +22,9 @@ export function createApp(deps: Deps) {
 
   app.route("/api/auth", authModule(deps));
 
+  // 媒体代理/R2 对象要能被 <img> 直接拉取，挂在没有 Bearer 鉴权的区域
+  app.route("/api/media", mediaModule(deps));
+
   const secured = new Hono<{ Variables: { userId: number } }>();
   secured.use("*", authMiddleware);
   secured.route("/accounts", accountsModule(deps));
@@ -31,7 +34,6 @@ export function createApp(deps: Deps) {
   secured.route("/publish", publishModule(deps));
   secured.route("/overview", overviewModule(deps));
   secured.route("/ext", extModule(deps));
-  secured.route("/media", mediaModule());
   app.route("/api", secured);
 
   // 生产模式：直接托管 apps/web/dist（单进程部署，nginx 反代一个端口即可）

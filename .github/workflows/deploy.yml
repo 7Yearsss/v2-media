@@ -28,6 +28,8 @@ jobs:
           npm run typecheck
           npm test -w @v2media/server
           npm run build -w @v2media/web
+          # 生产插件打包成 zip 供站内下载（须在 web build 后跑）
+          bash scripts/package-extension.sh
 
       - name: Set up SSH
         run: |

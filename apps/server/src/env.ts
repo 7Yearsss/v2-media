@@ -7,4 +7,11 @@ export const env = {
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
   authSecret: process.env.AUTH_SECRET ?? "dev-only-secret",
   dataDir: process.env.DATA_DIR ?? new URL("../data", import.meta.url).pathname,
+  // R2（S3 兼容）媒体转存；四个变量任一缺失则停用，图片继续走 /api/media/proxy
+  r2Endpoint: (process.env.R2_ENDPOINT ?? "").replace(/\/$/, ""),
+  r2Bucket: process.env.R2_BUCKET ?? "",
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+  // 对外可达的站点地址（生成给插件用的绝对媒体 URL）；空则用请求 origin
+  publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
 };

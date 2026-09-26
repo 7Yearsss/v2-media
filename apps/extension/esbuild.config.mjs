@@ -43,7 +43,13 @@ await build({
 cpSync("static", "dist", { recursive: true });
 const manifest = JSON.parse(readFileSync("static/manifest.json", "utf8"));
 const patterns = origins.map((o) => `${o}/*`);
-manifest.host_permissions.push(...patterns, ...apiOrigins.map((o) => `${o}/*`));
+manifest.host_permissions = [
+  ...new Set([
+    ...manifest.host_permissions,
+    ...patterns,
+    ...apiOrigins.map((o) => `${o}/*`),
+  ]),
+];
 manifest.content_scripts.find((cs) => cs.js.includes("site-bridge.js")).matches = patterns;
 writeFileSync("dist/manifest.json", JSON.stringify(manifest, null, 2));
 console.log(`extension built -> dist/ (app origins: ${origins.join(", ")})`);
