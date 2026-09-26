@@ -158,7 +158,8 @@ export function extModule(deps: Deps) {
         collectionId: collectionId,
         noteId: item.noteId,
         type: item.type === "unknown" ? "image" : item.type,
-        title: item.title,
+        // 卡片有时拿不到标题（广告/视频卡），用正文前 30 字兜底，免得榜单里出现空标题
+        title: item.title || (detail?.content || item.desc || "").slice(0, 30) || "(无标题)",
         content: detail?.content || item.desc || item.title,
         authorName: item.author.nickname,
         authorId: item.author.userId,
@@ -190,9 +191,10 @@ export function extModule(deps: Deps) {
       if (existing) {
         // 纯卡片批次不覆盖详情级字段（正文/图集/视频/标签/评论），已入库的值一律优先
         const merged = detail
-          ? values
+          ? { ...values, title: values.title === "(无标题)" ? existing.title : values.title }
           : {
               ...values,
+              title: existing.title || values.title,
               content: existing.content || values.content,
               images: existing.images.length ? existing.images : values.images,
               videoUrl: existing.videoUrl ?? values.videoUrl,

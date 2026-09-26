@@ -81,6 +81,8 @@ export interface CollectionAnalysisStats {
   }>;
   /** 高频标签 top。 */
   topTags: Array<{ tag: string; count: number }>;
+  /** 数据覆盖：多少篇带完整互动字段（feed 卡片只有赞，详情页才有藏/评/转）。 */
+  coverage?: { withFullMetrics: number; total: number };
 }
 
 /** AI 对库内内容产出的结构化洞察（JSON 解析失败时为 null，看 report）。 */

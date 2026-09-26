@@ -10,10 +10,12 @@ const ANALYZE_LIMIT = 40;
 
 const ANALYSIS_SYSTEM =
   "你是资深小红书运营分析师。输入是一个采集库里的笔记列表（标题/互动数据/标签/正文节选）。" +
+  "要求：每条结论必须引用库里的具体笔记标题或数字，禁止空话套话；" +
+  "如果收藏/评论/分享字段都是 0，要在 summary 里点明该库只有曝光数据、无法判断转化。" +
   "只输出一个 JSON 对象（不要 markdown 围栏、不要多余文字），结构：" +
-  '{"summary":"一句话结论","topNotes":[{"title":"笔记标题","why":"它火的原因（一句话）"}],' +
-  '"patterns":["爆款共性规律 2-4 条"],"opportunities":["还没吃透的机会点 1-3 条"],' +
-  '"actions":["可执行建议 3 条，具体到选题和标题写法"]}';
+  '{"summary":"一句话结论（必须含具体数据）","topNotes":[{"title":"笔记标题","why":"它火的原因（引用其具体数据/标题特征）"}],' +
+  '"patterns":["爆款共性规律 2-4 条，每条点名对应哪几篇"],"opportunities":["还没吃透的机会点 1-3 条"],' +
+  '"actions":["可执行建议 3 条，各给出一个可直接用的完整标题"]}';
 
 /** 从模型输出里抠出 JSON 洞察；失败返回 null（原文进 report 兜底）。 */
 function parseInsight(text: string) {
@@ -184,6 +186,11 @@ export function collectionsModule(deps: Deps) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10)
         .map(([tag, cnt]) => ({ tag, count: cnt })),
+      // 数据覆盖：feed 卡片只有赞，藏/评/转要详情页才有 —— 前端据此提示数据厚度
+      coverage: {
+        withFullMetrics: notes.filter((n) => n.collects > 0 || n.comments > 0 || n.shares > 0).length,
+        total: notes.length,
+      },
     };
 
     const payload = notes
