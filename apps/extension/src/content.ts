@@ -218,12 +218,24 @@ if (isWww) {
     const d = (ev as CustomEvent<CommentsEventDetail>).detail;
     if (!d?.noteId) return;
     commentsMap.set(d.noteId, d.comments);
-    // 评论晚于详情到达：把评论合进详情重传一次（服务端按 noteId upsert，
-    // comments_data 只在非空时覆盖）。绕开 uploadedDetails 去重 —— 这是补充更新。
+    // 缓存里的详情同步带上评论：后续任何详情重传都不会丢评论
     const det = details.get(d.noteId);
-    if (det && !pendingDetails.has(d.noteId)) {
+    if (det) details.set(d.noteId, { ...det, commentsData: d.comments } as NoteDetail);
+    // 只补「已经采过」的笔记（手动采集过 / 自动模式已入库）：关自动采集时
+    // 逛详情页不应产生上传。评论仍进 commentsMap，下次手动采集会带上。
+    const collected =
+      cfg.autoCollect || uploadedCards.has(d.noteId) || uploadedDetails.has(d.noteId);
+    if (!collected) return;
+    // 已排队的详情要就地合并评论（不能跳过，否则 flush 出去的是无评论版本）
+    const pending = pendingDetails.get(d.noteId);
+    if (pending) {
+      pending.data = { ...pending.data, commentsData: d.comments } as NoteDetail;
+      return;
+    }
+    const det2 = details.get(d.noteId);
+    if (det2) {
       pendingDetails.set(d.noteId, {
-        data: { ...det, commentsData: d.comments } as NoteDetail,
+        data: det2,
         colId: cfg.collectionId ?? null,
       });
       if (flushTimer) clearTimeout(flushTimer);

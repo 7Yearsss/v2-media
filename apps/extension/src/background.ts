@@ -472,11 +472,16 @@ chrome.runtime.onMessage.addListener(
       case "SITE_COLLECT_URL":
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
       case "DEEP_COLLECT":
+        // 总开关约束同样适用：停用期间不开任何隐藏标签页。
         // 失败不回传错误：深度采集是尽力而为的补充通道
         return reply(
-          collectByUrl(String(msg.url ?? ""))
-            .then(() => ({ queued: true }))
-            .catch(() => ({ queued: false })),
+          getSettings()
+            .then((s) => {
+              if (!s.enabled) return { queued: false };
+              return collectByUrl(String(msg.url ?? ""))
+                .then(() => ({ queued: true }))
+                .catch(() => ({ queued: false }));
+            }),
           sendResponse,
         );
       case "SITE_RUN_PUBLISH_JOB":

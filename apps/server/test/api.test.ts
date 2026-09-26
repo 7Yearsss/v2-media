@@ -200,6 +200,25 @@ describe("collect + notes", () => {
     expect(new Date(n.publishedAt).getTime()).toBe(1700000000000);
   });
 
+  it("评论落库后，无评论的详情重传不清空 commentsData", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const collect = (details: unknown[]) =>
+      app.request("/api/ext/collect", authed(token, {
+        method: "POST",
+        body: JSON.stringify({ source: "detail", items: [], details }),
+      }));
+    // 先落一篇带评论的详情，再重传同 noteId 的无评论详情（嗅探时机丢评论的场景）
+    await collect([{
+      noteId: "c1", title: "带评论", author: {}, cover: "c",
+      commentsData: [{ commentId: "k1", userName: "薯友", content: "求链接", likes: 9 }],
+    }]);
+    await collect([{ noteId: "c1", title: "带评论", author: {}, cover: "c" }]);
+    const notes = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    expect(notes.items).toHaveLength(1);
+    expect(notes.items[0].commentsData?.[0]?.content).toBe("求链接");
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");

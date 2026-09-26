@@ -381,7 +381,13 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
   }
 
   async function fetchDetailFromHtml(url: string): Promise<NoteDetail | null> {
-    if (!url) return null;
+    // EVT_REQ 谁都能 dispatch（页面脚本也行）：只允许拉本站笔记详情地址
+    if (
+      !/^https:\/\/(www\.)?xiaohongshu\.com\/(explore|search_result|discovery\/item)\/[0-9a-f]{24}/i.test(
+        url,
+      )
+    )
+      return null;
     const res = await fetch(url, { credentials: "include" }).catch(() => null);
     if (!res?.ok) return null;
     const state = initialStateFromHtml(await res.text());
