@@ -719,6 +719,13 @@ chrome.runtime.onMessage.addListener(
           })),
           sendResponse,
         );
+      case "DEEP_COLLECT_CANCEL":
+        // 列表页弹窗已采到评论：删掉队列里同笔记的兜底隐藏页任务，
+        // 防止残留项被 SW 反复重放成验证码死页
+        return reply(
+          cancelDeepCollect(String(msg.noteId ?? "")).then((removed) => ({ removed })),
+          sendResponse,
+        );
       case "SITE_RUN_PUBLISH_JOB":
         return reply(runPublishJobById(Number(msg.jobId)), sendResponse);
 
@@ -938,6 +945,20 @@ async function loadDeepQueue() {
       }
     }
   }
+}
+
+async function cancelDeepCollect(noteId: string): Promise<number> {
+  if (!noteId) return 0;
+  await loadDeepQueue();
+  const before = deepQueue.length;
+  deepQueue = deepQueue.filter((u) => {
+    const id = u.match(/([0-9a-f]{24})/)?.[1] ?? u;
+    return id !== noteId;
+  });
+  deepQueuedIds.delete(noteId);
+  deepAttempts.delete(noteId);
+  if (deepQueue.length !== before) await persistDeepQueue();
+  return before - deepQueue.length;
 }
 
 function queueDeepCollect(url: string): boolean {

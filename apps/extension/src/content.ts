@@ -674,9 +674,11 @@ if (isWww) {
         !commentsMap.get(noteId)?.length &&
         (card?.url || detail?.url)
       ) {
-        const url = card?.url || detail!.url;
+        const url = detail?.url || card!.url; // 详情 URL 带 xsec_token，兜底隐藏页也更不容易被 302
         void deepCollectInline(noteId).then(async (got) => {
           if (got) {
+            // 弹窗已采到评论：取消队列里同笔记的兜底隐藏页任务（防 SW 重放死页）
+            void sendToBackground({ type: "DEEP_COLLECT_CANCEL", noteId }).catch(() => {});
             await collectOne(noteId); // 重传一次带评论明细的详情
           } else {
             void sendToBackground({ type: "DEEP_COLLECT", url }).catch(() => {});
@@ -769,6 +771,7 @@ if (isWww) {
             const got = await deepCollectInline(n.noteId);
             if (got) {
               inline++;
+              void sendToBackground({ type: "DEEP_COLLECT_CANCEL", noteId: n.noteId }).catch(() => {});
               const d = details.get(n.noteId);
               const late = commentsMap.get(n.noteId);
               if (d && late?.length) {
