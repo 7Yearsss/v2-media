@@ -213,9 +213,11 @@ if (isWww) {
       )
         continue;
       detailRequested.add(it.noteId);
-      void mainRequest<CachedNote>("fetchDetail", { url: it.url }, 15_000).catch(
-        () => detailRequested.delete(it.noteId), // 失败放行：下次事件可再试
-      );
+      void mainRequest<CachedNote>("fetchDetail", { url: it.url }, 15_000)
+        .then((r) => {
+          if (!r?.detail) detailRequested.delete(it.noteId); // 解析不到详情也放行重试
+        })
+        .catch(() => detailRequested.delete(it.noteId)); // 失败放行：下次事件可再试
     }
   }
 
@@ -249,7 +251,28 @@ if (isWww) {
         cards.set(it.noteId, it);
       }
     }
-    for (const d of batch.details ?? []) details.set(d.noteId, d);
+    for (const d of batch.details ?? []) {
+      // 评论可能先于详情到（隐藏页/详情浏览）：合并进缓存，后续上传带上
+      const cms = commentsMap.get(d.noteId);
+      details.set(
+        d.noteId,
+        (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail,
+      );
+      // 手动模式下，晚到的详情对已采卡片做补传（autoCollect 走 queueUpload 已覆盖）
+      if (
+        !cfg.autoCollect &&
+        !collectFlag &&
+        !uploadedDetails.has(d.noteId) &&
+        uploadedCards.has(d.noteId)
+      ) {
+        pendingDetails.set(d.noteId, {
+          data: details.get(d.noteId)!,
+          colId: cfg.collectionId ?? null,
+        });
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
+    }
     refreshCount();
     if (cfg.autoCollect) {
       backfillDetails(batch.items); // 自动采集也补齐详情（只多发一次页面 fetch，不开页）
@@ -465,15 +488,22 @@ if (isWww) {
       ).catch(() => ({ cards: [], details: [] }));
       for (const c of res.cards) cards.set(c.noteId, c);
       for (const d of res.details) details.set(d.noteId, d);
-      // 先把缺详情的卡片补齐（正文/图集/tags/互动数）再上报 —— 4 并发拉详情页 HTML，
-      // fetchDetail 成功发出的 EVT_NOTES 会把详情写进 details 缓存
+      // 先把缺详情的卡片补齐（正文/图集/tags/互动数）再上报 —— 4 并发拉详情页 HTML；
+      // 有整体 15s 上限，避免超时请求把上传拖住（晚到的详情走补传通道）
       const missing = [...cards.values()].filter((c) => !details.has(c.noteId) && c.url);
-      for (let i = 0; i < missing.length; i += 4) {
-        await Promise.all(
-          missing.slice(i, i + 4).map((c) =>
-            mainRequest<CachedNote>("fetchDetail", { url: c.url }, 15_000).catch(() => null),
+      const deadline = Date.now() + 15_000;
+      for (let i = 0; i < missing.length && Date.now() < deadline; i += 4) {
+        await Promise.race([
+          Promise.all(
+            missing.slice(i, i + 4).map((c) => {
+              detailRequested.add(c.noteId);
+              return mainRequest<CachedNote>("fetchDetail", { url: c.url }, 15_000).catch(
+                () => null,
+              );
+            }),
           ),
-        );
+          new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now()))),
+        ]);
       }
       refreshCount();
       const items = [...cards.values()];
@@ -509,14 +539,18 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
-      // 深度采集开：给还没有评论的笔记排队开隐藏页补评论（背景顺序执行）
+      // 深度采集开：给还没有评论的笔记排队开隐藏页补评论（背景顺序执行）；
+      // 逐条等回执计数，队列满了被拒的不会算进去
       if (cfg.deepCollect) {
         let queued = 0;
         for (const n of [...items, ...dets]) {
           const url = n.url;
           if (!url || commentsMap.get(n.noteId)?.length) continue;
-          void sendToBackground({ type: "DEEP_COLLECT", url }).catch(() => {});
-          queued++;
+          const r = await sendToBackground<{ queued?: boolean }>({
+            type: "DEEP_COLLECT",
+            url,
+          }).catch(() => null);
+          if (r?.queued) queued++;
         }
         if (queued) toast(`深度补评论已排队 ${queued} 篇（较慢，后台进行）`);
       }

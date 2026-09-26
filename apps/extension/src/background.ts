@@ -622,6 +622,10 @@ chrome.runtime.onMessage.addListener(
         if (resolve) {
           collectWaiters.delete(msg.noteId ?? "");
           resolve({ ok: msg.ok, noteId: msg.noteId, error: msg.error });
+        } else if (sender.tab?.id) {
+          // SW 重启把 waiter 丢了：采集页自己上传已完成，顺手收掉这个孤儿隐藏页
+          const tabId = sender.tab.id;
+          setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 1000);
         }
         sendResponse({ ok: true });
         return false;
@@ -720,16 +724,41 @@ async function collectByUrl(url: string) {
 }
 
 // ---------- DEEP_COLLECT 顺序队列：一次只开一个隐藏页，避免批量并发开 tab ----------
+// 队列持久化在 storage.session：SW 挂起/重启后可恢复续跑；重启浏览器则丢弃（可接受）
 
-const deepQueue: string[] = [];
+const DEEP_Q_KEY = "deepQueue";
+let deepQueue: string[] = [];
 const deepQueuedIds = new Set<string>();
 let deepPumping = false;
+let deepQueueLoaded = false;
+
+async function persistDeepQueue() {
+  await chrome.storage.session.set({ [DEEP_Q_KEY]: deepQueue }).catch(() => {});
+}
+
+async function loadDeepQueue() {
+  if (deepQueueLoaded) return;
+  deepQueueLoaded = true;
+  const stored = (await chrome.storage.session.get(DEEP_Q_KEY))[DEEP_Q_KEY];
+  if (Array.isArray(stored)) {
+    // 合并不覆盖：本生命周期已入队（还没持久化）的项不能被清掉
+    for (const u of stored) {
+      if (typeof u !== "string") continue;
+      const id = u.match(/([0-9a-f]{24})/)?.[1] ?? u;
+      if (!deepQueuedIds.has(id) && !deepQueue.includes(u)) {
+        deepQueuedIds.add(id);
+        deepQueue.unshift(u); // 恢复的排在前面：先跑上次没跑完的
+      }
+    }
+  }
+}
 
 function queueDeepCollect(url: string): boolean {
   const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
   if (deepQueuedIds.has(id) || deepQueue.length >= 30) return false;
   deepQueuedIds.add(id);
   deepQueue.push(url);
+  void persistDeepQueue();
   void pumpDeepQueue();
   return true;
 }
@@ -738,16 +767,30 @@ async function pumpDeepQueue() {
   if (deepPumping) return;
   deepPumping = true;
   try {
+    await loadDeepQueue(); // 恢复上次 SW 生命周期里没跑完的队列
     while (deepQueue.length) {
-      const url = deepQueue.shift()!;
+      // 停用中断：中途关总开关 → 清空剩余队列，不再开页
+      if (!(await getSettings()).enabled) {
+        deepQueue = [];
+        deepQueuedIds.clear();
+        await persistDeepQueue();
+        break;
+      }
+      const url = deepQueue[0]!;
       const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
       await collectByUrl(url).catch(() => {}); // 尽力而为：单篇失败不阻塞队列
+      // 先跑完再出队：处理中若 SW 重启，该 URL 仍在队列里会被重试（幂等）
+      deepQueue.shift();
       deepQueuedIds.delete(id);
+      await persistDeepQueue();
     }
   } finally {
     deepPumping = false;
   }
 }
+
+// SW 启动即恢复队列（storage.session 在 SW 挂起/重启间存活）
+void pumpDeepQueue();
 
 // ---------- 图片下载（creator-publish 用，绕 CORS） ----------
 
