@@ -29,6 +29,16 @@ export const collections = pgTable("collections", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/** AI 分析结果：对某个采集库的一轮分析快照（库被删时随库删除）。 */
+export const collectionAnalyses = pgTable("collection_analyses", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  collectionId: integer("collection_id").notNull().references(() => collections.id, { onDelete: "cascade" }),
+  noteCount: integer("note_count").notNull().default(0),
+  report: text("report").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const collectedNotes = pgTable("collected_notes", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),

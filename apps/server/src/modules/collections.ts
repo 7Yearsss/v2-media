@@ -1,9 +1,19 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { collectedNotes, collections } from "../db/schema";
+import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
+
+/** 一次分析喂给模型的笔记上限（按互动量取 top）。 */
+const ANALYZE_LIMIT = 40;
+
+const ANALYSIS_SYSTEM =
+  "你是资深小红书运营分析师。输入是一个采集库里的笔记列表（标题/互动数据/标签/正文节选）。请输出 markdown 报告：" +
+  "## 爆款 TOP（按赞藏评总量列前 5，附标题和关键数据）；" +
+  "## 共性分析（这些火的笔记在选题/标题写法/内容结构上的规律）；" +
+  "## 还没被吃透的机会点（库内互动低但选题相似、或库里没覆盖的相邻话题）；" +
+  "## 可执行的 3 条行动建议（具体到选题和标题写法）。只输出报告正文。";
 
 const nameSchema = z.object({
   name: z.string().trim().min(1, "name required").max(64),
@@ -80,6 +90,100 @@ export function collectionsModule(deps: Deps) {
       .returning({ id: collections.id });
     if (!row) return c.json({ error: "not found" }, 404);
     return c.json({ ok: true });
+  });
+
+  /** 校验库归属并取出库行。 */
+  const ownCollection = async (c: any) => {
+    const userId = c.get("userId");
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id)) return null;
+    const [col] = await deps.db
+      .select()
+      .from(collections)
+      .where(and(eq(collections.id, id), eq(collections.userId, userId)))
+      .limit(1);
+    return col ?? null;
+  };
+
+  // AI 分析：取该库互动量 top 的笔记喂给模型，报告落库可回看
+  app.post("/:id/analyze", async (c) => {
+    const col = await ownCollection(c);
+    if (!col) return c.json({ error: "not found" }, 404);
+    const userId = c.get("userId");
+    const notes = await deps.db
+      .select({
+        title: collectedNotes.title,
+        likes: collectedNotes.likes,
+        collects: collectedNotes.collects,
+        comments: collectedNotes.comments,
+        shares: collectedNotes.shares,
+        tags: collectedNotes.tags,
+        content: collectedNotes.content,
+      })
+      .from(collectedNotes)
+      .where(eq(collectedNotes.collectionId, col.id))
+      .orderBy(
+        desc(sql`${collectedNotes.likes} + ${collectedNotes.collects} + ${collectedNotes.comments} + ${collectedNotes.shares}`),
+      )
+      .limit(ANALYZE_LIMIT);
+    if (!notes.length) return c.json({ error: "库里还没有笔记" }, 400);
+    const payload = notes
+      .map((n) => ({
+        标题: n.title,
+        赞: n.likes,
+        收藏: n.collects,
+        评论: n.comments,
+        分享: n.shares,
+        标签: n.tags.slice(0, 8),
+        正文节选: n.content.slice(0, 300),
+      }))
+      .map((n) => JSON.stringify(n))
+      .join("\n");
+    let report: string;
+    try {
+      report = await deps.ai.complete(ANALYSIS_SYSTEM, `采集库「${col.name}」共 ${notes.length} 篇：\n${payload}`);
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : "AI failed" }, 502);
+    }
+    const [row] = await deps.db
+      .insert(collectionAnalyses)
+      .values({ userId, collectionId: col.id, noteCount: notes.length, report })
+      .returning();
+    return c.json(row, 201);
+  });
+
+  app.get("/:id/analyses", async (c) => {
+    const col = await ownCollection(c);
+    if (!col) return c.json({ error: "not found" }, 404);
+    const rows = await deps.db
+      .select({
+        id: collectionAnalyses.id,
+        collectionId: collectionAnalyses.collectionId,
+        noteCount: collectionAnalyses.noteCount,
+        createdAt: collectionAnalyses.createdAt,
+      })
+      .from(collectionAnalyses)
+      .where(eq(collectionAnalyses.collectionId, col.id))
+      .orderBy(desc(collectionAnalyses.id));
+    return c.json({ items: rows });
+  });
+
+  app.get("/:id/analyses/:aid", async (c) => {
+    const col = await ownCollection(c);
+    if (!col) return c.json({ error: "not found" }, 404);
+    const aid = Number(c.req.param("aid"));
+    const [row] = await deps.db
+      .select()
+      .from(collectionAnalyses)
+      .where(
+        and(
+          eq(collectionAnalyses.id, aid),
+          eq(collectionAnalyses.collectionId, col.id),
+        ),
+      )
+      .limit(1);
+    if (!row) return c.json({ error: "not found" }, 404);
+    return c.json(row);
   });
 
   return app;

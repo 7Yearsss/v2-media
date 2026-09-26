@@ -61,6 +61,17 @@ export interface Collection {
   createdAt: string;
 }
 
+/** AI 分析结果：对一个采集库跑出的爆款分析报告。 */
+export interface CollectionAnalysis {
+  id: number;
+  collectionId: number;
+  /** 本轮分析覆盖的笔记数。 */
+  noteCount: number;
+  /** markdown 格式报告全文。 */
+  report: string;
+  createdAt: string;
+}
+
 /** 插件嗅探到的一批笔记（ingest 请求的载荷）。 */
 export interface CollectBatch {
   source: CollectSource;

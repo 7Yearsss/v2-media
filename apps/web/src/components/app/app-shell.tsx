@@ -1,5 +1,6 @@
 import {
   Bell,
+  BrainCircuit,
   ChevronsUpDown,
   Layers,
   LayoutDashboard,
@@ -66,6 +67,7 @@ import { useToast } from "@/lib/toast";
 const NAV = [
   { to: "/", label: "仪表盘", icon: LayoutDashboard, match: /^\/$/ },
   { to: "/library", label: "内容库", icon: LibraryBig, match: /^\/library/ },
+  { to: "/analysis", label: "AI 分析", icon: BrainCircuit, match: /^\/analysis/ },
   { to: "/drafts", label: "草稿工坊", icon: NotebookPen, match: /^\/drafts/ },
   { to: "/accounts", label: "账号矩阵", icon: Users, match: /^\/accounts/ },
   { to: "/publish", label: "发布中心", icon: SendHorizontal, match: /^\/publish/ },
@@ -75,6 +77,7 @@ const NAV = [
 const PAGE_TITLES: [RegExp, string][] = [
   [/^\/$/, "仪表盘"],
   [/^\/library/, "内容库"],
+  [/^\/analysis/, "AI 分析"],
   [/^\/drafts/, "草稿工坊"],
   [/^\/accounts/, "账号矩阵"],
   [/^\/publish/, "发布中心"],
