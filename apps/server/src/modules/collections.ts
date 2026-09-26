@@ -153,6 +153,7 @@ export function collectionsModule(deps: Deps) {
         shares: collectedNotes.shares,
         tags: collectedNotes.tags,
         content: collectedNotes.content,
+        hasDetail: collectedNotes.hasDetail,
       })
       .from(collectedNotes)
       .where(eq(collectedNotes.collectionId, col.id))
@@ -186,9 +187,9 @@ export function collectionsModule(deps: Deps) {
         .sort((a, b) => b[1] - a[1])
         .slice(0, 10)
         .map(([tag, cnt]) => ({ tag, count: cnt })),
-      // 数据覆盖：feed 卡片只有赞，藏/评/转要详情页才有 —— 前端据此提示数据厚度
+      // 数据覆盖：藏/评/转/正文只有详情页才采得到 —— 按 hasDetail 溯源而不是按数值猜
       coverage: {
-        withFullMetrics: notes.filter((n) => n.collects > 0 || n.comments > 0 || n.shares > 0).length,
+        withDetail: notes.filter((n) => n.hasDetail).length,
         total: notes.length,
       },
     };

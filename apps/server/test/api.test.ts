@@ -144,6 +144,32 @@ describe("collect + notes", () => {
     expect((await app.request(`/api/collections/${col.id}/analyses`, authed(t2))).status).toBe(404);
   });
 
+  it("title fallback: 兜底标题可被真标题替换", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    // 无标题卡片 → 兜底
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ items: [{ noteId: "t1", title: "", desc: "晨起训练记录正文", author: {}, cover: "" }] }),
+    }));
+    let list = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    expect(list.items[0].title).toBe("晨起训练记录正文");
+    // 之后带真标题的卡片进来 → 替换
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ items: [{ noteId: "t1", title: "晨跑 5 公里计划", author: {}, cover: "" }] }),
+    }));
+    list = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    expect(list.items[0].title).toBe("晨跑 5 公里计划");
+    // 真标题后再来一次空标题卡片 → 真标题不被冲掉
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ items: [{ noteId: "t1", title: "", desc: "别的正文", author: {}, cover: "" }] }),
+    }));
+    list = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    expect(list.items[0].title).toBe("晨跑 5 公里计划");
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");

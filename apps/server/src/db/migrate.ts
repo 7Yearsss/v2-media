@@ -55,6 +55,8 @@ ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS collection_id integer;
 ALTER TABLE collected_notes DROP CONSTRAINT IF EXISTS collected_notes_collection_id_fkey;
 ALTER TABLE collected_notes ADD CONSTRAINT collected_notes_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS collected_notes_user_note ON collected_notes(user_id, note_id);
+ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS title_fallback boolean NOT NULL DEFAULT false;
+ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS has_detail boolean NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS collection_analyses (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users(id),

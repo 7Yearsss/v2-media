@@ -195,9 +195,9 @@ function AnalysisView({ a }: { a: CollectionAnalysis }) {
         <StatCard label="平均互动" value={stats.avgEngagement} hint="每篇笔记" />
         <StatCard label="评赞比" value={commentRate} hint="越高讨论度越强" suffix="%" />
       </div>
-      {stats.coverage && stats.coverage.withFullMetrics < stats.coverage.total && (
+      {stats.coverage && stats.coverage.withDetail < stats.coverage.total && (
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-xs text-amber-600 dark:text-amber-400">
-          {stats.coverage.total} 篇里只有 {stats.coverage.withFullMetrics} 篇有完整互动数据（收藏/评论/分享要进详情页才会采到）—— 结论更偏曝光吸引力，点进高赞笔记详情后再跑一轮会更准
+          {stats.coverage.total} 篇里只有 {stats.coverage.withDetail} 篇进过详情页（收藏/评论/分享/正文要进详情页才采得到）—— 结论偏曝光吸引力，点进高赞笔记详情后再跑一轮会更准
         </div>
       )}
 
