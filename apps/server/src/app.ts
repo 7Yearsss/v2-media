@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 
@@ -31,6 +33,23 @@ export function createApp(deps: Deps) {
   secured.route("/ext", extModule(deps));
   secured.route("/media", mediaModule());
   app.route("/api", secured);
+
+  // 生产模式：直接托管 apps/web/dist（单进程部署，nginx 反代一个端口即可）
+  const webDist = new URL("../../web/dist/", import.meta.url).pathname;
+  if (existsSync(webDist)) {
+    app.use(
+      "/*",
+      serveStatic({
+        root: webDist,
+        rewriteRequestPath: (p) => p,
+      }),
+    );
+    // SPA fallback：非 /api 的 GET 全部回 index.html
+    app.get("*", (c, next) => {
+      if (c.req.path.startsWith("/api/") || c.req.path === "/health") return next();
+      return serveStatic({ root: webDist, path: "index.html" })(c, next);
+    });
+  }
 
   return app;
 }
