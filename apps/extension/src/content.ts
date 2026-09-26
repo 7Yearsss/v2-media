@@ -370,6 +370,21 @@ if (isWww) {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       uploadedCards.add(noteId);
       if (detail) uploadedDetails.add(noteId);
+      // 上传飞行期间到达的评论：手动采集成功后补传一次（in-flight 时 collected 还
+      // 不满足，EVT_COMMENTS 只进了缓存）
+      const late = commentsMap.get(noteId);
+      if (
+        detail &&
+        late?.length &&
+        !(detail as NoteDetail & { commentsData?: unknown[] }).commentsData?.length
+      ) {
+        pendingDetails.set(noteId, {
+          data: { ...detail, commentsData: late } as NoteDetail,
+          colId: cfg.collectionId ?? null,
+        });
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
       // 深度采集：开隐藏标签页进详情页，让页面自己发评论接口被嗅探。
       // collectFlag 页本身就在详情页、不再套娃触发。
@@ -423,6 +438,21 @@ if (isWww) {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       for (const it of items) uploadedCards.add(it.noteId);
       for (const d of dets) uploadedDetails.add(d.noteId);
+      // 同 collectOne：飞行期间晚到的评论补传
+      for (const d of dets) {
+        const late = commentsMap.get(d.noteId);
+        const sent = d as NoteDetail & { commentsData?: unknown[] };
+        if (late?.length && !sent.commentsData?.length) {
+          pendingDetails.set(d.noteId, {
+            data: { ...d, commentsData: late } as NoteDetail,
+            colId: cfg.collectionId ?? null,
+          });
+        }
+      }
+      if (pendingDetails.size) {
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
     } catch (e) {
       toast(`入库失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);
