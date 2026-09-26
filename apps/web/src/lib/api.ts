@@ -10,6 +10,7 @@ import type {
   AuthRequest,
   AuthResponse,
   CollectedNote,
+  Collection,
   Draft,
   DraftCreateRequest,
   DraftUpdateRequest,
@@ -253,6 +254,8 @@ export const api = {
     keyword?: string;
     tag?: string;
     source?: string;
+    /** 数字=该库；"none"=未分组；缺省=全部 */
+    collectionId?: string;
     cursor?: string | null;
   }) =>
     request<NotesPage>("/api/notes", {
@@ -260,6 +263,7 @@ export const api = {
         keyword: params.keyword,
         tag: params.tag,
         source: params.source,
+        collectionId: params.collectionId || undefined,
         cursor: params.cursor ?? undefined,
       },
     }).then((res) =>
@@ -268,6 +272,14 @@ export const api = {
         ? { items: res, nextCursor: null }
         : { items: res.items ?? [], nextCursor: res.nextCursor ?? null },
     ),
+  collections: () => request<{ items: Collection[] }>("/api/collections"),
+  createCollection: (name: string) =>
+    request<Collection>("/api/collections", { method: "POST", body: { name } }),
+  renameCollection: (id: number, name: string) =>
+    request<Collection>(`/api/collections/${id}`, { method: "PATCH", body: { name } }),
+  deleteCollection: (id: number) =>
+    request<void>(`/api/collections/${id}`, { method: "DELETE" }),
+
   note: (id: number) => request<NoteDetail>(`/api/notes/${id}`),
   deleteNote: (id: number) =>
     request<void>(`/api/notes/${id}`, { method: "DELETE" }),

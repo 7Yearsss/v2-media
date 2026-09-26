@@ -463,6 +463,15 @@ chrome.runtime.onMessage.addListener(
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
       case "SITE_RUN_PUBLISH_JOB":
         return reply(runPublishJobById(Number(msg.jobId)), sendResponse);
+
+      // --- popup 采集库 ---
+      case "LIST_COLLECTIONS":
+        return reply(api("/api/collections"), sendResponse);
+      case "CREATE_COLLECTION":
+        return reply(
+          api("/api/collections", { method: "POST", body: { name: String(msg.name ?? "") } }),
+          sendResponse,
+        );
     }
     return false;
   },

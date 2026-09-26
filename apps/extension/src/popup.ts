@@ -19,7 +19,11 @@ async function render() {
   const openBtn = document.getElementById("open") as HTMLButtonElement | null;
   const enabledEl = document.getElementById("enabled") as HTMLInputElement | null;
   const autoEl = document.getElementById("autoCollect") as HTMLInputElement | null;
-  if (!statusEl || !openBtn || !enabledEl || !autoEl) return;
+  const colSel = document.getElementById("collection") as HTMLSelectElement | null;
+  const newColRow = document.getElementById("newColRow") as HTMLElement | null;
+  const newCol = document.getElementById("newCol") as HTMLInputElement | null;
+  const newColBtn = document.getElementById("newColBtn") as HTMLButtonElement | null;
+  if (!statusEl || !openBtn || !enabledEl || !autoEl || !colSel || !newColRow || !newCol || !newColBtn) return;
 
   const settings = await getSettings();
   enabledEl.checked = settings.enabled;
@@ -40,11 +44,69 @@ async function render() {
       : "已关自动采集，仍可用卡片按钮手动采";
   };
 
+  // ---------- 当前采集库 ----------
+  const NEW_OPT = "__new__";
+  async function renderCollections() {
+    const s = await getSettings();
+    const res = await sendToBackground<{ items?: { id: number; name: string }[] }>({
+      type: "LIST_COLLECTIONS",
+    }).catch(() => ({ items: [] }));
+    const items = res.items ?? [];
+    colSel!.innerHTML = "";
+    const add = (v: string, label: string) => {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = label;
+      colSel!.append(o);
+    };
+    add("", "不分组");
+    for (const c of items) add(String(c.id), c.name);
+    add(NEW_OPT, "＋ 新建库…");
+    // 已选的库被删了就回退到不分组
+    const cur = s.collectionId != null && items.some((c) => c.id === s.collectionId)
+      ? String(s.collectionId)
+      : "";
+    colSel!.value = cur;
+    if (cur === "" && s.collectionId != null) void setSettings({ collectionId: null });
+  }
+  colSel.onchange = async () => {
+    if (colSel!.value === NEW_OPT) {
+      newColRow!.style.display = "";
+      newCol!.focus();
+      return;
+    }
+    newColRow!.style.display = "none";
+    await setSettings({ collectionId: colSel!.value ? Number(colSel!.value) : null });
+    statusEl.textContent = colSel!.value
+      ? `采集将进库「${colSel!.selectedOptions[0]?.textContent}」`
+      : "采集不分组，进总池";
+  };
+  newColBtn.onclick = async () => {
+    const name = newCol!.value.trim();
+    if (!name) return;
+    newColBtn.disabled = true;
+    try {
+      const c = await sendToBackground<{ id: number }>({ type: "CREATE_COLLECTION", name });
+      await setSettings({ collectionId: c.id });
+      newCol!.value = "";
+      newColRow!.style.display = "none";
+      await renderCollections();
+      colSel!.value = String(c.id);
+      statusEl.textContent = `已建库「${name}」，采集自动归入`;
+    } catch (e) {
+      statusEl.textContent = `建库失败：${String((e as Error)?.message ?? e)}`;
+    } finally {
+      newColBtn.disabled = false;
+    }
+  };
+
   try {
     const s = await sendToBackground<Status>({ type: "GET_STATUS" });
     statusEl.textContent = s.authorized
       ? `已连接 ${s.appUrl} · 已入库 ${s.collected} 条`
       : "未授权：打开工作台 →「授权插件」";
+    if (s.authorized) await renderCollections();
+    else colSel!.disabled = true;
     openBtn.onclick = () => {
       if (s.appUrl) void chrome.tabs.create({ url: s.appUrl });
       else statusEl.textContent = "未配置工作台地址";

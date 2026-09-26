@@ -21,7 +21,7 @@ import type {
   LoginState,
 } from "./lib/messages";
 import { el, shadowHost, toastIn } from "./lib/ui";
-import { getSettings, onSettingsChanged } from "./lib/settings";
+import { getSettings, onSettingsChanged, type ExtSettings } from "./lib/settings";
 
 const isWww =
   location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
@@ -70,7 +70,7 @@ if (isWww) {
   shadow.append(overlay, bar);
 
   // ---------- 启停开关（popup 写入 chrome.storage.local.v2m_settings） ----------
-  let cfg = { enabled: true, autoCollect: true };
+  let cfg: ExtSettings = { enabled: true, autoCollect: true, collectionId: null };
   function applySettings() {
     // 停用：隐藏全部注入 UI，嗅探只记内存不上报
     bar.style.display = cfg.enabled ? "" : "none";
@@ -116,7 +116,13 @@ if (isWww) {
       for (const d of dets) pendingDetails.set(d.noteId, d);
       return;
     }
-    const batch: CollectBatch = { source, context, items, details: dets.length ? dets : undefined };
+    const batch: CollectBatch = {
+      source,
+      context,
+      collectionId: cfg.collectionId ?? undefined,
+      items,
+      details: dets.length ? dets : undefined,
+    };
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       for (const it of items) uploadedCards.add(it.noteId);
@@ -280,6 +286,7 @@ if (isWww) {
     const batch: CollectBatch = {
       source: detail ? "detail" : card?.source ?? "detail",
       context: { pageUrl: location.href },
+      collectionId: cfg.collectionId ?? undefined,
       items: card ? [card] : [],
       details: detailWithComments ? [detailWithComments] : undefined,
     };
@@ -320,6 +327,7 @@ if (isWww) {
       const batch: CollectBatch = {
         source: majority as CollectBatch["source"],
         context: { pageUrl: location.href },
+        collectionId: cfg.collectionId ?? undefined,
         items,
         details: dets.length ? dets : undefined,
       };

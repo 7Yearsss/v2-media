@@ -53,11 +53,21 @@ export interface NoteComment {
   subComments?: NoteComment[];
 }
 
+/** 采集分组：一批笔记归入的库（工作台按库筛选分析）。 */
+export interface Collection {
+  id: number;
+  name: string;
+  noteCount: number;
+  createdAt: string;
+}
+
 /** 插件嗅探到的一批笔记（ingest 请求的载荷）。 */
 export interface CollectBatch {
   source: CollectSource;
   /** 页面上下文信息：搜索词 / 作者主页等。 */
   context?: { keyword?: string; authorId?: string; pageUrl?: string };
+  /** 目标采集库 id；缺省 = 不分组进总池。 */
+  collectionId?: number;
   items: NoteCard[];
   /** 详情页采集时附带的完整正文。 */
   details?: NoteDetail[];
