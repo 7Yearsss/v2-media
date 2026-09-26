@@ -10,10 +10,12 @@
     "dev:server": "npm run dev -w @v2media/server",
     "dev:web": "npm run dev -w @v2media/web",
     "build:ext": "npm run build -w @v2media/extension",
+    "build:ext:prod": "cross-env EXT_APP_ORIGINS=https://xhs.v2api.top EXT_API_ORIGINS=https://xhs.v2api.top npm run build -w @v2media/extension",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm test -w @v2media/server"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "typescript": "^5.7.0"
   }
 }
