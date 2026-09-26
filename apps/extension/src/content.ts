@@ -32,6 +32,7 @@ if (isWww) {
   const cards = new Map<string, NoteCard>();
   const details = new Map<string, NoteDetail>();
   const commentsMap = new Map<string, NoteComment[]>();
+  const verifiedDetailIds = new Set<string>();
   // 卡片/详情分开记：卡片已传不阻挡后续到达的详情（详情含完整正文/图集/评论）
   const uploadedCards = new Set<string>();
   const uploadedDetails = new Set<string>();
@@ -414,8 +415,13 @@ if (isWww) {
       }
     }
     // 页面详情经常先只给封面；SSR 详情可补齐完整图集、正文和标签。
+    const detailUrl =
+      card?.url ??
+      (pageNoteId() === noteId
+        ? `${location.origin}${location.pathname}${location.search}`
+        : undefined);
     if (
-      card?.url &&
+      detailUrl &&
       (!detail ||
         !detail.content ||
         !detail.tags.length ||
@@ -424,10 +430,11 @@ if (isWww) {
       try {
         const res = await mainRequest<CachedNote>(
           "fetchDetail",
-          { url: card.url },
+          { url: detailUrl },
           15_000,
         );
         if (res.detail) {
+          verifiedDetailIds.add(noteId);
           detail = detail
             ? {
                 ...detail,
@@ -667,21 +674,44 @@ if (isWww) {
       );
     };
     const advanceComments = () => {
-      const candidates = [
-        ...document.querySelectorAll<HTMLElement>(
-          '.note-scroller, [class*="comments-container"], [class*="comment-list"], [class*="interaction"], [class*="scroll"]',
-        ),
-        document.scrollingElement as HTMLElement,
-      ].filter(Boolean);
-      const target = candidates.reduce<HTMLElement | null>((best, el) => {
+      const roots = document.querySelectorAll<HTMLElement>(
+        '.comments-container, [class*="comments-container"], [class*="comment-list"], [class*="comments-list"], .parent-comment',
+      );
+      const candidates = new Set<HTMLElement>();
+      for (const root of roots) {
+        let current: HTMLElement | null = root;
+        for (let depth = 0; current && depth < 6; depth += 1) {
+          const style = getComputedStyle(current);
+          if (
+            current.scrollHeight - current.clientHeight > 50 &&
+            current.offsetParent !== null &&
+            /(auto|scroll)/.test(style.overflowY)
+          ) {
+            candidates.add(current);
+            break;
+          }
+          current = current.parentElement;
+        }
+      }
+      const noteScroller = document.querySelector<HTMLElement>(".note-scroller");
+      if (
+        noteScroller &&
+        noteScroller.scrollHeight - noteScroller.clientHeight > 50 &&
+        noteScroller.offsetParent !== null
+      ) {
+        candidates.add(noteScroller);
+      }
+      const target = [...candidates].reduce<HTMLElement | null>((best, el) => {
         const range = el.scrollHeight - el.clientHeight;
         const bestRange = best ? best.scrollHeight - best.clientHeight : 0;
         return range > Math.max(50, bestRange) ? el : best;
       }, null);
-      if (!target) return;
+      const fallback = document.scrollingElement as HTMLElement | null;
+      const scrollTarget = target ?? fallback;
+      if (!scrollTarget) return;
       const top = 400 + Math.round(Math.random() * 300);
-      target.scrollBy({ top, behavior: "smooth" });
-      target.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: top }));
+      scrollTarget.scrollBy({ top, behavior: "smooth" });
+      scrollTarget.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: top }));
     };
     const finish = (
       ok: boolean,
@@ -729,6 +759,10 @@ if (isWww) {
         started += pausedFor;
         if (dataSince) dataSince += pausedFor;
         challengeBegan = undefined;
+        void sendToBackground({
+          type: "COLLECT_URL_CHALLENGE_DONE",
+          noteId: noteId ?? undefined,
+        });
       }
       challengeNotified = false;
       if (noteId && (cards.has(noteId) || details.has(noteId))) {
@@ -745,7 +779,8 @@ if (isWww) {
           detail &&
             (detail.type === "video"
               ? detail.videoUrl
-              : detail.images.length > 0),
+              : detail.images.length > 1 ||
+                (detail.images.length === 1 && verifiedDetailIds.has(noteId))),
         );
         const waitExpired = elapsed > 15_000;
         if ((detailCaptured && commentsCaptured) || waitExpired) {
@@ -755,7 +790,8 @@ if (isWww) {
             finalDetail &&
               (finalDetail.type === "video"
                 ? finalDetail.videoUrl
-                : finalDetail.images.length > 0),
+                : finalDetail.images.length > 1 ||
+                  (finalDetail.images.length === 1 && verifiedDetailIds.has(noteId))),
           );
           const imageCount = finalDetail?.images.length ?? 0;
           const complete = uploaded && finalDetailCaptured && commentsCaptured;

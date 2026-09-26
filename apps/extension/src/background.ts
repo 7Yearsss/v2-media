@@ -628,6 +628,7 @@ chrome.runtime.onMessage.addListener(
         // 回执必须来自本次任务开的那个页：SW 重启后旧页的回执不能顶替新页的 waiter
         if (w && (w.tabId === undefined || sid === undefined || w.tabId === sid)) {
           collectWaiters.delete(msg.noteId ?? "");
+          clearCollectWaiterTimers(w);
           w.resolve({
             ok: msg.ok,
             noteId: msg.noteId,
@@ -647,7 +648,21 @@ chrome.runtime.onMessage.addListener(
         const w = collectWaiters.get(msg.noteId ?? "");
         const sid = sender.tab?.id;
         if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
+          if (w.timeoutId) {
+            clearTimeout(w.timeoutId);
+            w.timeoutId = undefined;
+          }
           void chrome.tabs.update(sid, { active: true });
+        }
+        sendResponse({ ok: true });
+        return false;
+      }
+      case "COLLECT_URL_CHALLENGE_DONE": {
+        const noteId = msg.noteId ?? "";
+        const w = collectWaiters.get(noteId);
+        const sid = sender.tab?.id;
+        if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
+          armCollectWaiterTimeout(noteId, w);
         }
         sendResponse({ ok: true });
         return false;
@@ -727,8 +742,30 @@ const collectWaiters = new Map<
       imageCount?: number;
     }) => void;
     tabId?: number;
+    timeoutId?: ReturnType<typeof setTimeout>;
+    hardTimeoutId?: ReturnType<typeof setTimeout>;
   }
 >();
+
+function clearCollectWaiterTimers(
+  waiter: (typeof collectWaiters extends Map<string, infer V> ? V : never),
+) {
+  if (waiter.timeoutId) clearTimeout(waiter.timeoutId);
+  if (waiter.hardTimeoutId) clearTimeout(waiter.hardTimeoutId);
+}
+
+function armCollectWaiterTimeout(
+  noteId: string,
+  waiter: (typeof collectWaiters extends Map<string, infer V> ? V : never),
+) {
+  if (waiter.timeoutId) clearTimeout(waiter.timeoutId);
+  waiter.timeoutId = setTimeout(() => {
+    if (collectWaiters.delete(noteId)) {
+      clearCollectWaiterTimers(waiter);
+      waiter.resolve({ ok: false, error: "采集超时（页面 120s 内未回执）" });
+    }
+  }, 120000);
+}
 
 async function collectByUrl(url: string) {
   if (!/^https:\/\/(www\.)?xiaohongshu\.com\//.test(url)) {
@@ -742,11 +779,13 @@ async function collectByUrl(url: string) {
   const done = new Promise<Parameters<typeof waiter.resolve>[0]>((resolve) => {
     waiter.resolve = resolve;
     collectWaiters.set(noteId, waiter);
-    setTimeout(() => {
+    armCollectWaiterTimeout(noteId, waiter);
+    waiter.hardTimeoutId = setTimeout(() => {
       if (collectWaiters.delete(noteId)) {
-        resolve({ ok: false, error: "采集超时（页面 120s 内未回执）" });
+        clearCollectWaiterTimers(waiter);
+        resolve({ ok: false, error: "验证码等待超过 15 分钟，任务已取消" });
       }
-    }, 120000);
+    }, 15 * 60 * 1000);
   });
   const tab = await chrome.tabs.create({ url: target, active: false });
   waiter.tabId = tab.id; // 绑定 tab：回执只能由它完成（重启后旧页回执不顶包）
