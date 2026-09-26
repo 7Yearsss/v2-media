@@ -324,8 +324,9 @@ function TopicDetailDrawer({
 
   // 切选题时清掉上一条的深评结果
   const [lastId, setLastId] = useState<number | null>(null);
-  if (topic?.id !== lastId) {
-    setLastId(topic?.id ?? null);
+  const currentTopicId = topic?.id ?? null;
+  if (currentTopicId !== lastId) {
+    setLastId(currentTopicId);
     setVerdict("");
     setAdvice("");
   }

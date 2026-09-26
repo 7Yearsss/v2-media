@@ -2,7 +2,7 @@
 // beui.dev/components/motion/theme-toggle
 
 import { Moon, Sun } from "lucide-react";
-import { useTheme } from "next-themes";
+import { useTheme } from "@/lib/theme";
 import { useReducedMotion } from "motion/react";
 import { useEffect, useState, type ComponentPropsWithoutRef } from "react";
 import { ActionSwapIcon } from "@/components/motion/action-swap";

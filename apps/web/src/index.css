@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* 用 .dark class 切换暗色（next-themes attribute="class"），否则 dark: 会退回系统媒体查询 */
+/* 用 .dark class 切换暗色（@/lib/theme 的 ThemeProvider 写 documentElement），否则 dark: 会退回系统媒体查询 */
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* shadcn / beUI 令牌 —— 浅色为主，低饱和中性底 + 小红书红压暗作品牌色 */
