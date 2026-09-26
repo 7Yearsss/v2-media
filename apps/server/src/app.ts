@@ -7,6 +7,7 @@ import type { Deps } from "./context";
 import { accountsModule } from "./modules/accounts";
 import { aiModule } from "./modules/ai";
 import { authMiddleware, authModule } from "./modules/auth";
+import { collectionsModule } from "./modules/collections";
 import { draftsModule } from "./modules/drafts";
 import { extModule } from "./modules/ext";
 import { mediaModule } from "./modules/media";
@@ -29,6 +30,7 @@ export function createApp(deps: Deps) {
   secured.use("*", authMiddleware);
   secured.route("/accounts", accountsModule(deps));
   secured.route("/notes", notesModule(deps));
+  secured.route("/collections", collectionsModule(deps));
   secured.route("/drafts", draftsModule(deps));
   secured.route("/ai", aiModule(deps));
   secured.route("/publish", publishModule(deps));

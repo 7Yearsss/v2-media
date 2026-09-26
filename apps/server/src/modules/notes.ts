@@ -21,6 +21,15 @@ export function notesModule(deps: Deps) {
       conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
     }
     if (source) conds.push(eq(collectedNotes.source, source));
+    // collectionId：数字=该库；字面量 "none"=只看未分组的
+    const collectionId = (c.req.query("collectionId") ?? "").trim();
+    if (collectionId === "none") {
+      conds.push(sql`${collectedNotes.collectionId} IS NULL`);
+    } else if (collectionId) {
+      const n = Number(collectionId);
+      if (!Number.isInteger(n)) return c.json({ error: "bad collectionId" }, 400);
+      conds.push(eq(collectedNotes.collectionId, n));
+    }
     if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
     const rows = await deps.db
       .select()

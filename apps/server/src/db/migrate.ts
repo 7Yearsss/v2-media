@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS collected_notes (
   raw_json jsonb,
   saved_at timestamp DEFAULT now() NOT NULL
 );
+CREATE TABLE IF NOT EXISTS collections (
+  id serial PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id),
+  name varchar(64) NOT NULL,
+  created_at timestamp DEFAULT now() NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS collections_user_name ON collections(user_id, name);
+ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS collection_id integer;
+ALTER TABLE collected_notes DROP CONSTRAINT IF EXISTS collected_notes_collection_id_fkey;
+ALTER TABLE collected_notes ADD CONSTRAINT collected_notes_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS collected_notes_user_note ON collected_notes(user_id, note_id);
 CREATE TABLE IF NOT EXISTS drafts (
   id serial PRIMARY KEY,

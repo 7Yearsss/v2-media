@@ -15,7 +15,7 @@ import type {
   PendingPublishJobsResponse,
 } from "@v2media/shared";
 import type { BgMessage, BgResponse, LoginState, PublishJobPayload } from "./lib/messages";
-import { getSettings } from "./lib/settings";
+import { getSettings, setSettings } from "./lib/settings";
 
 const VERSION = chrome.runtime.getManifest().version;
 
@@ -361,7 +361,17 @@ chrome.runtime.onMessage.addListener(
             .then((s) => {
               // 停用中拒绝入库：报错而非假成功，content 侧会把未成功的批次塞回 pending
               if (!s.enabled) throw new Error("插件已停用");
-              return api<CollectResponse>("/api/ext/collect", { body: msg.batch });
+              return api<CollectResponse>("/api/ext/collect", { body: msg.batch }).catch(
+                async (e) => {
+                  // 所选库已被工作台删除：自愈回「不分组」并重试（批次不能丢）
+                  if (!/collection not found/.test(String((e as Error)?.message ?? e))) throw e;
+                  await setSettings({ collectionId: null });
+                  const { collectionId: _drop, ...rest } = msg.batch;
+                  return api<CollectResponse>("/api/ext/collect", {
+                    body: { ...rest, collectionId: null },
+                  });
+                },
+              );
             })
             .then(async (r) => {
             const { stats } = (await chrome.storage.local.get("stats")) as {
@@ -463,6 +473,15 @@ chrome.runtime.onMessage.addListener(
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
       case "SITE_RUN_PUBLISH_JOB":
         return reply(runPublishJobById(Number(msg.jobId)), sendResponse);
+
+      // --- popup 采集库 ---
+      case "LIST_COLLECTIONS":
+        return reply(api("/api/collections"), sendResponse);
+      case "CREATE_COLLECTION":
+        return reply(
+          api("/api/collections", { method: "POST", body: { name: String(msg.name ?? "") } }),
+          sendResponse,
+        );
     }
     return false;
   },

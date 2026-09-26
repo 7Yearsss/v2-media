@@ -64,6 +64,49 @@ describe("collect + notes", () => {
     expect(filtered.items[0].title).toBe("穿搭灵感");
   });
 
+  it("collections: create/list/filter/move/delete", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    // 建库
+    const col = (await (await app.request("/api/collections", authed(token, {
+      method: "POST", body: JSON.stringify({ name: "健身" }),
+    }))).json()) as any;
+    expect(col.id).toBeGreaterThan(0);
+    // 同名幂等
+    const dup = (await (await app.request("/api/collections", authed(token, {
+      method: "POST", body: JSON.stringify({ name: "健身" }),
+    }))).json()) as any;
+    expect(dup.id).toBe(col.id);
+    // 采集进库
+    const payload = {
+      collectionId: col.id,
+      items: [{ noteId: "g1", title: "增肌餐", author: {}, cover: "" }],
+    };
+    const r = (await (await app.request("/api/ext/collect", authed(token, {
+      method: "POST", body: JSON.stringify(payload),
+    }))).json()) as any;
+    expect(r.saved).toBe(1);
+    // 列表带计数
+    const cols = (await (await app.request("/api/collections", authed(token))).json()) as any;
+    expect(cols.items[0].noteCount).toBe(1);
+    // 按库筛选 / 未分组筛选
+    const inCol = (await (await app.request(`/api/notes?collectionId=${col.id}`, authed(token))).json()) as any;
+    expect(inCol.items).toHaveLength(1);
+    const none = (await (await app.request("/api/notes?collectionId=none", authed(token))).json()) as any;
+    expect(none.items).toHaveLength(0);
+    // 别人的 collectionId 不能用
+    const { token: t2 } = await registerUser(app, "other@x.yz");
+    const bad = await app.request("/api/ext/collect", authed(t2, {
+      method: "POST", body: JSON.stringify(payload),
+    }));
+    expect(bad.status).toBe(400);
+    // 删库：笔记回未分组
+    expect((await app.request(`/api/collections/${col.id}`, authed(token, { method: "DELETE" }))).status).toBe(200);
+    const after = (await (await app.request("/api/notes?collectionId=none", authed(token))).json()) as any;
+    expect(after.items).toHaveLength(1);
+    expect(after.items[0].collectionId).toBeNull();
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");

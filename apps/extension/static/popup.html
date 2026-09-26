@@ -15,6 +15,10 @@ h3{margin:0 0 8px}
 .switch input:checked + .slider:before{transform:translateX(16px)}
 .switch input:disabled + .slider{opacity:.5;cursor:default}
 button#open{margin-top:12px;width:100%;padding:8px;border:0;border-radius:8px;background:#e2442f;color:#fff;cursor:pointer}
+#collection{max-width:130px;padding:4px 6px;border:1px solid #e4e4e7;border-radius:6px;font-size:12px;background:#fff}
+#newCol{padding:5px 8px;border:1px solid #e4e4e7;border-radius:6px;font-size:12px}
+#newCol::placeholder{color:#a1a1aa}
+#newColBtn{padding:5px 10px;border:0;border-radius:6px;background:#e2442f;color:#fff;font-size:12px;cursor:pointer;flex:none}
 </style></head>
 <body>
   <h3>v2-media 助手</h3>
@@ -32,6 +36,17 @@ button#open{margin-top:12px;width:100%;padding:8px;border:0;border-radius:8px;ba
       <div class="hint">关闭后只用卡片按钮手动采集</div>
     </div>
     <label class="switch"><input type="checkbox" id="autoCollect"><span class="slider"></span></label>
+  </div>
+  <div class="row" id="colRow">
+    <div>
+      <div class="label">当前采集库</div>
+      <div class="hint">采集的笔记归入所选库，便于按主题分析</div>
+    </div>
+    <select id="collection"></select>
+  </div>
+  <div class="row" id="newColRow" style="display:none">
+    <input id="newCol" placeholder="新库名，如 健身" maxlength="32" style="flex:1">
+    <button id="newColBtn">新建</button>
   </div>
   <button id="open">打开工作台</button>
   <script src="popup.js"></script>

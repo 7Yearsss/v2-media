@@ -1,12 +1,16 @@
 import {
   ExternalLink,
+  FolderOpen,
   Heart,
   ImageOff,
   MessageCircle,
+  Pencil,
+  Plus,
   Search,
   SendToBack,
   Star,
   Trash2,
+  X,
 } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -165,6 +169,7 @@ function NoteDetailDrawer({
     mutationFn: () => api.deleteNote(noteId!),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["notes"] });
+      void queryClient.invalidateQueries({ queryKey: ["collections"] }); // 库计数跟着变
       toast.success("已从内容库删除");
       onClose();
     },
@@ -363,12 +368,51 @@ export default function LibraryPage() {
   const queryClient = useQueryClient();
   const [keyword, setKeyword] = useState("");
   const [source, setSource] = useState("");
+  const [collection, setCollection] = useState(""); // "" | "none" | id 字符串
   const [selected, setSelected] = useState<number | null>(null);
+  const [newColName, setNewColName] = useState("");
+  const [showNewCol, setShowNewCol] = useState(false);
+
+  const collectionsQuery = useQuery({
+    queryKey: ["collections"],
+    queryFn: () => api.collections(),
+  });
+  const collections = collectionsQuery.data?.items ?? [];
+
+  const createCol = useMutation({
+    mutationFn: (name: string) => api.createCollection(name),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      setNewColName("");
+      setShowNewCol(false);
+    },
+    onError: (err) =>
+      toast.error("新建库失败", err instanceof Error ? err.message : undefined),
+  });
+  const renameCol = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) =>
+      api.renameCollection(id, name),
+    onSuccess: () =>
+      void queryClient.invalidateQueries({ queryKey: ["collections"] }),
+    onError: (err) =>
+      toast.error("改名失败", err instanceof Error ? err.message : undefined),
+  });
+  const deleteCol = useMutation({
+    mutationFn: (id: number) => api.deleteCollection(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["collections"] });
+      void queryClient.invalidateQueries({ queryKey: ["notes"] });
+      setCollection("");
+      toast.success("库已删除，笔记回到总池");
+    },
+    onError: (err) =>
+      toast.error("删除库失败", err instanceof Error ? err.message : undefined),
+  });
 
   const notesQuery = useInfiniteQuery({
-    queryKey: ["notes", keyword, source],
+    queryKey: ["notes", keyword, source, collection],
     queryFn: ({ pageParam }) =>
-      api.notes({ keyword, source, cursor: pageParam }),
+      api.notes({ keyword, source, collectionId: collection || undefined, cursor: pageParam }),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
   });
@@ -442,6 +486,105 @@ export default function LibraryPage() {
             ))}
           </TabsList>
         </Tabs>
+
+        {/* 采集库筛选：插件「当前采集库」把一批笔记归组 */}
+        <div className="flex flex-wrap items-center gap-2">
+          <FolderOpen className="size-4 text-muted-foreground" />
+          {(
+            [
+              { v: "", label: "全部" },
+              { v: "none", label: "未分组" },
+            ] as const
+          ).map((t) => (
+            <button
+              key={t.v}
+              onClick={() => setCollection(t.v)}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs transition-colors",
+                collection === t.v
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted text-muted-foreground hover:bg-muted/70",
+              )}
+            >
+              {t.label}
+            </button>
+          ))}
+          {collections.map((col) => (
+            <span key={col.id} className="inline-flex items-center">
+              <button
+                onClick={() => setCollection(String(col.id))}
+                className={cn(
+                  "rounded-full px-3 py-1 text-xs transition-colors",
+                  collection === String(col.id)
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/70",
+                )}
+              >
+                {col.name}
+                <span className="ml-1 tabular-nums opacity-70">{col.noteCount}</span>
+              </button>
+              {collection === String(col.id) ? (
+                <>
+                  <button
+                    title="改名"
+                    className="ml-1 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      const name = window.prompt("库名", col.name)?.trim();
+                      if (name && name !== col.name)
+                        renameCol.mutate({ id: col.id, name });
+                    }}
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                  <button
+                    title="删除库（笔记回到未分组）"
+                    className="ml-0.5 text-muted-foreground hover:text-destructive"
+                    onClick={() => {
+                      if (window.confirm(`删除库「${col.name}」？其中 ${col.noteCount} 条笔记会回到未分组`))
+                        deleteCol.mutate(col.id);
+                    }}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </>
+              ) : null}
+            </span>
+          ))}
+          {showNewCol ? (
+            <span className="inline-flex items-center gap-1">
+              <input
+                autoFocus
+                value={newColName}
+                onChange={(e) => setNewColName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newColName.trim())
+                    createCol.mutate(newColName.trim());
+                  if (e.key === "Escape") setShowNewCol(false);
+                }}
+                placeholder="库名，如 健身"
+                maxLength={32}
+                className="h-7 w-28 rounded-full border border-border bg-background px-3 text-xs outline-none focus:ring-1 focus:ring-ring"
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-7 rounded-full px-3 text-xs"
+                disabled={!newColName.trim() || createCol.isPending}
+                onClick={() => createCol.mutate(newColName.trim())}
+              >
+                新建
+              </Button>
+            </span>
+          ) : (
+            <button
+              onClick={() => setShowNewCol(true)}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+            >
+              <Plus className="size-3" />
+              新建库
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 px-6 pb-6 pt-4">

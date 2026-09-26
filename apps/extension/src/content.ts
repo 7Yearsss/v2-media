@@ -21,7 +21,7 @@ import type {
   LoginState,
 } from "./lib/messages";
 import { el, shadowHost, toastIn } from "./lib/ui";
-import { getSettings, onSettingsChanged } from "./lib/settings";
+import { getSettings, onSettingsChanged, type ExtSettings } from "./lib/settings";
 
 const isWww =
   location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
@@ -70,7 +70,7 @@ if (isWww) {
   shadow.append(overlay, bar);
 
   // ---------- 启停开关（popup 写入 chrome.storage.local.v2m_settings） ----------
-  let cfg = { enabled: true, autoCollect: true };
+  let cfg: ExtSettings = { enabled: true, autoCollect: true, collectionId: null };
   function applySettings() {
     // 停用：隐藏全部注入 UI，嗅探只记内存不上报
     bar.style.display = cfg.enabled ? "" : "none";
@@ -99,8 +99,13 @@ if (isWww) {
 
   // ---------- 上报（去抖合并） ----------
 
-  let pendingItems = new Map<string, NoteCard>();
-  let pendingDetails = new Map<string, NoteDetail>();
+  interface Pending<T> {
+    data: T;
+    /** 入队时的采集库快照：去抖期间用户换库，早入队的仍进旧库 */
+    colId: number | null;
+  }
+  let pendingItems = new Map<string, Pending<NoteCard>>();
+  let pendingDetails = new Map<string, Pending<NoteDetail>>();
   let flushTimer: number | undefined;
 
   async function uploadBatch(
@@ -108,15 +113,22 @@ if (isWww) {
     dets: NoteDetail[],
     source: CollectBatch["source"],
     context: CollectBatch["context"],
+    colId: number | null,
   ) {
     if (!items.length && !dets.length) return;
     if (!cfg.enabled) {
-      // 停用中不发：塞回 pending，重新启用后随下一批一起上报
-      for (const it of items) pendingItems.set(it.noteId, it);
-      for (const d of dets) pendingDetails.set(d.noteId, d);
+      // 停用中不发：塞回 pending（保留原库快照），重新启用后随下一批一起上报
+      for (const it of items) pendingItems.set(it.noteId, { data: it, colId });
+      for (const d of dets) pendingDetails.set(d.noteId, { data: d, colId });
       return;
     }
-    const batch: CollectBatch = { source, context, items, details: dets.length ? dets : undefined };
+    const batch: CollectBatch = {
+      source,
+      context,
+      collectionId: colId,
+      items,
+      details: dets.length ? dets : undefined,
+    };
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       for (const it of items) uploadedCards.add(it.noteId);
@@ -126,27 +138,43 @@ if (isWww) {
       }
     } catch (e) {
       // 上报失败（含插件被停用拒绝）：塞回 pending 等重试，不标记已上传
-      for (const it of items) pendingItems.set(it.noteId, it);
-      for (const d of dets) pendingDetails.set(d.noteId, d);
+      for (const it of items) pendingItems.set(it.noteId, { data: it, colId });
+      for (const d of dets) pendingDetails.set(d.noteId, { data: d, colId });
       console.debug("[v2m] collect upload failed:", e);
     }
   }
 
   function queueUpload(batch: CollectBatch) {
+    const colId = cfg.collectionId ?? null; // 入队时快照所选库
     for (const it of batch.items) {
       if (!uploadedCards.has(it.noteId) && !uploadedDetails.has(it.noteId))
-        pendingItems.set(it.noteId, it);
+        pendingItems.set(it.noteId, { data: it, colId });
     }
     for (const d of batch.details ?? []) {
-      if (!uploadedDetails.has(d.noteId)) pendingDetails.set(d.noteId, d);
+      if (!uploadedDetails.has(d.noteId)) pendingDetails.set(d.noteId, { data: d, colId });
     }
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = window.setTimeout(() => {
-      const items = [...pendingItems.values()];
-      const dets = [...pendingDetails.values()];
+      // 按入队时的库分组：去抖期间换过库的就拆成多批发
+      const groups = new Map<
+        string,
+        { colId: number | null; items: NoteCard[]; dets: NoteDetail[] }
+      >();
+      const push = <T>(
+        p: Pending<T>,
+        pick: (g: { items: NoteCard[]; dets: NoteDetail[] }) => T[],
+      ) => {
+        const k = String(p.colId);
+        const g = groups.get(k) ?? { colId: p.colId, items: [], dets: [] };
+        pick(g).push(p.data as never);
+        groups.set(k, g);
+      };
+      for (const p of pendingItems.values()) push(p, (g) => g.items);
+      for (const p of pendingDetails.values()) push(p, (g) => g.dets);
       pendingItems = new Map();
       pendingDetails = new Map();
-      void uploadBatch(items, dets, batch.source, batch.context ?? lastContext);
+      for (const g of groups.values())
+        void uploadBatch(g.items, g.dets, batch.source, batch.context ?? lastContext, g.colId);
     }, 1500);
   }
 
@@ -280,6 +308,7 @@ if (isWww) {
     const batch: CollectBatch = {
       source: detail ? "detail" : card?.source ?? "detail",
       context: { pageUrl: location.href },
+      collectionId: cfg.collectionId ?? null,
       items: card ? [card] : [],
       details: detailWithComments ? [detailWithComments] : undefined,
     };
@@ -320,6 +349,7 @@ if (isWww) {
       const batch: CollectBatch = {
         source: majority as CollectBatch["source"],
         context: { pageUrl: location.href },
+        collectionId: cfg.collectionId ?? null,
         items,
         details: dets.length ? dets : undefined,
       };
