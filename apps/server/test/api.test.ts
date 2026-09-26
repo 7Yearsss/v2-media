@@ -448,3 +448,164 @@ describe("topics 选题池", () => {
     expect(res.topic.scoreDetail.fit).toBe(9);
   });
 });
+
+describe("归因任务管道（readback / metrics / account_snapshot）", () => {
+  /** 建号 → 采集 → 草稿 → 发布 done；返回上下文供归因断言。 */
+  async function publishDone(app: any, token: string, title = "原始标题") {
+    await app.request("/api/ext/accounts/heartbeat", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ accounts: [{ xhsUserId: "u1", nickname: "薯", subType: "creator", status: "online" }] }),
+    }));
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ items: [{ noteId: "n1", title, author: {}, cover: "https://cdn/c.jpg" }] }),
+    }));
+    const accounts = (await (await app.request("/api/accounts", authed(token))).json()) as any;
+    const notes = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    const draft = (await (await app.request("/api/drafts", authed(token, {
+      method: "POST", body: JSON.stringify({ collectedNoteId: notes.items[0].id }),
+    }))).json()) as any;
+    const job = (await (await app.request("/api/publish/jobs", authed(token, {
+      method: "POST", body: JSON.stringify({ draftId: draft.id, accountId: accounts[0].id }),
+    }))).json()) as any;
+    await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
+      method: "POST", body: JSON.stringify({ claimedBy: "sw" }),
+    }));
+    await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
+      method: "POST", body: JSON.stringify({ status: "done" }),
+    }));
+    return { job, accounts };
+  }
+
+  const pendingTasks = async (app: any, token: string) =>
+    ((await (await app.request("/api/ext/tasks/pending", authed(token))).json()) as any).tasks as any[];
+  const claimTask = (app: any, token: string, id: number) =>
+    app.request(`/api/ext/tasks/${id}/claim`, authed(token, {
+      method: "POST", body: JSON.stringify({ claimedBy: "sw" }),
+    }));
+  const reportTask = (app: any, token: string, id: number, body: unknown) =>
+    app.request(`/api/ext/tasks/${id}/result`, authed(token, {
+      method: "POST", body: JSON.stringify(body),
+    }));
+
+  it("发布 done → readback 到期 → verified 匹配 → metrics×3 排定 + 快照落库", async () => {
+    const { app, db, deps } = await makeApp();
+    const { token } = await registerUser(app);
+    const t0 = Date.now();
+    let fakeNow = t0;
+    deps.now = () => new Date(fakeNow);
+
+    const { job } = await publishDone(app, token);
+
+    // t0：readback 未到期，但心跳排的 account_snapshot 到期
+    let tasks = await pendingTasks(app, token);
+    expect(tasks.map((t) => t.type)).toEqual(["account_snapshot"]);
+    // 快照任务跑一轮 → 落 account_snapshots；20h 内不再重排
+    await claimTask(app, token, tasks[0].id);
+    await reportTask(app, token, tasks[0].id, {
+      status: "done", data: { followers: 1234, likesTotal: 5678, notesCount: 9 },
+    });
+    const { accountSnapshots, noteMetrics } = await import("../src/db/schema");
+    const snaps = await db.select().from(accountSnapshots);
+    expect(snaps[0]?.followers).toBe(1234);
+
+    // +11min：readback 到期
+    fakeNow += 11 * 60_000;
+    tasks = await pendingTasks(app, token);
+    const rb = tasks.find((t) => t.type === "readback");
+    expect(rb.payload.publishJobId).toBe(job.id);
+    await claimTask(app, token, rb.id);
+    // 重复认领 → 404
+    expect((await claimTask(app, token, rb.id)).status).toBe(404);
+    await reportTask(app, token, rb.id, {
+      status: "done",
+      data: { items: [{ noteId: "note-abc", title: "原始标题", publishTime: fakeNow, url: "https://www.xiaohongshu.com/explore/note-abc?xsec_token=tk" }] },
+    });
+    const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
+    expect(jobs[0].outcome).toBe("verified");
+    expect(jobs[0].noteId).toBe("note-abc");
+    expect(jobs[0].verifiedAt).toBeTruthy();
+
+    // +1h：第一条 metrics 到期；回报明细 → note_metrics 落库
+    fakeNow += 60 * 60_000;
+    tasks = await pendingTasks(app, token);
+    expect(tasks.filter((t) => t.type === "metrics")).toHaveLength(1); // 24h/7d 未到期
+    const mt = tasks.find((t) => t.type === "metrics");
+    await claimTask(app, token, mt.id);
+    await reportTask(app, token, mt.id, {
+      status: "done",
+      data: { rows: [{ noteId: "note-abc", views: 3200, likes: 210, collects: 40, comments: 12, shares: 5 }] },
+    });
+    const rows = await db.select().from(noteMetrics);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.views).toBe(3200);
+    expect(rows[0]?.noteId).toBe("note-abc");
+    expect(rows[0]?.publishJobId).toBe(job.id);
+  });
+
+  it("unverified → 30min 复读重排；耗尽后 outcome=unverified", async () => {
+    const { app, deps } = await makeApp();
+    const { token } = await registerUser(app);
+    let fakeNow = Date.now();
+    deps.now = () => new Date(fakeNow);
+    const { job } = await publishDone(app, token);
+    const miss = { status: "done", data: { items: [{ noteId: "other", title: "不相关", publishTime: fakeNow }] } };
+
+    for (let i = 0; i < 3; i++) {
+      fakeNow += 31 * 60_000; // 首轮 +10min 到期，unverified 重排 +30min——都覆盖
+      const rb = (await pendingTasks(app, token)).find((t) => t.type === "readback");
+      expect(rb).toBeTruthy();
+      await claimTask(app, token, rb.id);
+      const res = (await (await reportTask(app, token, rb.id, miss)).json()) as any;
+      expect(Boolean(res.rescheduled)).toBe(i < 2); // 前两次重排，第三次定档
+    }
+    const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
+    expect(jobs[0].outcome).toBe("unverified");
+    expect(jobs[0].noteId).toBeNull();
+  });
+
+  it("readback failed → 重排 ≤3 次后 outcome=readback_error；stale running 回收", async () => {
+    const { app, db, deps } = await makeApp();
+    const { token, userId } = await registerUser(app);
+    let fakeNow = Date.now();
+    deps.now = () => new Date(fakeNow);
+    await publishDone(app, token);
+
+    for (let i = 0; i < 3; i++) {
+      fakeNow += 11 * 60_000;
+      const rb = (await pendingTasks(app, token)).find((t) => t.type === "readback");
+      expect(rb).toBeTruthy();
+      await claimTask(app, token, rb.id);
+      await reportTask(app, token, rb.id, { status: "failed", error: "页签超时" });
+    }
+    const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
+    expect(jobs[0].outcome).toBe("readback_error");
+
+    // stale 回收：claimedAt >30min 的 running 回 pending
+    const { jobs: jobsTable } = await import("../src/db/schema");
+    await db.insert(jobsTable).values({
+      userId, type: "metrics", status: "running",
+      payload: { publishJobId: 1, noteId: "x" },
+      claimedBy: "dead-sw", claimedAt: new Date(fakeNow - 31 * 60_000),
+    });
+    const tasks = await pendingTasks(app, token);
+    expect(tasks.some((t) => t.type === "metrics" && t.payload.noteId === "x")).toBe(true);
+  });
+
+  it("login_required 直接定档不重试", async () => {
+    const { app, deps } = await makeApp();
+    const { token } = await registerUser(app);
+    let fakeNow = Date.now();
+    deps.now = () => new Date(fakeNow);
+    await publishDone(app, token);
+    fakeNow += 11 * 60_000;
+    const rb = (await pendingTasks(app, token)).find((t) => t.type === "readback");
+    await claimTask(app, token, rb.id);
+    await reportTask(app, token, rb.id, { status: "done", outcome: "login_required", data: { items: [] } });
+    const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
+    expect(jobs[0].outcome).toBe("login_required");
+    // 不再重排
+    fakeNow += 40 * 60_000;
+    expect((await pendingTasks(app, token)).some((t) => t.type === "readback")).toBe(false);
+  });
+});

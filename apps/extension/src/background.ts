@@ -12,9 +12,24 @@
 import type {
   AccountHeartbeat,
   CollectResponse,
+  ExtTask,
   PendingPublishJobsResponse,
+  PendingTasksResponse,
+  PublishOutcome,
 } from "@v2media/shared";
-import type { BgMessage, BgResponse, LoginState, PublishJobPayload } from "./lib/messages";
+import {
+  isAuthError,
+  metricsRowsFromResponse,
+  personalInfoFromResponse,
+  postedNotesFromResponse,
+} from "@v2media/shared";
+import type {
+  BgMessage,
+  BgResponse,
+  GalaxyEventDetail,
+  LoginState,
+  PublishJobPayload,
+} from "./lib/messages";
 import { getSettings, setSettings } from "./lib/settings";
 
 const VERSION = chrome.runtime.getManifest().version;
@@ -341,6 +356,148 @@ async function runPublishJobById(jobId: number) {
   return { opened: true, jobId };
 }
 
+// ---------- 归因任务管道（readback / metrics / account_snapshot） ----------
+//
+// 服务端 jobs 表调度到期任务；插件认领后在后台开 creator/www 页面、
+// 嗅探页面自身发出的 galaxy/feed 响应回填。频控纪律（借 Easel 教训：
+// 小红书节流的是读取）——任务严格串行、开页间隔 ≥20s、超时回收。
+
+interface TrackedTask {
+  taskId: number;
+  type: string;
+  tabId?: number;
+  deadline: number;
+  payload: Record<string, unknown>;
+  sawGalaxy: boolean;
+  loginSuspected: boolean;
+  done: boolean;
+}
+const trackedTasks = new Map<number, TrackedTask>();
+const TASK_TIMEOUT_MS = 90_000;
+const TASK_SPACING_MS = 20_000;
+let lastTaskOpenAt = 0;
+
+/** 各任务要打开的页面：readback/快照走创作中心，metrics 开笔记 www 详情页。 */
+function taskTabUrl(task: ExtTask): string | null {
+  const p = task.payload as Record<string, unknown>;
+  let base: string;
+  if (task.type === "metrics") {
+    base =
+      String(p.noteUrl ?? "") ||
+      (p.noteId ? `https://www.xiaohongshu.com/explore/${p.noteId}` : "");
+  } else if (task.type === "readback") {
+    base = "https://creator.xiaohongshu.com/new/note-manager";
+  } else if (task.type === "account_snapshot") {
+    base = "https://creator.xiaohongshu.com/new/home";
+  } else {
+    return null;
+  }
+  if (!base) return null;
+  return `${base}${base.includes("?") ? "&" : "?"}__v2m_task=${task.id}`;
+}
+
+/** 该任务是不是需要"当前浏览器登录的就是这个号"（metrics 读公开页不需要）。 */
+function needsAccountMatch(type: string): boolean {
+  return type === "readback" || type === "account_snapshot";
+}
+
+async function finishTask(
+  t: TrackedTask,
+  body: { status: "done" | "failed"; outcome?: PublishOutcome; data?: unknown; error?: string },
+) {
+  if (t.done) return;
+  t.done = true;
+  trackedTasks.delete(t.taskId);
+  if (t.tabId) void chrome.tabs.remove(t.tabId).catch(() => {});
+  await api(`/api/ext/tasks/${t.taskId}/result`, { body }).catch((e) => {
+    console.warn(`[v2m] task ${t.taskId} result report failed:`, e);
+  });
+}
+
+/** galaxy 响应 → 该任务要的数据（不匹配返回 null 继续等）。 */
+function galaxyDataForTask(
+  t: TrackedTask,
+  detail: GalaxyEventDetail,
+): { data?: unknown; outcome?: PublishOutcome } | null {
+  if (isAuthError(detail.json, detail.httpStatus)) return { outcome: "login_required" };
+  if (t.type === "readback" && detail.path.includes("/creator/note/user/posted")) {
+    return { data: { items: postedNotesFromResponse(detail.json) } };
+  }
+  if (t.type === "metrics" && detail.path.includes("analyze")) {
+    return { data: { rows: metricsRowsFromResponse(detail.json) } };
+  }
+  if (t.type === "account_snapshot" && detail.path.includes("personal_info")) {
+    return { data: personalInfoFromResponse(detail.json) };
+  }
+  return null;
+}
+
+async function pollTasks() {
+  const now = Date.now();
+  // 超时回收：登录疑似 → readback 定档 login_required；其余 → failed（服务端按需重排）
+  for (const t of trackedTasks.values()) {
+    if (t.done || now <= t.deadline) continue;
+    if (t.type === "readback" && (t.loginSuspected || !t.sawGalaxy)) {
+      // 创作中心登录态正常时页面必发 galaxy 请求；完全没有基本等于被踢去登录页
+      await finishTask(t, { status: "done", outcome: "login_required" });
+    } else {
+      await finishTask(t, { status: "failed", error: "任务执行超时" });
+    }
+  }
+  if (!(await getSettings()).enabled) return; // 总开关关：不领任务
+  if (!(await getAuth())) return;
+  let tasks: ExtTask[];
+  try {
+    tasks = (await api<PendingTasksResponse>("/api/ext/tasks/pending?limit=5")).tasks ?? [];
+  } catch (e) {
+    console.warn("[v2m] pending tasks poll failed:", e);
+    return;
+  }
+  for (const task of tasks) {
+    if (trackedTasks.has(task.id)) continue;
+    const want = String((task.payload as Record<string, unknown>)?.xhsUserId ?? "");
+    if (want && needsAccountMatch(task.type)) {
+      const cur = await currentXhsUserId();
+      // 登录对不上就不领：留给登录该账号的浏览器跑（任务继续 pending，不判失败）
+      if (!cur || cur !== want) continue;
+    }
+    // 串行 + 间隔：一轮最多领一个（下一个等下一分钟轮询）
+    if (now - lastTaskOpenAt < TASK_SPACING_MS) break;
+    let claimed = false;
+    try {
+      await api(`/api/ext/tasks/${task.id}/claim`, { body: { claimedBy: await swId() } });
+      claimed = true;
+    } catch {
+      continue;
+    }
+    if (!claimed) continue;
+    const url = taskTabUrl(task);
+    if (!url) {
+      await api(`/api/ext/tasks/${task.id}/result`, {
+        body: { status: "failed", error: `未知任务类型 ${task.type}` },
+      }).catch(() => {});
+      continue;
+    }
+    const tracked: TrackedTask = {
+      taskId: task.id,
+      type: task.type,
+      deadline: now + TASK_TIMEOUT_MS,
+      payload: task.payload as Record<string, unknown>,
+      sawGalaxy: false,
+      loginSuspected: false,
+      done: false,
+    };
+    trackedTasks.set(task.id, tracked);
+    lastTaskOpenAt = now;
+    try {
+      const tab = await chrome.tabs.create({ url, active: false });
+      tracked.tabId = tab.id;
+    } catch (e) {
+      await finishTask(tracked, { status: "failed", error: String(e) });
+    }
+  }
+}
+
 // ---------- 消息路由 ----------
 
 function reply<T>(p: Promise<T>, sendResponse: (r: BgResponse<T>) => void) {
@@ -424,6 +581,40 @@ chrome.runtime.onMessage.addListener(
 
       case "FETCH_IMAGE":
         return reply(fetchImageAsDataUrl(String(msg.url ?? "")), sendResponse);
+
+      // --- 归因任务数据回传 ---
+      case "GALAXY_DATA": {
+        const tabId = sender.tab?.id;
+        const detail = msg.detail as GalaxyEventDetail | undefined;
+        if (tabId == null || !detail?.path) return false;
+        for (const t of trackedTasks.values()) {
+          if (t.tabId !== tabId || t.done) continue;
+          t.sawGalaxy = true;
+          const got = galaxyDataForTask(t, detail);
+          if (!got) continue;
+          if (got.outcome === "login_required") t.loginSuspected = true;
+          if (t.type === "readback") {
+            void finishTask(t, {
+              status: "done",
+              outcome: got.outcome,
+              data: got.data,
+            });
+          } else if (got.data) {
+            void finishTask(t, { status: "done", data: got.data });
+          }
+        }
+        sendResponse({ ok: true });
+        return false;
+      }
+
+      case "TASK_DATA": {
+        const t = trackedTasks.get(Number(msg.taskId));
+        if (t && !t.done && t.type === "metrics" && msg.data) {
+          void finishTask(t, { status: "done", data: { rows: [msg.data] } });
+        }
+        sendResponse({ ok: true });
+        return false;
+      }
 
       // --- COLLECT_URL 回执 ---
       case "COLLECT_URL_DONE": {
@@ -552,7 +743,14 @@ async function fetchImageAsDataUrl(url: string): Promise<{ dataUrl: string }> {
 
 // ---------- tabs.onUpdated：发布页加载完 -> 推 payload ----------
 
-chrome.tabs.onUpdated.addListener((tabId, info) => {
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  // 归因任务页被重定向到登录页 → 标记 loginSuspected（等 deadline 时按 login_required 归档）
+  const redirectUrl = info.url ?? tab.url ?? "";
+  if (/login|passport/i.test(redirectUrl)) {
+    for (const t of trackedTasks.values()) {
+      if (t.tabId === tabId) t.loginSuspected = true;
+    }
+  }
   if (info.status !== "complete") return;
   for (const [jobId, t] of trackedJobs) {
     if (t.tabId !== tabId || t.state !== "opening") continue;
@@ -579,7 +777,10 @@ const PUBLISH_MIN = 1;
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HEARTBEAT_ALARM) void heartbeat();
-  if (alarm.name === PUBLISH_ALARM) void pollPendingJobs();
+  if (alarm.name === PUBLISH_ALARM) {
+    void pollPendingJobs();
+    void pollTasks();
+  }
 });
 
 function ensureAlarms() {

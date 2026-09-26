@@ -129,6 +129,11 @@ export const publishJobs = pgTable("publish_jobs", {
   claimedBy: varchar("claimed_by", { length: 128 }),
   error: text("error"),
   resultUrl: text("result_url"),
+  /** 读回对账结论：verified | unverified | login_required | readback_error */
+  outcome: varchar("outcome", { length: 32 }),
+  /** 读回确认的小红书 note_id（归因关联点）。 */
+  noteId: varchar("note_id", { length: 128 }),
+  verifiedAt: timestamp("verified_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -164,7 +169,45 @@ export const jobs = pgTable("jobs", {
   type: varchar("type", { length: 64 }).notNull(),
   payload: jsonb("payload").notNull().default({}),
   status: varchar("status", { length: 32 }).notNull().default("pending"),
+  /** 到期时间——插件只领 dueAt<=now 的（归因任务按 T+1h/1d/7d 排期）。 */
+  dueAt: timestamp("due_at"),
+  /** 认领标识（插件 SW id），防多浏览器重复执行。 */
+  claimedBy: varchar("claimed_by", { length: 128 }),
+  /** 认领时间——running 超过 30min 视为执行方掉线，回收重排。 */
+  claimedAt: timestamp("claimed_at"),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   finishedAt: timestamp("finished_at"),
+});
+
+/** 已发笔记指标快照：一条笔记的一次回采行（时序对比看曲线）。 */
+export const noteMetrics = pgTable("note_metrics", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  publishJobId: integer("publish_job_id").references(() => publishJobs.id, { onDelete: "set null" }),
+  /** 小红书 note_id（读回对账确认）。 */
+  noteId: varchar("note_id", { length: 128 }).notNull().default(""),
+  noteUrl: text("note_url"),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+  views: integer("views"),
+  likes: integer("likes"),
+  collects: integer("collects"),
+  comments: integer("comments"),
+  shares: integer("shares"),
+  /** 曝光量——创作中心才有；www 侧回采拿不到。 */
+  exposure: integer("exposure"),
+  /** 流量来源拆解等原始字段。 */
+  extra: jsonb("extra").$type<Record<string, unknown>>(),
+});
+
+/** 账号概览快照：粉丝/获赞/发文数时序（账号矩阵趋势底座）。 */
+export const accountSnapshots = pgTable("account_snapshots", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "cascade" }),
+  capturedAt: timestamp("captured_at").defaultNow().notNull(),
+  followers: integer("followers"),
+  likesTotal: integer("likes_total"),
+  notesCount: integer("notes_count"),
+  extra: jsonb("extra").$type<Record<string, unknown>>(),
 });

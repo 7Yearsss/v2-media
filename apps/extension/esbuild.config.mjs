@@ -34,6 +34,8 @@ await build({
     background: "src/background.ts",
     content: "src/content.ts",
     "xhs-main": "src/main-world/xhs.ts",
+    "creator-main": "src/main-world/creator.ts",
+    "creator-tasks": "src/creator-tasks.ts",
     "creator-publish": "src/creator-publish.ts",
     "site-bridge": "src/site-bridge.ts",
     popup: "src/popup.ts",
