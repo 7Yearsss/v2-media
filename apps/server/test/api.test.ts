@@ -129,6 +129,10 @@ describe("collect + notes", () => {
     const ana = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
     expect(ana.noteCount).toBe(2);
     expect(ana.report.length).toBeGreaterThan(0);
+    // 结构化统计：topNotes 按互动排序、total 正确
+    expect(ana.data.stats.totalNotes).toBe(2);
+    expect(ana.data.stats.topNotes[0].title).toBe("燃脂训练");
+    expect(ana.data.stats.totalLikes).toBe(9050);
     // 历史列表 + 详情
     const hist = (await (await app.request(`/api/collections/${col.id}/analyses`, authed(token))).json()) as any;
     expect(hist.items).toHaveLength(1);

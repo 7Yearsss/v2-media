@@ -283,7 +283,7 @@ export const api = {
   analyzeCollection: (id: number) =>
     request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST" }),
   collectionAnalyses: (id: number) =>
-    request<{ items: Omit<CollectionAnalysis, "report">[] }>(`/api/collections/${id}/analyses`),
+    request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`),
   collectionAnalysis: (id: number, aid: number) =>
     request<CollectionAnalysis>(`/api/collections/${id}/analyses/${aid}`),
 

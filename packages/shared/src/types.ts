@@ -61,13 +61,50 @@ export interface Collection {
   createdAt: string;
 }
 
-/** AI 分析结果：对一个采集库跑出的爆款分析报告。 */
+/** 采集库分析的确定性统计（服务端计算，不经 AI）。 */
+export interface CollectionAnalysisStats {
+  totalNotes: number;
+  totalLikes: number;
+  totalCollects: number;
+  totalComments: number;
+  totalShares: number;
+  avgEngagement: number;
+  /** 互动量 top 笔记榜。 */
+  topNotes: Array<{
+    noteId: string;
+    title: string;
+    likes: number;
+    collects: number;
+    comments: number;
+    shares: number;
+    engagement: number;
+  }>;
+  /** 高频标签 top。 */
+  topTags: Array<{ tag: string; count: number }>;
+}
+
+/** AI 对库内内容产出的结构化洞察（JSON 解析失败时为 null，看 report）。 */
+export interface CollectionInsight {
+  /** 一句话结论。 */
+  summary: string;
+  /** AI 挑出的爆款及原因。 */
+  topNotes: Array<{ title: string; why: string }>;
+  /** 共性规律。 */
+  patterns: string[];
+  /** 机会点。 */
+  opportunities: string[];
+  /** 行动建议。 */
+  actions: string[];
+}
+
+/** AI 分析结果：对一个采集库跑出的一轮分析快照。 */
 export interface CollectionAnalysis {
   id: number;
   collectionId: number;
   /** 本轮分析覆盖的笔记数。 */
   noteCount: number;
-  /** markdown 格式报告全文。 */
+  data: { stats: CollectionAnalysisStats; insight: CollectionInsight | null };
+  /** AI 原文（结构化失败时的兜底）。 */
   report: string;
   createdAt: string;
 }

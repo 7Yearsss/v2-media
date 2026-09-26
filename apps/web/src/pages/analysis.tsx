@@ -1,16 +1,258 @@
-import { BrainCircuit, FileText, Loader2, Sparkles } from "lucide-react";
-import { useMemo, useState } from "react";
+import {
+  BrainCircuit,
+  FileText,
+  Flame,
+  Lightbulb,
+  Loader2,
+  MessageCircle,
+  Sparkles,
+  Target,
+  TrendingUp,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CollectionAnalysis } from "@v2media/shared";
-import { AnimatedBadge } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
+import { NumberTicker } from "@/components/motion/number-ticker";
+import { TextReveal } from "@/components/motion/text-reveal";
+import { TextShimmer } from "@/components/motion/text-shimmer";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { api } from "@/lib/api";
-import { timeAgo } from "@/lib/format";
+import { formatCount, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
 
-type AnalysisMeta = Omit<CollectionAnalysis, "report">;
+type AnalysisMeta = Omit<CollectionAnalysis, "report" | "data">;
+
+/** 指标卡：动画数字 + 副标题。 */
+function StatCard({ label, value, hint }: { label: string; value: number; hint: string }) {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-4">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <NumberTicker
+        value={value}
+        locale
+        className="mt-1 block text-2xl font-semibold tabular-nums"
+      />
+      <div className="mt-1 text-xs text-muted-foreground">{hint}</div>
+    </div>
+  );
+}
+
+/** 动画横条：挂载后从 0 长到目标宽度（key 变化重放）。 */
+function BarRow({
+  rank,
+  title,
+  value,
+  max,
+  delay,
+}: {
+  rank?: number;
+  title: string;
+  value: number;
+  max: number;
+  delay: number;
+}) {
+  const pct = max > 0 ? Math.max(4, (value / max) * 100) : 0;
+  // 挂载后才给目标宽度，让 transition 从 0 长出来
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const t = setTimeout(() => setW(pct), delay);
+    return () => clearTimeout(t);
+  }, [pct, delay]);
+  return (
+    <div className="group flex items-center gap-3">
+      {rank != null && (
+        <span
+          className={cn(
+            "grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold",
+            rank <= 3 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+          )}
+        >
+          {rank}
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="truncate text-sm">{title}</span>
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {formatCount(value)}
+          </span>
+        </div>
+        <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary transition-[width] duration-700 ease-out"
+            style={{ width: `${w}%` }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 入场渐显：挂载后延迟切入。 */
+function FadeIn({ delay, children }: { delay: number; children: React.ReactNode }) {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setOn(true), delay);
+    return () => clearTimeout(t);
+  }, [delay]);
+  return (
+    <div
+      style={{
+        opacity: on ? 1 : 0,
+        transform: on ? "none" : "translateY(6px)",
+        transition: "opacity .45s ease, transform .45s ease",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** AI 洞察分组卡。 */
+function InsightCard({
+  icon: Icon,
+  title,
+  items,
+  accent,
+}: {
+  icon: typeof Flame;
+  title: string;
+  items: string[];
+  accent: string;
+}) {
+  if (!items.length) return null;
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5">
+      <div className={cn("flex items-center gap-2 text-sm font-semibold", accent)}>
+        <Icon className="size-4" />
+        {title}
+      </div>
+      <ul className="mt-3 flex flex-col gap-2.5">
+        {items.map((t, i) => (
+          <li key={i}>
+            <FadeIn delay={i * 120}>
+              <span className="flex gap-2 text-sm leading-6 text-foreground/90">
+                <span className={cn("mt-2.5 size-1 shrink-0 rounded-full", accent.replace("text-", "bg-"))} />
+                {t}
+              </span>
+            </FadeIn>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function AnalysisView({ a }: { a: CollectionAnalysis }) {
+  const { stats, insight } = a.data ?? {};
+  if (!stats) {
+    // 旧格式/兜底：原文展示
+    return (
+      <div className="whitespace-pre-wrap rounded-2xl border border-border bg-card p-6 text-sm leading-7">
+        {a.report || "（无数据）"}
+      </div>
+    );
+  }
+  const totalEngagement =
+    stats.totalLikes + stats.totalCollects + stats.totalComments + stats.totalShares;
+  const maxNote = stats.topNotes[0]?.engagement ?? 0;
+  const maxTag = stats.topTags[0]?.count ?? 0;
+  const commentRate =
+    stats.totalLikes > 0 ? Math.round((stats.totalComments / stats.totalLikes) * 100) : 0;
+
+  return (
+    <div className="flex flex-col gap-5">
+      {/* 一句话结论 */}
+      {insight?.summary ? (
+        <div className="rounded-2xl border border-primary/25 bg-gradient-to-r from-primary/10 to-transparent p-5">
+          <TextReveal
+            text={insight.summary}
+            className="text-base font-medium leading-7"
+            split="word"
+            stagger={0.02}
+            once
+          />
+        </div>
+      ) : null}
+
+      {/* 指标卡 */}
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <StatCard label="分析笔记" value={a.noteCount} hint="本库互动 top" />
+        <StatCard label="总互动量" value={totalEngagement} hint="赞 + 藏 + 评 + 分享" />
+        <StatCard label="平均互动" value={stats.avgEngagement} hint="每篇笔记" />
+        <StatCard label="评赞比" value={commentRate} hint="越高讨论度越强" />
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        {/* 爆款榜 */}
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Flame className="size-4 text-orange-500" />
+            爆款榜 · 按互动量
+          </div>
+          <div className="mt-4 flex flex-col gap-3.5">
+            {stats.topNotes.map((n, i) => (
+              <BarRow key={n.noteId} rank={i + 1} title={n.title} value={n.engagement} max={maxNote} delay={i * 80} />
+            ))}
+          </div>
+        </div>
+
+        {/* 标签热度 */}
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <TrendingUp className="size-4 text-emerald-500" />
+            高频标签 · 库里在聚什么话题
+          </div>
+          <div className="mt-4 flex flex-col gap-3.5">
+            {stats.topTags.length ? (
+              stats.topTags.map((t, i) => (
+                <BarRow key={t.tag} title={`#${t.tag}`} value={t.count} max={maxTag} delay={i * 60} />
+              ))
+            ) : (
+              <div className="text-sm text-muted-foreground">这批笔记没带标签</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* AI 洞察三卡 */}
+      {insight ? (
+        <div className="grid gap-4 lg:grid-cols-3">
+          <InsightCard icon={Flame} title="爆款共性" items={insight.patterns} accent="text-orange-500" />
+          <InsightCard icon={Lightbulb} title="机会点" items={insight.opportunities} accent="text-amber-500" />
+          <InsightCard icon={Target} title="行动建议" items={insight.actions} accent="text-primary" />
+        </div>
+      ) : null}
+
+      {/* AI 点名的爆款原因 */}
+      {insight?.topNotes?.length ? (
+        <div className="rounded-2xl border border-border bg-card p-5">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <MessageCircle className="size-4 text-sky-500" />
+            它们为什么火
+          </div>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
+            {insight.topNotes.map((n, i) => (
+              <div key={i} className="rounded-xl bg-muted/50 p-3.5">
+                <div className="truncate text-sm font-medium">{n.title}</div>
+                <div className="mt-1 text-xs leading-5 text-muted-foreground">{n.why}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* 结构化失败时的原文兜底 */}
+      {!insight && a.report ? (
+        <div className="whitespace-pre-wrap rounded-2xl border border-border bg-card p-6 text-sm leading-7">
+          {a.report}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 export default function AnalysisPage() {
   const toast = useToast();
@@ -102,7 +344,7 @@ export default function AnalysisPage() {
       </div>
 
       {colId != null && (
-        <div className="grid gap-6 lg:grid-cols-[240px_1fr]">
+        <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
           {/* 历史报告 */}
           <div className="flex flex-col gap-2">
             <div className="text-xs font-medium text-muted-foreground">历史报告</div>
@@ -130,28 +372,23 @@ export default function AnalysisPage() {
             )}
           </div>
 
-          {/* 报告正文 */}
+          {/* 报告区 */}
           <div className="min-w-0">
             {analyze.isPending && (
-              <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
-                <Loader2 className="size-8 animate-spin" />
-                <div className="text-sm">正在让 AI 阅读「{colName}」里的笔记…</div>
+              <div className="flex flex-col items-center gap-3 py-16">
+                <Loader2 className="size-8 animate-spin text-muted-foreground" />
+                <TextShimmer className="text-sm text-muted-foreground">
+                  正在让 AI 阅读「{colName}」里的笔记…
+                </TextShimmer>
               </div>
             )}
             {active ? (
-              <div className="rounded-2xl border border-border bg-card p-6">
-                <div className="mb-4 flex items-center gap-2">
-                  <AnimatedBadge>基于 {active.noteCount} 篇笔记</AnimatedBadge>
-                  <span className="text-xs text-muted-foreground">{timeAgo(active.createdAt)}</span>
-                </div>
-                {/* 模型输出 markdown 文本，直接保留换行渲染 */}
-                <div className="whitespace-pre-wrap text-sm leading-7">{active.report}</div>
-              </div>
+              <AnalysisView key={active.id} a={active} />
             ) : (
               !analyze.isPending && (
                 <EmptyState
                   title="选择库后点「开始分析」"
-                  description="报告会列出爆款 TOP、共性规律、机会点和行动建议"
+                  description="产出：一句话结论、指标卡、爆款榜、标签热度、共性/机会/建议"
                 />
               )
             )}
