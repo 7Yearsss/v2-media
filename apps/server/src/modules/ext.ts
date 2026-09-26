@@ -172,13 +172,14 @@ export function extModule(deps: Deps) {
         .where(and(eq(collectedNotes.userId, userId), eq(collectedNotes.noteId, item.noteId)))
         .limit(1);
       if (existing) {
-        // 纯卡片批次不许覆盖已入库的详情级字段（正文图集/标签/评论）
+        // 纯卡片批次不覆盖详情级字段（正文/图集/视频/标签/评论），已入库的值一律优先
         const merged = detail
           ? values
           : {
               ...values,
               content: existing.content || values.content,
-              images: existing.images.length > 1 || detail ? existing.images : values.images,
+              images: existing.images.length ? existing.images : values.images,
+              videoUrl: existing.videoUrl ?? values.videoUrl,
               tags: existing.tags.length ? existing.tags : values.tags,
               commentsData: existing.commentsData.length ? existing.commentsData : values.commentsData,
             };
@@ -199,6 +200,8 @@ export function extModule(deps: Deps) {
   app.get("/publish/pending", async (c) => {
     const userId = c.get("userId");
     const includeFuture = c.req.query("all") === "1";
+    // xhsUserId：插件传当前登录号做服务端过滤，避免不匹配任务占满 limit 名额饿死后面的任务
+    const accountFilter = c.req.query("account");
     const rows = await deps.db
       .select({ job: publishJobs, draft: drafts, account: hostedAccounts })
       .from(publishJobs)
@@ -211,6 +214,7 @@ export function extModule(deps: Deps) {
           includeFuture
             ? undefined
             : or(isNull(publishJobs.scheduledAt), lt(publishJobs.scheduledAt, deps.now())),
+          accountFilter ? eq(hostedAccounts.xhsUserId, accountFilter) : undefined,
         ),
       )
       .orderBy(publishJobs.id)
@@ -230,10 +234,13 @@ export function extModule(deps: Deps) {
     });
   });
 
-  /** 单个任务的草稿全文 —— SW 重启后 trackedJobs 丢失时靠它恢复已认领任务。 */
+  /** 单个任务的草稿全文 —— SW 重启后 trackedJobs 丢失时靠它恢复已认领任务。
+      running 任务只回给原认领方（?claimer=SW_ID），防另一浏览器重复执行。 */
   app.get("/publish/:id", async (c) => {
     const userId = c.get("userId");
     const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
+    const claimer = c.req.query("claimer") ?? "";
     const [r] = await deps.db
       .select({ job: publishJobs, draft: drafts, account: hostedAccounts })
       .from(publishJobs)
@@ -243,7 +250,10 @@ export function extModule(deps: Deps) {
         and(
           eq(publishJobs.id, id),
           eq(publishJobs.userId, userId),
-          or(eq(publishJobs.status, "pending"), eq(publishJobs.status, "running")),
+          or(
+            eq(publishJobs.status, "pending"),
+            and(eq(publishJobs.status, "running"), eq(publishJobs.claimedBy, claimer)),
+          ),
         ),
       )
       .limit(1);
@@ -264,6 +274,7 @@ export function extModule(deps: Deps) {
   app.post("/publish/:id/claim", async (c) => {
     const userId = c.get("userId");
     const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
     const parsed = claimSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const [row] = await deps.db
@@ -280,6 +291,7 @@ export function extModule(deps: Deps) {
   app.post("/publish/:id/result", async (c) => {
     const userId = c.get("userId");
     const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
     const parsed = resultSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const [row] = await deps.db
