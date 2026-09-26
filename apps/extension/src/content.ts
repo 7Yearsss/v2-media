@@ -662,8 +662,14 @@ if (isWww) {
   // ---------- __v2m_collect=1：工作台 COLLECT_URL 打开的页 ----------
 
   const collectFlag = new URL(location.href).searchParams.get("__v2m_collect");
-  if (collectFlag) {
-    const noteId = pageNoteId();
+  if (collectFlag) sessionStorage.setItem("v2m_collect_url", location.href);
+  const storedCollectUrl = sessionStorage.getItem("v2m_collect_url");
+  if (collectFlag || storedCollectUrl) {
+    const collectUrl = collectFlag ? location.href : storedCollectUrl!;
+    const noteId =
+      pageNoteId() ??
+      collectUrl.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i)?.[1] ??
+      null;
     let done = false;
     let challengeNotified = false;
     const detectChallenge = () => {
@@ -752,9 +758,18 @@ if (isWww) {
             noteId: noteId ?? undefined,
           });
         }
+        // 被重定向到验证中转页（无 collectFlag）：周期性跳回原笔记页，
+        // 用户验证通过后即可回到采集流程；未通过则再次落在验证页循环。
+        if (!collectFlag) {
+          setTimeout(() => {
+            location.href = collectUrl;
+          }, 10_000);
+          return;
+        }
         setTimeout(tick, 1200);
         return;
       }
+      if (!collectFlag) return; // 中转页未命中验证文案但也不是笔记页：不再继续
       if (challengeBegan) {
         const pausedFor = Date.now() - challengeBegan;
         started += pausedFor;

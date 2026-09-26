@@ -652,7 +652,20 @@ chrome.runtime.onMessage.addListener(
             clearTimeout(w.timeoutId);
             w.timeoutId = undefined;
           }
-          void chrome.tabs.update(sid, { active: true });
+          // 不把验证中转页（/404/sec_）顶到前台——它验证后不会回跳；
+          // 改为前台打开笔记正常页让用户验证，隐藏采集页自行重试续跑
+          if (!w.challengeTabOpened) {
+            w.challengeTabOpened = true;
+            const nid = msg.noteId ?? "";
+            if (nid) {
+              void chrome.tabs.create({
+                url: `https://www.xiaohongshu.com/explore/${nid}`,
+                active: true,
+              });
+            } else {
+              void chrome.tabs.update(sid, { active: true });
+            }
+          }
         }
         sendResponse({ ok: true });
         return false;
@@ -662,6 +675,7 @@ chrome.runtime.onMessage.addListener(
         const w = collectWaiters.get(noteId);
         const sid = sender.tab?.id;
         if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
+          w.challengeTabOpened = false; // 再次触发验证码时允许再开一次前台页
           armCollectWaiterTimeout(noteId, w);
         }
         sendResponse({ ok: true });
@@ -744,6 +758,7 @@ const collectWaiters = new Map<
     tabId?: number;
     timeoutId?: ReturnType<typeof setTimeout>;
     hardTimeoutId?: ReturnType<typeof setTimeout>;
+    challengeTabOpened?: boolean;
   }
 >();
 
@@ -787,6 +802,19 @@ async function collectByUrl(url: string) {
       }
     }, 15 * 60 * 1000);
   });
+  // SW 重启后队列头会重放同一 noteId：先收掉旧生命周期残留的采集页，避免同一笔记堆多个隐藏页
+  if (noteId) {
+    const stale = await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" });
+    for (const t of stale) {
+      if (
+        t.id &&
+        t.url?.includes("__v2m_collect") &&
+        t.url.includes(noteId)
+      ) {
+        await chrome.tabs.remove(t.id).catch(() => {});
+      }
+    }
+  }
   const tab = await chrome.tabs.create({ url: target, active: false });
   waiter.tabId = tab.id; // 绑定 tab：回执只能由它完成（重启后旧页回执不顶包）
   const r = await done;
