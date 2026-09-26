@@ -19,23 +19,33 @@ async function render() {
   const openBtn = document.getElementById("open") as HTMLButtonElement | null;
   const enabledEl = document.getElementById("enabled") as HTMLInputElement | null;
   const autoEl = document.getElementById("autoCollect") as HTMLInputElement | null;
+  const deepEl = document.getElementById("deepCollect") as HTMLInputElement | null;
   const colSel = document.getElementById("collection") as HTMLSelectElement | null;
   const newColRow = document.getElementById("newColRow") as HTMLElement | null;
   const newCol = document.getElementById("newCol") as HTMLInputElement | null;
   const newColBtn = document.getElementById("newColBtn") as HTMLButtonElement | null;
-  if (!statusEl || !openBtn || !enabledEl || !autoEl || !colSel || !newColRow || !newCol || !newColBtn) return;
+  if (!statusEl || !openBtn || !enabledEl || !autoEl || !deepEl || !colSel || !newColRow || !newCol || !newColBtn) return;
 
   const settings = await getSettings();
   enabledEl.checked = settings.enabled;
   autoEl.checked = settings.autoCollect;
+  deepEl.checked = settings.deepCollect ?? false;
   autoEl.disabled = !settings.enabled;
+  deepEl.disabled = !settings.enabled;
 
   enabledEl.onchange = async () => {
     await setSettings({ enabled: enabledEl.checked });
     autoEl.disabled = !enabledEl.checked;
+    deepEl.disabled = !enabledEl.checked;
     statusEl.textContent = enabledEl.checked
       ? "插件已启用"
       : "插件已停用（采集/心跳/发布都暂停）";
+  };
+  deepEl.onchange = async () => {
+    await setSettings({ deepCollect: deepEl.checked });
+    statusEl.textContent = deepEl.checked
+      ? "深度采集已开：采集后会自动补评论"
+      : "深度采集已关";
   };
   autoEl.onchange = async () => {
     await setSettings({ autoCollect: autoEl.checked });
