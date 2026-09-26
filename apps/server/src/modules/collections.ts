@@ -9,8 +9,12 @@ import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
 const ANALYZE_LIMIT = 40;
 
 const ANALYSIS_SYSTEM =
-  "你是资深小红书运营分析师。输入是一个采集库里的笔记列表（标题/互动数据/标签/正文节选）。" +
+  "你是资深小红书运营分析师。输入是一个采集库里的笔记列表，每篇含标题/互动数据/标签/正文节选，" +
+  "可能还带：发布时间、上线天数、日均互动（互动量/上线天数）、搜索来源词、IP属地、热门评论。" +
   "要求：每条结论必须引用库里的具体笔记标题或数字，禁止空话套话；" +
+  "优先用「日均互动」区分新爆款和老帖余热（新帖日均互动高=真趋势，老帖总量高不代表还在火）；" +
+  "热门评论反映观众真实关注点，patterns/opportunities 里至少一条要引用评论原话；" +
+  "有搜索来源词的笔记要在结论里点出哪些词在带量；" +
   "如果收藏/评论/分享字段都是 0，要在 summary 里点明该库只有曝光数据、无法判断转化。" +
   "只输出一个 JSON 对象（不要 markdown 围栏、不要多余文字），结构：" +
   '{"summary":"一句话结论（必须含具体数据）","topNotes":[{"title":"笔记标题","why":"它火的原因（引用其具体数据/标题特征）"}],' +
@@ -154,6 +158,10 @@ export function collectionsModule(deps: Deps) {
         tags: collectedNotes.tags,
         content: collectedNotes.content,
         hasDetail: collectedNotes.hasDetail,
+        publishedAt: collectedNotes.publishedAt,
+        ipLocation: collectedNotes.ipLocation,
+        sourceKeyword: collectedNotes.sourceKeyword,
+        commentsData: collectedNotes.commentsData,
       })
       .from(collectedNotes)
       .where(eq(collectedNotes.collectionId, col.id))
@@ -194,16 +202,35 @@ export function collectionsModule(deps: Deps) {
       },
     };
 
+    // 热门评论 top3 喂给 AI：评论是观众真实需求的一手信号
+    type Cmt = { content?: string; likes?: number };
+    const topComments = (raw: unknown[]): Cmt[] =>
+      (Array.isArray(raw) ? raw : [])
+        .map((cm) => ({ content: String((cm as Cmt)?.content ?? ""), likes: Number((cm as Cmt)?.likes ?? 0) }))
+        .filter((cm) => cm.content)
+        .sort((a, b) => b.likes - a.likes)
+        .slice(0, 3);
     const payload = notes
-      .map((n) => ({
-        标题: n.title,
-        赞: n.likes,
-        收藏: n.collects,
-        评论: n.comments,
-        分享: n.shares,
-        标签: n.tags.slice(0, 8),
-        正文节选: n.content.slice(0, 300),
-      }))
+      .map((n) => {
+        const eng = engagement(n);
+        const days = n.publishedAt
+          ? Math.max(1, Math.ceil((deps.now().getTime() - n.publishedAt.getTime()) / 86_400_000))
+          : null;
+        return {
+          标题: n.title,
+          赞: n.likes,
+          收藏: n.collects,
+          评论: n.comments,
+          分享: n.shares,
+          ...(n.publishedAt ? { 发布时间: n.publishedAt.toISOString().slice(0, 10), 上线天数: days } : {}),
+          ...(days ? { 日均互动: Math.round(eng / days) } : {}),
+          ...(n.sourceKeyword ? { 搜索来源词: n.sourceKeyword } : {}),
+          ...(n.ipLocation ? { IP属地: n.ipLocation } : {}),
+          标签: n.tags.slice(0, 8),
+          正文节选: n.content.slice(0, 300),
+          ...(topComments(n.commentsData).length ? { 热门评论: topComments(n.commentsData).map((cm) => cm.content) } : {}),
+        };
+      })
       .map((n) => JSON.stringify(n))
       .join("\n");
     let report: string;

@@ -53,6 +53,9 @@ const detailSchema = cardSchema.extend({
   images: z.array(z.object({ url: z.string() })).default([]),
   videoUrl: z.string().optional(),
   commentsData: z.array(commentSchema).optional(),
+  // 发布时间戳（毫秒）/ IP 属地 —— 详情页才有，分析时效判断靠它
+  publishedAt: z.string().optional(),
+  ipLocation: z.string().default(""),
 });
 
 /** CollectBatch（packages/shared/types.ts）。 */
@@ -185,6 +188,12 @@ export function extModule(deps: Deps) {
         })),
         source: p.source,
         sourceUrl: p.context?.pageUrl || item.url,
+        // 搜索场景的关键词归因（context.keyword 由插件从页面 URL 提取）
+        sourceKeyword: p.context?.keyword ?? "",
+        publishedAt: detail?.publishedAt && Number.isFinite(+detail.publishedAt) && +detail.publishedAt > 0
+          ? new Date(+detail.publishedAt)
+          : null,
+        ipLocation: detail?.ipLocation || "",
         rawJson: null as any,
       };
       const [existing] = await deps.db
@@ -200,6 +209,9 @@ export function extModule(deps: Deps) {
               title: realTitle || existing.title || values.title,
               titleFallback: !realTitle && existing.titleFallback,
               hasDetail: true,
+              publishedAt: values.publishedAt ?? existing.publishedAt,
+              ipLocation: values.ipLocation || existing.ipLocation,
+              sourceKeyword: values.sourceKeyword || existing.sourceKeyword,
             }
           : {
               ...values,
@@ -211,6 +223,10 @@ export function extModule(deps: Deps) {
               videoUrl: existing.videoUrl ?? values.videoUrl,
               tags: existing.tags.length ? existing.tags : values.tags,
               commentsData: existing.commentsData.length ? existing.commentsData : values.commentsData,
+              sourceKeyword: values.sourceKeyword || existing.sourceKeyword,
+              // 发布时间/IP 属地只有详情才有，卡片批次不覆盖
+              publishedAt: existing.publishedAt,
+              ipLocation: existing.ipLocation,
             };
         await deps.db
           .update(collectedNotes)
