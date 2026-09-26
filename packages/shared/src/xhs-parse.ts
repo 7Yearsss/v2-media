@@ -122,8 +122,32 @@ export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<Note
   const videoUrl =
     card.video?.media?.stream?.h264?.[0]?.master_url ??
     card.video?.media?.stream?.h265?.[0]?.master_url ??
+    card.video?.media?.stream?.av1?.[0]?.master_url ??
     card.video?.url ??
-    undefined;
+    deepMediaUrl(card.video) ??
+    (card.video?.consumer?.originVideoKey || card.video?.consumer?.origin_video_key
+      ? `https://sns-video-qc.xhscdn.com/${str(card.video.consumer.originVideoKey ?? card.video.consumer.origin_video_key)}`
+      : undefined);
+  // 部分响应把流地址放在非常规路径，兜底深搜 video 子树；
+  // 只有 key（非 URL）时按 xhscdn 域名构造播放地址
+  function deepMediaUrl(v: Any, depth = 0): string | undefined {
+    if (!v || typeof v !== "object" || depth > 6) return undefined;
+    for (const [k, val] of Object.entries(v)) {
+      if (
+        (k === "master_url" || k === "origin_video_key" || k === "originVideoKey" || k === "url") &&
+        typeof val === "string" &&
+        /^https?:\/\//.test(val)
+      )
+        return val;
+    }
+    for (const val of Object.values(v)) {
+      if (val && typeof val === "object") {
+        const found = deepMediaUrl(val, depth + 1);
+        if (found) return found;
+      }
+    }
+    return undefined;
+  }
   const tagList: Any[] = card.tag_list ?? card.tagList ?? [];
   const xsecToken = str(items?.[0]?.xsec_token ?? fallback?.xsecToken ?? "");
   return {

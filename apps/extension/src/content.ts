@@ -262,9 +262,25 @@ if (isWww) {
     for (const d of batch.details ?? []) {
       // 评论可能先于详情到（隐藏页/详情浏览）：合并进缓存，后续上传带上
       const cms = commentsMap.get(d.noteId);
+      const incoming = (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail;
+      // 与 main-world emitNotes 同款合并：瘦详情（SSR 重扫）不能冲掉富详情
+      const prev = details.get(d.noteId);
       details.set(
         d.noteId,
-        (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail,
+        prev
+          ? {
+              ...incoming,
+              images:
+                incoming.images.length >= prev.images.length ? incoming.images : prev.images,
+              videoUrl: incoming.videoUrl ?? prev.videoUrl,
+              tags: incoming.tags.length ? incoming.tags : prev.tags,
+              content: incoming.content || prev.content,
+              desc: incoming.desc || prev.desc,
+              cover: incoming.cover || prev.cover,
+              publishedAt: incoming.publishedAt || prev.publishedAt,
+              ipLocation: incoming.ipLocation || prev.ipLocation,
+            }
+          : incoming,
       );
       // 手动模式下，晚到的详情对已采卡片做补传（autoCollect 走 queueUpload 已覆盖）；
       // 沿用卡片入库时的库，不取当前选择（用户可能已换库）
@@ -556,11 +572,19 @@ if (isWww) {
       }
     }
     // 页面详情经常先只给封面；SSR 详情可补齐完整图集、正文和标签。
-    const detailUrl =
-      card?.url ??
+    // SSR fetch 详情要带 xsec_token 才不被 302：优先选已带 token 的
+    // 详情/卡片 URL（接口嗅探到的 detail.url 有，feed 卡片常没有）
+    const urlCandidates = [detail?.url, card?.url].filter((u): u is string => Boolean(u));
+    let detailUrl =
+      urlCandidates.find((u) => u.includes("xsec_token")) ??
       (pageNoteId() === noteId
         ? `${location.origin}${location.pathname}${location.search}`
-        : undefined);
+        : undefined) ??
+      urlCandidates[0];
+    const xsec = card?.xsecToken || detail?.xsecToken;
+    if (detailUrl && xsec && !detailUrl.includes("xsec_token")) {
+      detailUrl += `${detailUrl.includes("?") ? "&" : "?"}xsec_token=${encodeURIComponent(xsec)}&xsec_source=pc_feed`;
+    }
     if (
       detailUrl &&
       (!detail ||

@@ -109,7 +109,24 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
       cache.order = cache.order.filter((x) => x !== it.noteId);
       cache.order.push(it.noteId);
     }
-    for (const d of details ?? []) cache.details[d.noteId] = d;
+    for (const d of details ?? []) {
+      // 合并而不是覆盖：SSR 重扫会产出瘦详情（只带 tags/desc），不能把
+      // 详情接口嗅到的 image_list/video 冲掉 —— 每个字段保留更富的一份
+      const prev = cache.details[d.noteId];
+      cache.details[d.noteId] = prev
+        ? {
+            ...d,
+            images: d.images.length >= prev.images.length ? d.images : prev.images,
+            videoUrl: d.videoUrl ?? prev.videoUrl,
+            tags: d.tags.length ? d.tags : prev.tags,
+            content: d.content || prev.content,
+            desc: d.desc || prev.desc,
+            cover: d.cover || prev.cover,
+            publishedAt: d.publishedAt || prev.publishedAt,
+            ipLocation: d.ipLocation || prev.ipLocation,
+          }
+        : d;
+    }
     touchCache();
     document.dispatchEvent(
       new CustomEvent(EVT_NOTES, {
