@@ -4,6 +4,8 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  /** 会员等级：free=压缩存储 / pro=原画质。媒体存储策略按它分档。 */
+  plan: varchar("plan", { length: 16 }).notNull().default("free"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -93,6 +95,12 @@ export const collectedNotes = pgTable("collected_notes", {
   commentsData: jsonb("comments_data").$type<unknown[]>().notNull().default([]),
   source: varchar("source", { length: 32 }).notNull().default("search"),
   sourceUrl: text("source_url").notNull().default(""),
+  /** 搜索场景采进来时的搜索词（热度归因用）。 */
+  sourceKeyword: varchar("source_keyword", { length: 255 }).notNull().default(""),
+  /** 笔记发布时间（详情页 time 字段，毫秒时间戳转存）。 */
+  publishedAt: timestamp("published_at"),
+  /** 作者 IP 属地（详情页才有）。 */
+  ipLocation: varchar("ip_location", { length: 64 }).notNull().default(""),
   rawJson: jsonb("raw_json"),
   savedAt: timestamp("saved_at").defaultNow().notNull(),
 });

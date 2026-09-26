@@ -12,7 +12,14 @@ export interface R2Object {
 export interface R2Storage {
   head(key: string): Promise<boolean>;
   put(key: string, body: ArrayBuffer, contentType: string): Promise<void>;
-  get(key: string): Promise<Response | null>;
+  /** 流式上传大文件（视频）：不整包进内存。 */
+  putStream(
+    key: string,
+    body: import("node:stream").Readable,
+    contentType: string,
+    contentLength: number,
+  ): Promise<void>;
+  get(key: string, rangeHeader?: string): Promise<Response | null>;
   list(prefix: string): Promise<R2Object[]>;
   /** true = 已不存在/删除成功；false = 删除失败（对象可能还在）。 */
   delete(key: string): Promise<boolean>;
@@ -50,9 +57,26 @@ export function createR2(): R2Storage | null {
       });
       if (!res.ok) throw new Error(`r2 put ${res.status}`);
     },
-    async get(key) {
-      const res = await client.fetch(url(key)).catch(() => null);
-      return res && res.ok ? res : null;
+    async putStream(key, body, contentType, contentLength) {
+      const res = await client.fetch(url(key), {
+        method: "PUT",
+        headers: {
+          "content-type": contentType,
+          "content-length": String(contentLength),
+          // stream body 无法算 hash —— aws4fetch 允许显式 UNSIGNED-PAYLOAD
+          "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+        },
+        body: body as any,
+        // Node fetch(undici) 流式 body 必需
+        duplex: "half",
+      } as any);
+      if (!res.ok) throw new Error(`r2 put ${res.status}`);
+    },
+    async get(key, rangeHeader) {
+      const res = await client
+        .fetch(url(key), rangeHeader ? { headers: { range: rangeHeader } } : undefined)
+        .catch(() => null);
+      return res && (res.ok || res.status === 206) ? res : null;
     },
     async list(prefix) {
       const out: R2Object[] = [];

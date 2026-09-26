@@ -93,6 +93,15 @@ if (isWww) {
 
   const toast = (msg: string, ok = true) => toastIn(shadow, msg, ok);
 
+  /** 当前页面上下文：搜索页带 keyword（和 main-world 的 pageContext 同逻辑）。 */
+  function pageContext(): CollectBatch["context"] {
+    const ctx: NonNullable<CollectBatch["context"]> = { pageUrl: location.href };
+    const u = new URL(location.href);
+    const kw = u.searchParams.get("keyword") ?? u.searchParams.get("q");
+    if (kw) ctx.keyword = kw;
+    return ctx;
+  }
+
   function refreshCount() {
     countEl.textContent = `已嗅探 ${cards.size} 条`;
   }
@@ -330,7 +339,7 @@ if (isWww) {
       : undefined;
     const batch: CollectBatch = {
       source: detail ? "detail" : card?.source ?? "detail",
-      context: { pageUrl: location.href },
+      context: pageContext(),
       collectionId: cfg.collectionId ?? null,
       items: card ? [card] : [],
       details: detailWithComments ? [detailWithComments] : undefined,
@@ -371,7 +380,7 @@ if (isWww) {
         [...sourceVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "search";
       const batch: CollectBatch = {
         source: majority as CollectBatch["source"],
-        context: { pageUrl: location.href },
+        context: pageContext(),
         collectionId: cfg.collectionId ?? null,
         items,
         details: dets.length ? dets : undefined,
