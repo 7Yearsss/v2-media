@@ -189,10 +189,33 @@ if (isWww) {
 
   // ---------- 事件接入 ----------
 
+  // 归因任务页（URL 带 __v2m_task=N）：嗅探到的笔记数据直接回传后台，不走采集入库
+  const taskMarker = location.href.match(/__v2m_task=(\d+)/)?.[1];
+
   document.addEventListener(EVT_NOTES, (ev) => {
     if (!cfg.enabled) return; // 总开关关：不动
     const batch = (ev as CustomEvent<CollectBatch>).detail;
     if (!batch) return;
+    if (taskMarker) {
+      const taskId = Number(taskMarker);
+      for (const d of batch.details ?? []) {
+        void chrome.runtime
+          .sendMessage({
+            type: "TASK_DATA",
+            taskId,
+            data: {
+              noteId: d.noteId,
+              url: d.url,
+              likes: d.likes,
+              collects: d.collects,
+              comments: d.comments,
+              shares: d.shares,
+            },
+          })
+          .catch(() => {});
+      }
+      return; // 任务页不叠加采集 UI/入库
+    }
     lastContext = batch.context ?? lastContext;
     for (const it of batch.items) {
       if (!cards.has(it.noteId)) {

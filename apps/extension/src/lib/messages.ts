@@ -23,6 +23,16 @@ export const EVT_COMMENTS = "v2m:comments";
 export const EVT_REQ = "v2m:req";
 /** MAIN -> isolated 响应。 */
 export const EVT_RES = "v2m:res";
+/** MAIN（creator.ts）-> isolated：创作中心 /api/galaxy/* 响应透传。 */
+export const EVT_GALAXY = "v2m:galaxy";
+
+/** creator 域 galaxy 响应（原始透传，解析交给 shared/galaxy-parse）。 */
+export interface GalaxyEventDetail {
+  url: string;
+  path: string;
+  httpStatus: number;
+  json: Record<string, unknown>;
+}
 
 export interface CommentsEventDetail {
   noteId?: string;
@@ -102,6 +112,9 @@ export type BgMessage =
       error?: string;
     }
   | { type: "FETCH_IMAGE"; url: string } // creator-publish -> bg（抓图绕 CORS）
+  // --- 归因任务管道 ---
+  | { type: "GALAXY_DATA"; detail: GalaxyEventDetail } // creator-tasks -> bg（按 sender.tab 归任务）
+  | { type: "TASK_DATA"; taskId: number; data: unknown } // content.ts（带 __v2m_task 标记的 www 页）
   // --- site-bridge 转发（只允许工作台 origin）---
   | { type: "SITE_PING" }
   | { type: "SITE_SET_AUTH"; apiBase: string; token: string }

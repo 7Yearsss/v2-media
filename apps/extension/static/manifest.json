@@ -23,6 +23,17 @@
       "run_at": "document_idle"
     },
     {
+      "matches": ["https://creator.xiaohongshu.com/*"],
+      "js": ["creator-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://creator.xiaohongshu.com/*"],
+      "js": ["creator-tasks.js"],
+      "run_at": "document_idle"
+    },
+    {
       "matches": ["https://creator.xiaohongshu.com/publish/*"],
       "js": ["creator-publish.js"],
       "run_at": "document_idle"

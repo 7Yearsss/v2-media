@@ -50,7 +50,12 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | GET | /api/ext/publish/pending | pending job 列表（job 全字段 + `xhsUserId` + draft 全文）。`?all=1` 含未来定时；`?account=<xhsUserId>` 只回该账号任务 |
 | GET | /api/ext/publish/:id | 单条任务+草稿全文。pending 任意认领方可见；running 仅 `?claimer=<SW_ID>` 匹配原认领方可见 |
 | POST | /api/ext/publish/:id/claim | `{claimedBy}` 认领任务（防重） |
-| POST | /api/ext/publish/:id/result | `{status:'done'\|'failed',resultUrl?,error?}` |
+| POST | /api/ext/publish/:id/result | `{status:'done'\|'failed',resultUrl?,error?}`；done → 服务端自动排 `readback` 任务（T+10min） |
+| GET | /api/ext/tasks/pending | 到期 pending 任务 `→ {tasks:ExtTask[]}`（`jobs` 表 type=readback/metrics/account_snapshot + `dueAt`；认领 >30min 的 running 自动回收为 pending） |
+| POST | /api/ext/tasks/:id/claim | `{claimedBy}` 认领任务（409=已被认领） |
+| POST | /api/ext/tasks/:id/result | `{status:'done'\|'failed',outcome?,data?,error?}`。readback：`data.items`=嗅探到的已发列表 → 服务端按标题+时间窗匹配 → `publish_jobs.outcome`（verified→自动排 T+1h/24h/7d `metrics`；unverified→30min 后复读 ≤3 次）；metrics：`data.rows[]` → 落 `note_metrics` 快照；account_snapshot：`data`={followers,likesTotal,notesCount,…} → 落 `account_snapshots`。readback failed → 重排 ≤3 次后定 `readback_error` |
+
+`PublishJob` 新增字段：`outcome`（verified/unverified/login_required/readback_error）、`noteId`、`verifiedAt`。心跳上报在线账号若 20h 内无快照 → 自动排 `account_snapshot` 任务。插件侧任务页 URL 带 `__v2m_task=<taskId>` 标记；creator 域嗅探 `/api/galaxy/*` 响应透传，www 域嗅探 feed 详情透传，解析均在 `@v2media/shared/galaxy-parse`。
 
 ## 插件 ↔ 工作台桥（window.postMessage）
 

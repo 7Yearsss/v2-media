@@ -320,6 +320,27 @@ export default function PublishPage() {
         ),
       },
       {
+        key: "outcome",
+        header: "对账",
+        width: "96px",
+        cell: (row) => {
+          if (row.status !== "done" || !row.outcome)
+            return <span className="text-muted-foreground">—</span>;
+          const meta: Record<string, { label: string; status: "success" | "warning" | "danger" | "neutral" }> = {
+            verified: { label: "已核实", status: "success" },
+            unverified: { label: "未核实", status: "warning" },
+            login_required: { label: "需登录", status: "danger" },
+            readback_error: { label: "读回失败", status: "neutral" },
+          };
+          const m = meta[row.outcome] ?? { label: row.outcome, status: "neutral" as const };
+          return (
+            <AnimatedBadge size="sm" status={m.status}>
+              {m.label}
+            </AnimatedBadge>
+          );
+        },
+      },
+      {
         key: "scheduledAt",
         header: "定时",
         width: "130px",
