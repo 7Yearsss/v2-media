@@ -1,0 +1,19 @@
+{
+  "name": "v2-media",
+  "private": true,
+  "version": "0.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev -w @v2media/server",
+    "dev:web": "npm run dev -w @v2media/web",
+    "build:ext": "npm run build -w @v2media/extension",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test -w @v2media/server"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
