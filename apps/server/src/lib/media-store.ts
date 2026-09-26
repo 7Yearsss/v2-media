@@ -1,6 +1,7 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -118,8 +119,9 @@ async function storeRemoteImage(
     return url;
   }
   if (!MEDIA_SRC_ALLOWED.test(host)) return url;
-  // key 带画质档位：不同档位的同名源图存不同对象，pro 不会被 free 的压缩版顶掉
-  const key = `img/${await sha256Hex(url)}${quality.keepOriginal ? "-orig" : ""}`;
+  // key 带画质档位：pro=-orig 原图，free=-sd 压缩；v1 存量对象（裸 hash=原图）
+  // 继续被旧引用消费，新采集的 free 档不复用它（否则拿到的是未压缩原图）
+  const key = `img/${await sha256Hex(url)}${quality.keepOriginal ? "-orig" : "-sd"}`;
   try {
     if (!(await r2.head(key))) {
       const res = await fetchAllowed(url);
@@ -174,7 +176,8 @@ async function storeRemoteVideo(
   }
   if (!MEDIA_SRC_ALLOWED.test(host)) return url;
   const key = `vid/${await sha256Hex(url)}`;
-  const tmp = `${tmpdir()}/v2m-vid-${await sha256Hex(url).then((h) => h.slice(0, 16))}-${Date.now()}`;
+  // 并发同 URL 可能同毫秒撞名 —— 每次调用独占一个临时文件
+  const tmp = `${tmpdir()}/v2m-vid-${randomUUID()}`;
   try {
     if (!(await r2.head(key))) {
       const res = await fetchAllowed(url);
@@ -196,10 +199,13 @@ async function storeRemoteVideo(
           } else cb(null, chunk);
         },
       });
-      await pipeline(Readable.fromWeb(res.body as any), counter, createWriteStream(tmp)).catch(
-        () => {},
-      );
-      if (over || !size) return url;
+      // 下载中断/写入失败也要整包放弃 —— 否则残片会上传覆盖掉可用原链
+      const ok = await pipeline(
+        Readable.fromWeb(res.body as any),
+        counter,
+        createWriteStream(tmp),
+      ).then(() => true).catch(() => false);
+      if (!ok || over || !size) return url;
       await r2.putStream(
         key,
         createReadStream(tmp),
@@ -316,7 +322,7 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
   );
 }
 
-const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid)\/[0-9a-f]{64}(?:-orig)?)/g;
+const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid)\/[0-9a-f]{64}(?:-(?:sd|orig))?)/g;
 
 /** DB 里仍被引用的 R2 对象 key 集合（采集表 cover/images + 草稿表 images）。 */
 async function referencedKeys(deps: Deps): Promise<Set<string>> {
