@@ -1,0 +1,251 @@
+import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { Hono } from "hono";
+import { z } from "zod";
+
+import type { Deps } from "../context";
+import { collectedNotes, drafts, hostedAccounts, publishJobs } from "../db/schema";
+
+const heartbeatSchema = z.object({
+  accounts: z.array(
+    z.object({
+      xhsUserId: z.string().default(""),
+      nickname: z.string().default(""),
+      avatar: z.string().default(""),
+      subType: z.enum(["pc", "creator"]).default("pc"),
+      status: z.enum(["online", "expired"]).default("online"),
+      statusMessage: z.string().optional(),
+    }),
+  ),
+});
+
+const commentSchema = z.object({
+  commentId: z.string().default(""),
+  nickname: z.string().default(""),
+  avatar: z.string().default(""),
+  content: z.string().default(""),
+  likes: z.number().default(0),
+  subComments: z.array(z.object({ content: z.string() })).optional(),
+});
+
+const cardSchema = z.object({
+  noteId: z.string(),
+  xsecToken: z.string().default(""),
+  type: z.enum(["video", "image", "unknown"]).default("image"),
+  title: z.string().default(""),
+  desc: z.string().default(""),
+  author: z
+    .object({ userId: z.string().default(""), nickname: z.string().default(""), avatar: z.string().default("") })
+    .default({ userId: "", nickname: "", avatar: "" }),
+  cover: z.string().default(""),
+  likes: z.number().default(0),
+  collects: z.number().default(0),
+  comments: z.number().default(0),
+  shares: z.number().default(0),
+  url: z.string().default(""),
+});
+
+const detailSchema = cardSchema.extend({
+  content: z.string().default(""),
+  tags: z.array(z.string()).default([]),
+  images: z.array(z.object({ url: z.string() })).default([]),
+  videoUrl: z.string().optional(),
+  commentsData: z.array(commentSchema).optional(),
+});
+
+/** CollectBatch（packages/shared/types.ts）。 */
+const collectSchema = z.object({
+  source: z.string().default("homefeed"),
+  context: z
+    .object({
+      keyword: z.string().optional(),
+      authorId: z.string().optional(),
+      pageUrl: z.string().optional(),
+    })
+    .optional(),
+  items: z.array(cardSchema),
+  details: z.array(detailSchema).optional(),
+});
+
+const claimSchema = z.object({ claimedBy: z.string().default("ext") });
+const resultSchema = z.object({
+  status: z.enum(["done", "failed"]),
+  resultUrl: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export function extModule(deps: Deps) {
+  const app = new Hono<{ Variables: { userId: number } }>();
+
+  app.post("/accounts/heartbeat", async (c) => {
+    const userId = c.get("userId");
+    const parsed = heartbeatSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "bad heartbeat" }, 400);
+    const now = deps.now();
+    for (const acc of parsed.data.accounts) {
+      const [existing] = await deps.db
+        .select()
+        .from(hostedAccounts)
+        .where(
+          and(
+            eq(hostedAccounts.userId, userId),
+            eq(hostedAccounts.platform, "xhs"),
+            eq(hostedAccounts.subType, acc.subType),
+            eq(hostedAccounts.xhsUserId, acc.xhsUserId),
+          ),
+        )
+        .limit(1);
+      if (existing) {
+        await deps.db
+          .update(hostedAccounts)
+          .set({
+            nickname: acc.nickname || existing.nickname,
+            avatar: acc.avatar || existing.avatar,
+            status: acc.status,
+            statusMessage: acc.statusMessage ?? "",
+            lastSeenAt: now,
+          })
+          .where(eq(hostedAccounts.id, existing.id));
+      } else {
+        await deps.db.insert(hostedAccounts).values({
+          userId,
+          platform: "xhs",
+          subType: acc.subType,
+          xhsUserId: acc.xhsUserId,
+          nickname: acc.nickname,
+          avatar: acc.avatar,
+          status: acc.status,
+          statusMessage: acc.statusMessage ?? "",
+          lastSeenAt: now,
+        });
+      }
+    }
+    return c.json({ ok: true });
+  });
+
+  /** 卡片批量 upsert；details 里同 noteId 的详情/评论落到对应行。 */
+  app.post("/collect", async (c) => {
+    const userId = c.get("userId");
+    const parsed = collectSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const p = parsed.data;
+    const detailMap = new Map(p.details?.map((d) => [d.noteId, d]) ?? []);
+    const cardMap = new Map(p.items.map((i) => [i.noteId, i]));
+    // detail-only 批（单篇采集）也要落库：detailSchema 含全部卡片字段
+    const noteIds = new Set([...cardMap.keys(), ...detailMap.keys()]);
+    const ids: number[] = [];
+    for (const noteId of noteIds) {
+      const detail = detailMap.get(noteId);
+      const item = cardMap.get(noteId) ?? detail!;
+      const values = {
+        userId,
+        noteId: item.noteId,
+        type: item.type === "unknown" ? "image" : item.type,
+        title: item.title,
+        content: detail?.content || item.desc || item.title,
+        authorName: item.author.nickname,
+        authorId: item.author.userId,
+        cover: item.cover,
+        images: detail?.images?.length ? detail.images : [{ url: item.cover }].filter((i) => i.url),
+        videoUrl: detail?.videoUrl ?? null,
+        likes: item.likes,
+        collects: item.collects,
+        comments: item.comments,
+        shares: item.shares,
+        tags: detail?.tags ?? [],
+        commentsData: detail?.commentsData ?? [],
+        source: p.source,
+        sourceUrl: p.context?.pageUrl || item.url,
+        rawJson: null as any,
+      };
+      const [existing] = await deps.db
+        .select({ id: collectedNotes.id })
+        .from(collectedNotes)
+        .where(and(eq(collectedNotes.userId, userId), eq(collectedNotes.noteId, item.noteId)))
+        .limit(1);
+      if (existing) {
+        await deps.db
+          .update(collectedNotes)
+          .set({ ...values, savedAt: deps.now() })
+          .where(eq(collectedNotes.id, existing.id));
+        ids.push(existing.id);
+      } else {
+        const [row] = await deps.db.insert(collectedNotes).values(values).returning({ id: collectedNotes.id });
+        ids.push(row!.id);
+      }
+    }
+    return c.json({ saved: ids.length, ids });
+  });
+
+  /** 该用户所有 pending 且到期的任务（含草稿全文），插件自行按托管账号认领执行。 */
+  app.get("/publish/pending", async (c) => {
+    const userId = c.get("userId");
+    const rows = await deps.db
+      .select({ job: publishJobs, draft: drafts })
+      .from(publishJobs)
+      .innerJoin(drafts, eq(publishJobs.draftId, drafts.id))
+      .where(
+        and(
+          eq(publishJobs.userId, userId),
+          eq(publishJobs.status, "pending"),
+          or(isNull(publishJobs.scheduledAt), lt(publishJobs.scheduledAt, deps.now())),
+        ),
+      )
+      .orderBy(publishJobs.id)
+      .limit(10);
+    return c.json({
+      jobs: rows.map((r) => ({
+        ...r.job,
+        scheduledAt: r.job.scheduledAt?.getTime(),
+        draft: {
+          title: r.draft.title,
+          content: r.draft.content,
+          tags: r.draft.tags,
+          images: r.draft.images,
+        },
+      })),
+    });
+  });
+
+  app.post("/publish/:id/claim", async (c) => {
+    const userId = c.get("userId");
+    const id = Number(c.req.param("id"));
+    const parsed = claimSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const [row] = await deps.db
+      .update(publishJobs)
+      .set({ status: "running", claimedBy: parsed.data.claimedBy, updatedAt: deps.now() })
+      .where(
+        and(eq(publishJobs.id, id), eq(publishJobs.userId, userId), eq(publishJobs.status, "pending")),
+      )
+      .returning();
+    if (!row) return c.json({ error: "not found or already claimed" }, 404);
+    return c.json(row);
+  });
+
+  app.post("/publish/:id/result", async (c) => {
+    const userId = c.get("userId");
+    const id = Number(c.req.param("id"));
+    const parsed = resultSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const [row] = await deps.db
+      .update(publishJobs)
+      .set({
+        status: parsed.data.status,
+        resultUrl: parsed.data.resultUrl,
+        error: parsed.data.error,
+        updatedAt: deps.now(),
+      })
+      .where(and(eq(publishJobs.id, id), eq(publishJobs.userId, userId)))
+      .returning();
+    if (!row) return c.json({ error: "not found" }, 404);
+    if (parsed.data.status === "done") {
+      await deps.db
+        .update(drafts)
+        .set({ status: "published", updatedAt: deps.now() })
+        .where(eq(drafts.id, row.draftId));
+    }
+    return c.json({ ok: true });
+  });
+
+  return app;
+}

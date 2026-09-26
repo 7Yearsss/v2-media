@@ -1,0 +1,369 @@
+/**
+ * 小红书站隔离 world 内容脚本（document_idle，仅 www 站干活）：
+ *  - 收 main-world 的 v2m:notes / v2m:comments，去抖后 EXT_COLLECT 上报 background；
+ *  - 笔记卡片右上角浮「采集本篇」按钮 —— 全部渲染在我们自己的 Shadow DOM host
+ *    里（fixed 定位对齐卡片），绝不动站点 DOM；
+ *  - 右下浮动条：已嗅探 N 条 / 一键全部入库 / 详情页「采集本篇」；
+ *  - 应答 background 的 GET_LOGIN_STATE（心跳用）；
+ *  - __v2m_collect=1 标记页：等数据齐后自动采集并回执 COLLECT_URL_DONE。
+ */
+
+import type { CollectBatch, NoteCard, NoteComment, NoteDetail } from "@v2media/shared";
+import {
+  EVT_COMMENTS,
+  EVT_NOTES,
+  mainRequest,
+  sendToBackground,
+} from "./lib/messages";
+import type {
+  CachedNote,
+  CommentsEventDetail,
+  LoginState,
+} from "./lib/messages";
+import { el, shadowHost, toastIn } from "./lib/ui";
+
+const isWww =
+  location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
+
+if (isWww) {
+  // ---------- 已嗅探数据缓存 ----------
+
+  const cards = new Map<string, NoteCard>();
+  const details = new Map<string, NoteDetail>();
+  const commentsMap = new Map<string, NoteComment[]>();
+  const uploadedIds = new Set<string>(); // 已上报过的 noteId（含 detail 则不再重复）
+  let lastContext: CollectBatch["context"];
+
+  // ---------- UI：一个 shadow host 装卡片按钮层 + 浮动条 ----------
+
+  const { shadow } = shadowHost("v2m-xhs-ext");
+  const CSS = `
+  :host { all: initial; }
+  .overlay { position: fixed; inset: 0; z-index: 2147482990; pointer-events: none; }
+  .pick { position: fixed; z-index: 2147482991; pointer-events: auto;
+    padding: 3px 10px; border: 0; border-radius: 999px; font: 12px/1.6 system-ui, sans-serif;
+    background: rgba(230, 34, 45, .92); color: #fff; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25); opacity: .96; }
+  .pick:hover { background: #e6212d; }
+  .bar { position: fixed; right: 16px; bottom: 16px; z-index: 2147482992;
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px;
+    background: rgba(24,24,27,.92); color: #fafafa; font: 12px/1.5 system-ui, sans-serif;
+    box-shadow: 0 6px 20px rgba(0,0,0,.3); }
+  .bar .dot { width: 7px; height: 7px; border-radius: 50%; background: #a1a1aa; flex: none; }
+  .bar .dot.ok { background: #4ade80; }
+  .bar button { border: 0; border-radius: 999px; padding: 4px 12px; font: inherit;
+    cursor: pointer; background: #e6212d; color: #fff; }
+  .bar button.ghost { background: transparent; border: 1px solid #52525b; color: #d4d4d8; }
+  .bar button:disabled { opacity: .5; cursor: default; }
+  `;
+  shadow.append(el("style", {}, CSS));
+
+  const overlay = el("div", { class: "overlay" });
+  const dot = el("span", { class: "dot" });
+  const countEl = el("span", {}, "已嗅探 0 条");
+  const collectAllBtn = el("button", {}, "一键全部入库");
+  const collectThisBtn = el("button", { class: "ghost", style: "display:none" }, "采集本篇");
+  const bar = el("div", { class: "bar" }, dot, countEl, collectAllBtn, collectThisBtn);
+  shadow.append(overlay, bar);
+
+  const toast = (msg: string, ok = true) => toastIn(shadow, msg, ok);
+
+  function refreshCount() {
+    countEl.textContent = `已嗅探 ${cards.size} 条`;
+  }
+
+  // ---------- 上报（去抖合并） ----------
+
+  let pendingItems = new Map<string, NoteCard>();
+  let pendingDetails = new Map<string, NoteDetail>();
+  let flushTimer: number | undefined;
+
+  async function uploadBatch(
+    items: NoteCard[],
+    dets: NoteDetail[],
+    source: CollectBatch["source"],
+    context: CollectBatch["context"],
+  ) {
+    if (!items.length && !dets.length) return;
+    const batch: CollectBatch = { source, context, items, details: dets.length ? dets : undefined };
+    try {
+      const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
+      for (const it of items) uploadedIds.add(it.noteId);
+      for (const d of dets) uploadedIds.add(d.noteId);
+      if (typeof r?.saved === "number" && r.saved > 0) {
+        toast(`已入库 ${r.saved} 条`);
+      }
+    } catch (e) {
+      // 未授权/网络错误不打扰页面浏览；手动采集时再提示
+      console.debug("[v2m] collect upload failed:", e);
+    }
+  }
+
+  function queueUpload(batch: CollectBatch) {
+    for (const it of batch.items) {
+      if (!uploadedIds.has(it.noteId)) pendingItems.set(it.noteId, it);
+    }
+    for (const d of batch.details ?? []) {
+      if (!uploadedIds.has(d.noteId)) pendingDetails.set(d.noteId, d);
+    }
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = window.setTimeout(() => {
+      const items = [...pendingItems.values()];
+      const dets = [...pendingDetails.values()];
+      pendingItems = new Map();
+      pendingDetails = new Map();
+      void uploadBatch(items, dets, batch.source, batch.context ?? lastContext);
+    }, 1500);
+  }
+
+  // ---------- 事件接入 ----------
+
+  document.addEventListener(EVT_NOTES, (ev) => {
+    const batch = (ev as CustomEvent<CollectBatch>).detail;
+    if (!batch) return;
+    lastContext = batch.context ?? lastContext;
+    for (const it of batch.items) {
+      if (!cards.has(it.noteId)) {
+        cards.set(it.noteId, it);
+      }
+    }
+    for (const d of batch.details ?? []) details.set(d.noteId, d);
+    refreshCount();
+    queueUpload(batch);
+    scheduleScan();
+  });
+
+  document.addEventListener(EVT_COMMENTS, (ev) => {
+    const d = (ev as CustomEvent<CommentsEventDetail>).detail;
+    if (d?.noteId) commentsMap.set(d.noteId, d.comments);
+  });
+
+  // ---------- 卡片浮层按钮（site DOM 之外，fixed 对齐） ----------
+
+  const NOTE_LINK =
+    'a[href*="/explore/"], a[href*="/search_result/"], a[href*="/discovery/item/"]';
+  const pickBtns = new Map<Element, { btn: HTMLElement; noteId: string }>();
+  let rafScheduled = false;
+
+  function noteIdFromCard(section: Element): string | null {
+    const a = section.querySelector<HTMLAnchorElement>(NOTE_LINK);
+    const m = a?.href.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i);
+    return m?.[1] ?? null;
+  }
+
+  function scanCards() {
+    const seen = new Set<Element>();
+    for (const section of document.querySelectorAll("section.note-item")) {
+      const noteId = noteIdFromCard(section);
+      if (!noteId) continue;
+      seen.add(section);
+      if (!pickBtns.has(section)) {
+        const btn = el("button", { class: "pick", onclick: () => void collectOne(noteId) }, "采集本篇");
+        overlay.append(btn);
+        pickBtns.set(section, { btn, noteId });
+      }
+    }
+    // 卡片被 SPA 移除时清掉按钮
+    for (const [section, rec] of pickBtns) {
+      if (!seen.has(section) || !document.contains(section)) {
+        rec.btn.remove();
+        pickBtns.delete(section);
+      }
+    }
+    reposition();
+  }
+
+  function reposition() {
+    const vw = innerWidth;
+    const vh = innerHeight;
+    for (const [section, rec] of pickBtns) {
+      const r = section.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw || r.width < 40) {
+        rec.btn.style.display = "none";
+        continue;
+      }
+      rec.btn.style.display = "";
+      rec.btn.style.top = `${r.top + 8}px`;
+      rec.btn.style.left = `${r.right - 76}px`;
+    }
+  }
+
+  function scheduleScan() {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(() => {
+      rafScheduled = false;
+      scanCards();
+    });
+  }
+
+  new MutationObserver(scheduleScan).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+  window.addEventListener("scroll", scheduleScan, { capture: true, passive: true });
+  window.addEventListener("resize", scheduleScan);
+  // SPA 数据就绪可能晚于 mutation 风平浪静，低频兜底一次
+  setInterval(scanCards, 2500);
+  scanCards();
+
+  // ---------- 采集动作 ----------
+
+  function pageNoteId(): string | null {
+    const m = location.pathname.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i);
+    return m?.[1] ?? null;
+  }
+
+  async function collectOne(noteId: string): Promise<boolean> {
+    let card = cards.get(noteId);
+    let detail = details.get(noteId);
+    if (!card && !detail) {
+      // 缓存未命中：让 main world 解析当前页 __INITIAL_STATE__
+      try {
+        const res = await mainRequest<CachedNote>("getNote", { noteId });
+        card = card ?? res.card;
+        detail = detail ?? res.detail;
+        if (res.comments?.length) commentsMap.set(noteId, res.comments);
+      } catch {
+        /* 页面数据读不到 */
+      }
+    }
+    if (!card && !detail) {
+      toast("未嗅探到该笔记数据，稍等页面加载完再试", false);
+      return false;
+    }
+    // TODO(契约): CollectBatch/NoteDetail 没有评论列表字段（NoteDetail.comments
+    // 是数量）。按服务端 schema 的 comments_data 列名附带，等契约补字段后入协议。
+    const detailWithComments = detail
+      ? { ...detail, commentsData: commentsMap.get(noteId) }
+      : undefined;
+    const batch: CollectBatch = {
+      source: detail ? "detail" : card?.source ?? "detail",
+      context: { pageUrl: location.href },
+      items: card ? [card] : [],
+      details: detailWithComments ? [detailWithComments] : undefined,
+    };
+    try {
+      const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
+      uploadedIds.add(noteId);
+      toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
+      return true;
+    } catch (e) {
+      toast(`采集失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);
+      return false;
+    }
+  }
+
+  async function collectAll() {
+    collectAllBtn.disabled = true;
+    collectAllBtn.textContent = "入库中…";
+    try {
+      // 拉一次 main-world 全量缓存，合进本地（keep-alive 数据）
+      const res = await mainRequest<{ cards: NoteCard[]; details: NoteDetail[] }>(
+        "listCached",
+      ).catch(() => ({ cards: [], details: [] }));
+      for (const c of res.cards) cards.set(c.noteId, c);
+      for (const d of res.details) details.set(d.noteId, d);
+      refreshCount();
+      const items = [...cards.values()];
+      const dets = [...details.values()];
+      // 混合来源批量上报：取占多数的那个 source（服务端按 noteId upsert，不影响去重）
+      const sourceVotes = new Map<string, number>();
+      for (const it of items) sourceVotes.set(it.source, (sourceVotes.get(it.source) ?? 0) + 1);
+      const majority =
+        [...sourceVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "search";
+      const batch: CollectBatch = {
+        source: majority as CollectBatch["source"],
+        context: { pageUrl: location.href },
+        items,
+        details: dets.length ? dets : undefined,
+      };
+      const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
+      for (const it of items) uploadedIds.add(it.noteId);
+      toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
+    } catch (e) {
+      toast(`入库失败：${String((e as Error)?.message ?? e).slice(0, 60)}`, false);
+    } finally {
+      collectAllBtn.disabled = false;
+      collectAllBtn.textContent = "一键全部入库";
+    }
+  }
+
+  collectAllBtn.addEventListener("click", () => void collectAll());
+  collectThisBtn.addEventListener("click", () => {
+    const id = pageNoteId();
+    if (id) void collectOne(id);
+  });
+
+  // 详情页显「采集本篇」
+  let lastPath = "";
+  setInterval(() => {
+    if (location.pathname === lastPath) return;
+    lastPath = location.pathname;
+    collectThisBtn.style.display = pageNoteId() ? "" : "none";
+    scheduleScan();
+  }, 500);
+
+  // ---------- background 消息 ----------
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg?.type === "GET_LOGIN_STATE") {
+      mainRequest<LoginState>("loginState").then(
+        (s) => sendResponse({ ok: true, data: s }),
+        (e) =>
+          sendResponse({
+            ok: false,
+            error: String((e as Error)?.message ?? e),
+          }),
+      );
+      return true;
+    }
+    return false;
+  });
+
+  // 授权状态点
+  void sendToBackground<{ authorized?: boolean }>({ type: "GET_STATUS" }).then(
+    (s) => dot.classList.toggle("ok", Boolean(s?.authorized)),
+    () => {},
+  );
+
+  // content 脚本(document_idle)晚于 main world(document_start)：先拉一次
+  // keep-alive 缓存补齐计数（页面早期嗅探到的批次在监听注册前就发了）。
+  void mainRequest<{ cards: NoteCard[]; details: NoteDetail[] }>("listCached")
+    .then((res) => {
+      for (const c of res.cards) cards.set(c.noteId, c);
+      for (const d of res.details) details.set(d.noteId, d);
+      refreshCount();
+    })
+    .catch(() => {});
+
+  // ---------- __v2m_collect=1：工作台 COLLECT_URL 打开的页 ----------
+
+  const collectFlag = new URL(location.href).searchParams.get("__v2m_collect");
+  if (collectFlag) {
+    const noteId = pageNoteId();
+    let done = false;
+    const finish = (ok: boolean, error?: string) => {
+      if (done) return;
+      done = true;
+      void sendToBackground({ type: "COLLECT_URL_DONE", ok, noteId: noteId ?? undefined, error });
+    };
+    const started = Date.now();
+    const tick = async () => {
+      if (done) return;
+      if (noteId && (cards.has(noteId) || details.has(noteId))) {
+        finish(await collectOne(noteId));
+        return;
+      }
+      // 还没嗅探到：催 main world 重扫 __INITIAL_STATE__，再等嗅探响应
+      await mainRequest("reparseInitialState").catch(() => undefined);
+      if (Date.now() - started > 20000) {
+        // 最后兜底：直接按缓存/SSR 里有什么算什么
+        finish(noteId ? await collectOne(noteId) : false, "等待页面数据超时");
+        return;
+      }
+      setTimeout(tick, 1200);
+    };
+    void tick();
+  }
+}

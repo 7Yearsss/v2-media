@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "v2-media 小红书助手",
+  "version": "0.1.0",
+  "description": "采集小红书热门笔记到 v2-media 工作台，并驱动一键发布",
+  "permissions": ["storage", "alarms", "tabs", "scripting", "cookies"],
+  "host_permissions": [
+    "https://*.xiaohongshu.com/*",
+    "https://edith.xiaohongshu.com/*",
+    "https://creator.xiaohongshu.com/*",
+    "https://*.xhscdn.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*.xiaohongshu.com/*"],
+      "js": ["xhs-main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://*.xiaohongshu.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://creator.xiaohongshu.com/publish/*"],
+      "js": ["creator-publish.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [],
+      "js": ["site-bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "v2-media",
+    "default_popup": "popup.html"
+  }
+}

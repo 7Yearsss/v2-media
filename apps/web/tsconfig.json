@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    // vendored beUI 组件按上游（mcp.beui.dev，Next 默认 strict）编写，不含
+    // noUncheckedIndexedAccess；保持与上游一致，避免大改 vendored 代码
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src"],
+  "exclude": ["src/components/previews"]
+}

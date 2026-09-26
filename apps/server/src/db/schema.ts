@@ -1,0 +1,85 @@
+import { integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  email: varchar("email", { length: 255 }).notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const hostedAccounts = pgTable("hosted_accounts", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  platform: varchar("platform", { length: 32 }).notNull().default("xhs"),
+  subType: varchar("sub_type", { length: 32 }).notNull().default("pc"),
+  xhsUserId: varchar("xhs_user_id", { length: 128 }).notNull().default(""),
+  nickname: varchar("nickname", { length: 128 }).notNull().default(""),
+  avatar: text("avatar").notNull().default(""),
+  status: varchar("status", { length: 32 }).notNull().default("unknown"),
+  statusMessage: text("status_message").notNull().default(""),
+  lastSeenAt: timestamp("last_seen_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const collectedNotes = pgTable("collected_notes", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  noteId: varchar("note_id", { length: 128 }).notNull(),
+  type: varchar("type", { length: 16 }).notNull().default("image"),
+  title: varchar("title", { length: 512 }).notNull().default(""),
+  content: text("content").notNull().default(""),
+  authorName: varchar("author_name", { length: 128 }).notNull().default(""),
+  authorId: varchar("author_id", { length: 128 }).notNull().default(""),
+  cover: text("cover").notNull().default(""),
+  images: jsonb("images").$type<Array<{ url: string; width?: number; height?: number }>>().notNull().default([]),
+  videoUrl: text("video_url"),
+  likes: integer("likes").notNull().default(0),
+  collects: integer("collects").notNull().default(0),
+  comments: integer("comments").notNull().default(0),
+  shares: integer("shares").notNull().default(0),
+  tags: jsonb("tags").$type<string[]>().notNull().default([]),
+  commentsData: jsonb("comments_data").$type<unknown[]>().notNull().default([]),
+  source: varchar("source", { length: 32 }).notNull().default("search"),
+  sourceUrl: text("source_url").notNull().default(""),
+  rawJson: jsonb("raw_json"),
+  savedAt: timestamp("saved_at").defaultNow().notNull(),
+});
+
+export const drafts = pgTable("drafts", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id),
+  title: varchar("title", { length: 512 }).notNull().default(""),
+  content: text("content").notNull().default(""),
+  tags: jsonb("tags").$type<string[]>().notNull().default([]),
+  images: jsonb("images").$type<Array<{ url: string }>>().notNull().default([]),
+  status: varchar("status", { length: 32 }).notNull().default("draft"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const publishJobs = pgTable("publish_jobs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  draftId: integer("draft_id").notNull().references(() => drafts.id),
+  accountId: integer("account_id").notNull().references(() => hostedAccounts.id),
+  status: varchar("status", { length: 32 }).notNull().default("pending"),
+  scheduledAt: timestamp("scheduled_at"),
+  visibility: varchar("visibility", { length: 32 }).notNull().default("public"),
+  claimedBy: varchar("claimed_by", { length: 128 }),
+  error: text("error"),
+  resultUrl: text("result_url"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const jobs = pgTable("jobs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  type: varchar("type", { length: 64 }).notNull(),
+  payload: jsonb("payload").notNull().default({}),
+  status: varchar("status", { length: 32 }).notNull().default("pending"),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  finishedAt: timestamp("finished_at"),
+});

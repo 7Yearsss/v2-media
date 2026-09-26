@@ -1,0 +1,193 @@
+/**
+ * 小红书页面数据解析器。
+ *
+ * 输入来源（全部是站点自己签名拿到的数据，见 docs/xhs-extension-research.md）：
+ *  1. window.__INITIAL_STATE__ —— Vue3 reactive 包装，数组字段需解 ._rawValue
+ *  2. XHR/fetch 嗅探到的 edith.xiaohongshu.com API 响应
+ *
+ * 纯函数，不依赖 DOM —— 可在插件、服务端、单测三处复用。
+ */
+
+import type { CollectSource, NoteCard, NoteComment, NoteDetail, NoteImage } from "./types";
+
+type Any = Record<string, any>;
+
+/** Vue3 ref/reactive 解包：{ _rawValue: x } -> x（递归数组友好）。 */
+export function unwrap<T = any>(v: any): T {
+  if (v && typeof v === "object" && "_rawValue" in v) return v._rawValue as T;
+  return v as T;
+}
+
+const num = (v: any): number => {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    // 小红书有时返回 "1.2万" 这类中文计数
+    const w = v.trim();
+    if (w.endsWith("万")) return Math.round(parseFloat(w) * 10000) || 0;
+    const n = parseInt(w, 10);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+};
+
+const str = (v: any): string => (v == null ? "" : String(v));
+
+export function noteUrl(noteId: string, xsecToken = "", xsecSource = "pc_search"): string {
+  const q = xsecToken
+    ? `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=${xsecSource}`
+    : "";
+  return `https://www.xiaohongshu.com/explore/${noteId}${q}`;
+}
+
+/** 搜索/feed item -> NoteCard。item 形状见 docs/xhs-extension-research.md。 */
+export function noteCardFromItem(item: Any, source: CollectSource): NoteCard | null {
+  const card = item?.note_card ?? item?.noteCard;
+  if (!card) return null;
+  const noteId = str(item.id ?? item.note_id ?? card.note_id);
+  if (!noteId) return null;
+  const user = card.user ?? {};
+  const ii = card.interact_info ?? card.interactInfo ?? {};
+  const cover = card.cover ?? {};
+  const xsecToken = str(item.xsec_token ?? "");
+  return {
+    noteId,
+    xsecToken,
+    type: card.type === "video" ? "video" : "image",
+    title: str(card.display_title ?? card.title),
+    desc: str(card.desc),
+    author: {
+      userId: str(user.user_id ?? user.userId ?? ""),
+      nickname: str(user.nickname ?? user.nick_name ?? ""),
+      avatar: str(user.avatar ?? user.image ?? ""),
+    },
+    cover: str(cover.url_default ?? cover.url_pre ?? cover.url ?? ""),
+    likes: num(ii.liked_count ?? ii.likedCount),
+    collects: num(ii.collected_count ?? ii.collectedCount),
+    comments: num(ii.comment_count ?? ii.commentCount),
+    shares: num(ii.share_count ?? ii.shareCount),
+    url: noteUrl(noteId, xsecToken),
+    source,
+  };
+}
+
+/** 搜索/feed 响应（data.items[] 或 data.notes[]）批量提取。 */
+export function noteCardsFromResponse(
+  payload: Any,
+  source: CollectSource,
+): { items: NoteCard[]; hasMore: boolean; cursor: string } {
+  const data = payload?.data ?? payload;
+  const rawItems: Any[] = data?.items ?? data?.notes ?? [];
+  const items = rawItems
+    // 搜索接口混有 user/aggregate 等非笔记条目
+    .filter((it) => (it?.model_type ? it.model_type === "note" : true))
+    .map((it) => noteCardFromItem(it, source))
+    .filter((x): x is NoteCard => x !== null);
+  return {
+    items,
+    hasMore: Boolean(data?.has_more ?? data?.hasMore),
+    cursor: str(data?.cursor ?? ""),
+  };
+}
+
+/** __INITIAL_STATE__ 里指定路径的笔记列表（feed.feeds / user.notes / search.feeds）。 */
+export function noteCardsFromInitialState(state: Any, path: string, source: CollectSource): NoteCard[] {
+  let cur: any = state;
+  for (const key of path.split(".")) {
+    cur = unwrap(cur?.[key]);
+    if (cur == null) return [];
+  }
+  const list = Array.isArray(cur) ? cur : unwrap(cur?.[0]);
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((it: Any) => noteCardFromItem(unwrap(it), source))
+    .filter((x): x is NoteCard => x !== null);
+}
+
+/** feed 详情接口 data.items[0].note_card -> NoteDetail。 */
+export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<NoteCard>): NoteDetail | null {
+  const items = payload?.data?.items;
+  const card = Array.isArray(items) ? items[0]?.note_card : payload?.data?.note_card;
+  if (!card) return null;
+  const noteId = str(card.note_id ?? items?.[0]?.id ?? fallback?.noteId ?? "");
+  if (!noteId) return null;
+  const user = card.user ?? {};
+  const ii = card.interact_info ?? {};
+  const images: NoteImage[] = (Array.isArray(card.image_list) ? card.image_list : [])
+    .map((img: Any) => ({
+      url: str(img?.url_default ?? img?.url_pre ?? img?.url ?? img?.info_list?.[0]?.url ?? ""),
+      width: img?.width,
+      height: img?.height,
+    }))
+    .filter((i: NoteImage) => i.url);
+  const videoUrl =
+    card.video?.media?.stream?.h264?.[0]?.master_url ??
+    card.video?.media?.stream?.h265?.[0]?.master_url ??
+    card.video?.url ??
+    undefined;
+  const tagList: Any[] = card.tag_list ?? card.tagList ?? [];
+  const xsecToken = str(items?.[0]?.xsec_token ?? fallback?.xsecToken ?? "");
+  return {
+    noteId,
+    xsecToken,
+    type: card.type === "video" || videoUrl ? "video" : "image",
+    title: str(card.title ?? card.display_title),
+    desc: str(card.desc),
+    content: str(card.desc),
+    tags: tagList.map((t) => str(t?.name)).filter(Boolean),
+    images,
+    videoUrl,
+    author: {
+      userId: str(user.user_id ?? ""),
+      nickname: str(user.nickname ?? user.nick_name ?? ""),
+      avatar: str(user.avatar ?? ""),
+    },
+    cover: str(card.cover?.url_default ?? card.cover?.url ?? images[0]?.url ?? ""),
+    likes: num(ii.liked_count),
+    collects: num(ii.collected_count),
+    comments: num(ii.comment_count),
+    shares: num(ii.share_count),
+    url: noteUrl(noteId, xsecToken),
+    publishedAt: str(card.time ?? card.last_update_time ?? ""),
+    ipLocation: str(card.ip_location ?? ""),
+  };
+}
+
+/** 评论接口 data.comments[] -> NoteComment[]。 */
+export function commentsFromResponse(payload: Any): NoteComment[] {
+  const list: Any[] = payload?.data?.comments ?? [];
+  return list.map((c) => ({
+    commentId: str(c.id ?? c.comment_id),
+    userName: str(c.user_info?.nickname ?? c.user?.nickname ?? ""),
+    userId: str(c.user_info?.user_id ?? c.user?.user_id ?? "") || undefined,
+    content: str(c.content),
+    likes: num(c.like_count ?? c.likes),
+    subComments: Array.isArray(c.sub_comments)
+      ? c.sub_comments.map((s: Any) => ({
+          commentId: str(s.id ?? s.comment_id),
+          userName: str(s.user_info?.nickname ?? ""),
+          content: str(s.content),
+          likes: num(s.like_count),
+        }))
+      : undefined,
+  }));
+}
+
+/** 嗅探 URL 分类：返回该 URL 对应的采集场景，null = 不关心。 */
+export function classifyXhsApiUrl(url: string): { source: CollectSource; kind: "list" | "comments" } | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const p = u.pathname;
+  if (p === "/api/sns/web/v1/homefeed") return { source: "homefeed", kind: "list" };
+  if (p === "/api/sns/web/v1/search/notes" || p === "/api/sns/web/v2/search/notes")
+    return { source: "search", kind: "list" };
+  if (p === "/api/sns/web/v1/user_posted") return { source: "user_posted", kind: "list" };
+  if (p === "/api/sns/web/v2/note/collect/page") return { source: "collect_page", kind: "list" };
+  if (p === "/api/sns/web/v1/note/like/page") return { source: "like_page", kind: "list" };
+  if (p === "/api/sns/web/v2/comment/page" || p === "/api/sns/web/v2/comment/sub/page")
+    return { source: "detail", kind: "comments" };
+  return null;
+}
