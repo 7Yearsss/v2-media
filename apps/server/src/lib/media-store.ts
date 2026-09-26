@@ -2,7 +2,7 @@ import { eq, inArray, or, sql } from "drizzle-orm";
 import type { HonoRequest } from "hono";
 
 import type { Deps } from "../context";
-import { collectedNotes } from "../db/schema";
+import { collectedNotes, drafts } from "../db/schema";
 import { env } from "../env";
 import type { R2Storage } from "./r2";
 
@@ -176,4 +176,62 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
     rows.map((r) => r.id),
     env.publicBaseUrl,
   );
+}
+
+const OBJECT_KEY_RE = /\/api\/media\/objects\/(img\/[0-9a-f]{64})/g;
+
+/** DB 里仍被引用的 R2 对象 key 集合（采集表 cover/images + 草稿表 images）。 */
+async function referencedKeys(deps: Deps): Promise<Set<string>> {
+  const keys = new Set<string>();
+  const notes = await deps.db
+    .select({ cover: collectedNotes.cover, images: collectedNotes.images })
+    .from(collectedNotes);
+  const draftRows = await deps.db
+    .select({ images: drafts.images })
+    .from(drafts);
+  const urls: string[] = [];
+  for (const n of notes) {
+    urls.push(n.cover, ...(n.images ?? []).map((i) => i.url));
+  }
+  for (const d of draftRows) {
+    urls.push(...(d.images ?? []).map((i) => i.url));
+  }
+  for (const u of urls) {
+    for (const m of u.matchAll(OBJECT_KEY_RE)) keys.add(m[1]!);
+  }
+  return keys;
+}
+
+/**
+ * 媒体 GC（开发期容量控制）：删 DB 已无引用的对象；仍超 R2_MAX_BYTES 时
+ * 按最旧优先删引用中的对象（腾出容量，对应行会残留失效图，开发期可接受）。
+ */
+export async function pruneMedia(deps: Deps): Promise<void> {
+  if (!deps.r2) return;
+  const objects = await deps.r2.list("img/");
+  if (!objects.length) return;
+  const referenced = await referencedKeys(deps);
+  let removed = 0;
+  const kept: typeof objects = [];
+  for (const o of objects) {
+    if (!referenced.has(o.key)) {
+      await deps.r2.delete(o.key).catch(() => {});
+      removed++;
+    } else {
+      kept.push(o);
+    }
+  }
+  let total = kept.reduce((s, o) => s + o.size, 0);
+  const cap = env.r2MaxBytes;
+  if (cap > 0 && total > cap) {
+    kept.sort((a, b) => a.lastModified - b.lastModified);
+    for (const o of kept) {
+      if (total <= cap) break;
+      await deps.r2!.delete(o.key).catch(() => {});
+      total -= o.size;
+      removed++;
+    }
+  }
+  if (removed)
+    console.log(`media gc: removed ${removed} objects (${kept.length} kept)`);
 }

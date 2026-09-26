@@ -21,6 +21,7 @@ import type {
   LoginState,
 } from "./lib/messages";
 import { el, shadowHost, toastIn } from "./lib/ui";
+import { getSettings, onSettingsChanged } from "./lib/settings";
 
 const isWww =
   location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
@@ -67,6 +68,22 @@ if (isWww) {
   const collectThisBtn = el("button", { class: "ghost", style: "display:none" }, "采集本篇");
   const bar = el("div", { class: "bar" }, dot, countEl, collectAllBtn, collectThisBtn);
   shadow.append(overlay, bar);
+
+  // ---------- 启停开关（popup 写入 chrome.storage.local.v2m_settings） ----------
+  let cfg = { enabled: true, autoCollect: true };
+  function applySettings() {
+    // 停用：隐藏全部注入 UI，嗅探只记内存不上报
+    bar.style.display = cfg.enabled ? "" : "none";
+    overlay.style.display = cfg.enabled ? "" : "none";
+  }
+  void getSettings().then((s) => {
+    cfg = s;
+    applySettings();
+  });
+  onSettingsChanged((s) => {
+    cfg = s;
+    applySettings();
+  });
 
   const toast = (msg: string, ok = true) => toastIn(shadow, msg, ok);
 
@@ -122,6 +139,7 @@ if (isWww) {
   // ---------- 事件接入 ----------
 
   document.addEventListener(EVT_NOTES, (ev) => {
+    if (!cfg.enabled) return; // 总开关关：不动
     const batch = (ev as CustomEvent<CollectBatch>).detail;
     if (!batch) return;
     lastContext = batch.context ?? lastContext;
@@ -132,11 +150,12 @@ if (isWww) {
     }
     for (const d of batch.details ?? []) details.set(d.noteId, d);
     refreshCount();
-    queueUpload(batch);
+    if (cfg.autoCollect) queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
     scheduleScan();
   });
 
   document.addEventListener(EVT_COMMENTS, (ev) => {
+    if (!cfg.enabled) return;
     const d = (ev as CustomEvent<CommentsEventDetail>).detail;
     if (d?.noteId) commentsMap.set(d.noteId, d.comments);
   });
@@ -218,6 +237,10 @@ if (isWww) {
   }
 
   async function collectOne(noteId: string): Promise<boolean> {
+    if (!cfg.enabled) {
+      toast("插件已停用", false);
+      return false;
+    }
     let card = cards.get(noteId);
     let detail = details.get(noteId);
     if (!card && !detail) {
@@ -259,6 +282,10 @@ if (isWww) {
   }
 
   async function collectAll() {
+    if (!cfg.enabled) {
+      toast("插件已停用", false);
+      return;
+    }
     collectAllBtn.disabled = true;
     collectAllBtn.textContent = "入库中…";
     try {
@@ -356,6 +383,11 @@ if (isWww) {
     const started = Date.now();
     const tick = async () => {
       if (done) return;
+      cfg = await getSettings(); // 同步 cfg 可能还没加载，这里每次拿最新的
+      if (!cfg.enabled) {
+        finish(false, "插件已停用");
+        return;
+      }
       if (noteId && (cards.has(noteId) || details.has(noteId))) {
         finish(await collectOne(noteId));
         return;

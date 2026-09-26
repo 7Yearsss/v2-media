@@ -15,6 +15,7 @@ import type {
   PendingPublishJobsResponse,
 } from "@v2media/shared";
 import type { BgMessage, BgResponse, LoginState, PublishJobPayload } from "./lib/messages";
+import { getSettings } from "./lib/settings";
 
 const VERSION = chrome.runtime.getManifest().version;
 
@@ -156,6 +157,7 @@ async function accountFromCookies(): Promise<DetectedAccount | null> {
 }
 
 async function heartbeat() {
+  if (!(await getSettings()).enabled) return; // 总开关关闭：不上报心跳
   const auth = await getAuth();
   if (!auth) return;
   const detected = (await accountFromOpenTab()) ?? (await accountFromCookies());
@@ -264,6 +266,7 @@ async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
 }
 
 async function pollPendingJobs() {
+  if (!(await getSettings()).enabled) return; // 总开关关闭：不领发布任务
   const auth = await getAuth();
   if (!auth) return;
   let jobs: PublishJobPayload[];
@@ -350,7 +353,13 @@ chrome.runtime.onMessage.addListener(
       // --- content script 采集上报 ---
       case "EXT_COLLECT":
         return reply(
-          api<CollectResponse>("/api/ext/collect", { body: msg.batch }).then(async (r) => {
+          getSettings()
+            .then((s) =>
+              s.enabled
+                ? api<CollectResponse>("/api/ext/collect", { body: msg.batch })
+                : ({ saved: 0, ids: [] } as CollectResponse),
+            )
+            .then(async (r) => {
             const { stats } = (await chrome.storage.local.get("stats")) as {
               stats?: { collected?: number };
             };
