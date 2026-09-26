@@ -177,6 +177,68 @@ export interface Draft {
   updatedAt: string;
 }
 
+/** 选题池条目（策划层）：一条"想写/计划写"的内容方向。 */
+export type TopicStatus =
+  | "idea" // 想法
+  | "planned" // 已排期（有 plannedAt）
+  | "drafted" // 已转草稿
+  | "published" // 已发布
+  | "archived"; // 归档不做
+
+export type TopicSourceType =
+  | "manual" // 手填
+  | "collection" // 采集库分析产出
+  | "note" // 单篇笔记标记而来
+  | "ai"; // AI 生成
+
+/**
+ * 选题七维评分明细（各 1-10）。cost/risk 为反向分——越高越省事/越安全；
+ * 口径与 docs/planning-attribution-design.md 一致（借 Easel scoring-dimensions）。
+ */
+export interface TopicScoreDetail {
+  /** 流量潜力（痛感强度+话题热度+搜索需求）。 */
+  traffic?: number;
+  /** 账号匹配（与定位/受众契合度）。 */
+  fit?: number;
+  /** 竞争差异化（高分=竞争低/有空白角度）。 */
+  diff?: number;
+  /** 变现潜力。 */
+  monetization?: number;
+  /** 时效价值（高分=常青长尾）。 */
+  evergreen?: number;
+  /** 制作成本（反向：高分=低成本易执行）。 */
+  cost?: number;
+  /** 合规风险（反向：高分=低风险）。 */
+  risk?: number;
+}
+
+export interface Topic {
+  id: number;
+  title: string;
+  /** 切入角度/要点说明。 */
+  angle: string;
+  sourceType: TopicSourceType;
+  collectionId?: number;
+  sourceNoteId?: number;
+  accountId?: number;
+  status: TopicStatus;
+  /** AI 综合分 0-100；未评分为 undefined。 */
+  score?: number;
+  scoreDetail?: TopicScoreDetail;
+  /** 计划发布时间。 */
+  plannedAt?: string;
+  draftId?: number;
+  publishJobId?: number;
+  createdAt: string;
+  updatedAt: string;
+  /** 列表联查补充字段（非表列）：来源采集库名。 */
+  collectionName?: string;
+  /** 列表联查补充字段：目标账号昵称。 */
+  accountNickname?: string;
+  /** 列表联查补充字段：来源笔记标题。 */
+  sourceNoteTitle?: string;
+}
+
 export type PublishJobStatus =
   | "pending"
   | "claimed"

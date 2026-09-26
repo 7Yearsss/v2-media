@@ -7,6 +7,9 @@ import type {
   AiRewriteResponse,
   AiTagsRequest,
   AiTitlesRequest,
+  AiTopicScoreRequest,
+  AiTopicsRequest,
+  AiTopicsResponse,
   AuthRequest,
   AuthResponse,
   CollectedNote,
@@ -19,6 +22,10 @@ import type {
   NoteComment,
   PublishJob,
   PublishJobCreateRequest,
+  Topic,
+  TopicCreateRequest,
+  TopicToDraftResponse,
+  TopicUpdateRequest,
 } from "@v2media/shared";
 
 const TOKEN_KEY = "v2m.token";
@@ -306,6 +313,26 @@ export const api = {
     request<{ titles: string[] }>("/api/ai/titles", { method: "POST", body }),
   aiTags: (body: AiTagsRequest) =>
     request<{ tags: string[] }>("/api/ai/tags", { method: "POST", body }),
+
+  topics: (status?: string) =>
+    request<{ items: Topic[] }>("/api/topics", {
+      query: { status: status || undefined },
+    }),
+  createTopic: (body: TopicCreateRequest) =>
+    request<Topic>("/api/topics", { method: "POST", body }),
+  updateTopic: (id: number, body: TopicUpdateRequest) =>
+    request<Topic>(`/api/topics/${id}`, { method: "PATCH", body }),
+  deleteTopic: (id: number) =>
+    request<void>(`/api/topics/${id}`, { method: "DELETE" }),
+  topicToDraft: (id: number) =>
+    request<TopicToDraftResponse>(`/api/topics/${id}/to-draft`, { method: "POST" }),
+  aiTopics: (body: AiTopicsRequest) =>
+    request<AiTopicsResponse>("/api/ai/topics", { method: "POST", body }),
+  aiTopicScore: (body: AiTopicScoreRequest) =>
+    request<{ topic: Topic; verdict: string; advice: string }>("/api/ai/topic-score", {
+      method: "POST",
+      body,
+    }),
 
   jobs: () => request<PublishJob[]>("/api/publish/jobs"),
   createJob: (body: PublishJobCreateRequest) =>

@@ -28,6 +28,13 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/ai/rewrite | `{draftId?\|title,content,instruction}` → `{title,content}` |
 | POST | /api/ai/titles | `{title,content,count}` → `{titles[]}` |
 | POST | /api/ai/tags | `{title,content,count}` → `{tags[]}` |
+| GET | /api/topics?status= | 选题池列表 `{items:Topic[]}`（联查 collectionName/accountNickname/sourceNoteTitle） |
+| POST | /api/topics | `TopicCreateRequest` → `Topic`（带 plannedAt 则 status=planned；sourceType 按来源自动判定） |
+| PATCH | /api/topics/:id | `TopicUpdateRequest`；plannedAt 设置→planned / 清空→idea；drafted、published 由系统流转，手动改 → 400 |
+| DELETE | /api/topics/:id | |
+| POST | /api/topics/:id/to-draft | 转草稿（幂等，已有 draftId 返回原草稿）→ `{draft,topic}`（topic→drafted） |
+| POST | /api/ai/topics | `{collectionId,count?≤10,accountId?}` → `{items:Topic[]}`：库内互动 Top30 → AI 生成选题+七维明细，服务端加权出 score 后落池 |
+| POST | /api/ai/topic-score | `{topicId}` → `{topic,verdict,advice}`：单条深评并回写 score/scoreDetail |
 | GET | /api/media/:id | 服务端缓存的图片（采集时入库下载） |
 | POST | /api/publish/jobs | `{draftId,accountId,scheduledAt?,visibility?}` → `PublishJob` |
 | GET | /api/publish/jobs | 任务列表 |

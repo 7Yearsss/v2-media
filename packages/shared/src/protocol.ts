@@ -3,7 +3,7 @@
  * 服务端 REST API 的载荷类型也在这里统一定义。
  */
 
-import type { CollectBatch, HostedAccount, PublishJob } from "./types";
+import type { CollectBatch, Draft, HostedAccount, PublishJob, Topic, TopicStatus } from "./types";
 
 // ---------- window.postMessage 桥（site-bridge.ts 实现） ----------
 
@@ -141,4 +141,45 @@ export interface PublishResultRequest {
   status: "done" | "failed";
   resultUrl?: string;
   error?: string;
+}
+
+// ---------- 选题池（策划层） ----------
+
+/** POST /api/topics */
+export interface TopicCreateRequest {
+  title: string;
+  angle?: string;
+  collectionId?: number;
+  sourceNoteId?: number;
+  accountId?: number;
+  /** unix ms；给上即 status=planned。 */
+  plannedAt?: number;
+}
+export interface TopicUpdateRequest {
+  title?: string;
+  angle?: string;
+  status?: TopicStatus;
+  accountId?: number | null;
+  plannedAt?: number | null;
+}
+
+/** POST /api/topics/:id/to-draft → { draft, topic } */
+export interface TopicToDraftResponse {
+  draft: Draft;
+  topic: Topic;
+}
+
+/** POST /api/ai/topics —— 对采集库爆款笔记生成选题建议并直接入池（status=idea）。 */
+export interface AiTopicsRequest {
+  collectionId: number;
+  count?: number;
+  accountId?: number;
+}
+export interface AiTopicsResponse {
+  items: Topic[];
+}
+
+/** POST /api/ai/topic-score —— 单条选题七维深评，回写 score/scoreDetail。 */
+export interface AiTopicScoreRequest {
+  topicId: number;
 }

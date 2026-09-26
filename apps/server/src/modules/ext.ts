@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { collectedNotes, collections, drafts, hostedAccounts, publishJobs } from "../db/schema";
+import { collectedNotes, collections, drafts, hostedAccounts, publishJobs, topics } from "../db/schema";
 import { persistCollectedMedia, publicBase } from "../lib/media-store";
 
 const heartbeatSchema = z.object({
@@ -363,6 +363,11 @@ export function extModule(deps: Deps) {
         .update(drafts)
         .set({ status: "published", updatedAt: deps.now() })
         .where(eq(drafts.id, row.draftId));
+      // 串联选题池：该草稿若来自选题，回填 published + publishJobId（归因关联点）
+      await deps.db
+        .update(topics)
+        .set({ status: "published", publishJobId: row.id, updatedAt: deps.now() })
+        .where(and(eq(topics.draftId, row.draftId), eq(topics.userId, userId)));
     }
     return c.json({ ok: true });
   });

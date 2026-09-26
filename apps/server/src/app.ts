@@ -14,6 +14,7 @@ import { mediaModule } from "./modules/media";
 import { notesModule } from "./modules/notes";
 import { overviewModule } from "./modules/overview";
 import { publishModule } from "./modules/publish";
+import { topicsModule } from "./modules/topics";
 
 export function createApp(deps: Deps) {
   const app = new Hono();
@@ -34,6 +35,7 @@ export function createApp(deps: Deps) {
   secured.route("/drafts", draftsModule(deps));
   secured.route("/ai", aiModule(deps));
   secured.route("/publish", publishModule(deps));
+  secured.route("/topics", topicsModule(deps));
   secured.route("/overview", overviewModule(deps));
   secured.route("/ext", extModule(deps));
   app.route("/api", secured);
