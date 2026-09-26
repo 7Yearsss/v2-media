@@ -1,4 +1,5 @@
 import {
+  Download,
   ExternalLink,
   FolderOpen,
   Heart,
@@ -372,6 +373,33 @@ export default function LibraryPage() {
   const [selected, setSelected] = useState<number | null>(null);
   const [newColName, setNewColName] = useState("");
   const [showNewCol, setShowNewCol] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  // 导出当前筛选为 CSV（Excel 双击直开）；文件名取库名方便归档
+  const exportCsv = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const blob = await api.exportNotes({
+        collectionId: collection || undefined,
+        keyword: keyword || undefined,
+        source: source || undefined,
+      });
+      const colName =
+        collection === "none"
+          ? "未分组"
+          : collections.find((c) => String(c.id) === collection)?.name ?? "全部";
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `v2media-${colName}-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) {
+      toast.error("导出失败", e instanceof Error ? e.message : undefined);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const collectionsQuery = useQuery({
     queryKey: ["collections"],
@@ -584,6 +612,16 @@ export default function LibraryPage() {
               新建库
             </button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto h-7 rounded-full px-3 text-xs"
+            disabled={exporting || items.length === 0}
+            onClick={() => void exportCsv()}
+          >
+            <Download className="size-3.5" />
+            {exporting ? "导出中…" : "导出 Excel"}
+          </Button>
         </div>
       </div>
 

@@ -297,6 +297,25 @@ export const api = {
   note: (id: number) => request<NoteDetail>(`/api/notes/${id}`),
   deleteNote: (id: number) =>
     request<void>(`/api/notes/${id}`, { method: "DELETE" }),
+  /** GET /api/notes/export → CSV blob（带 BOM，Excel 直开）。 */
+  exportNotes: async (f?: { collectionId?: string; keyword?: string; source?: string }): Promise<Blob> => {
+    const p = new URLSearchParams();
+    if (f?.collectionId) p.set("collectionId", f.collectionId);
+    if (f?.keyword) p.set("keyword", f.keyword);
+    if (f?.source) p.set("source", f.source);
+    const qs = p.size ? `?${p}` : "";
+    const token = getToken();
+    const res = await fetch(`/api/notes/export${qs}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (res.status === 401) {
+      clearSession();
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+      throw new ApiError("登录已过期，请重新登录", 401);
+    }
+    if (!res.ok) throw new ApiError(`导出失败（${res.status}）`, res.status);
+    return res.blob();
+  },
 
   drafts: () => request<Draft[]>("/api/drafts"),
   draft: (id: number) => request<Draft>(`/api/drafts/${id}`),
