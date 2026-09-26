@@ -203,6 +203,15 @@ if (isWww) {
   // 详情补齐：对只有卡片的笔记后台拉详情页 HTML（SSR 里有 tags/正文/发布时间/
   // 互动数/图集）。fetchDetail 成功会再发一条 EVT_NOTES（detail 批次），回到这里入缓存。
   const detailRequested = new Set<string>();
+  /** 发起一次详情补齐；返回 promise 便于批量并发等待。失败/空结果放行重试。 */
+  function requestDetail(it: NoteCard) {
+    detailRequested.add(it.noteId);
+    return mainRequest<CachedNote>("fetchDetail", { url: it.url }, 15_000)
+      .then((r) => {
+        if (!r?.detail) detailRequested.delete(it.noteId); // 解析不到详情也放行重试
+      })
+      .catch(() => detailRequested.delete(it.noteId)); // 失败放行：下次事件可再试
+  }
   function backfillDetails(items: NoteCard[]) {
     for (const it of items) {
       if (
@@ -212,14 +221,12 @@ if (isWww) {
         !it.url
       )
         continue;
-      detailRequested.add(it.noteId);
-      void mainRequest<CachedNote>("fetchDetail", { url: it.url }, 15_000)
-        .then((r) => {
-          if (!r?.detail) detailRequested.delete(it.noteId); // 解析不到详情也放行重试
-        })
-        .catch(() => detailRequested.delete(it.noteId)); // 失败放行：下次事件可再试
+      void requestDetail(it);
     }
   }
+
+  // 采集时用的库（按笔记记）：后续补传要跟原批次同一个库，防止换库后补传把笔记挪走
+  const colOfUpload = new Map<string, number | null>();
 
   document.addEventListener(EVT_NOTES, (ev) => {
     if (!cfg.enabled) return; // 总开关关：不动
@@ -258,7 +265,8 @@ if (isWww) {
         d.noteId,
         (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail,
       );
-      // 手动模式下，晚到的详情对已采卡片做补传（autoCollect 走 queueUpload 已覆盖）
+      // 手动模式下，晚到的详情对已采卡片做补传（autoCollect 走 queueUpload 已覆盖）；
+      // 沿用卡片入库时的库，不取当前选择（用户可能已换库）
       if (
         !cfg.autoCollect &&
         !collectFlag &&
@@ -267,7 +275,7 @@ if (isWww) {
       ) {
         pendingDetails.set(d.noteId, {
           data: details.get(d.noteId)!,
-          colId: cfg.collectionId ?? null,
+          colId: colOfUpload.get(d.noteId) ?? cfg.collectionId ?? null,
         });
         if (flushTimer) clearTimeout(flushTimer);
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
@@ -304,7 +312,7 @@ if (isWww) {
     if (det2) {
       pendingDetails.set(d.noteId, {
         data: det2,
-        colId: cfg.collectionId ?? null,
+        colId: colOfUpload.get(d.noteId) ?? cfg.collectionId ?? null,
       });
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
@@ -437,9 +445,19 @@ if (isWww) {
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       uploadedCards.add(noteId);
+      colOfUpload.set(noteId, cfg.collectionId ?? null);
       if (detail) uploadedDetails.add(noteId);
-      // 上传飞行期间到达的评论：手动采集成功后补传一次（in-flight 时 collected 还
-      // 不满足，EVT_COMMENTS 只进了缓存）
+      // 上传飞行期间到达的评论/详情：手动采集成功后补传一次（in-flight 时 collected/
+      // uploadedCards 还不满足，EVT_COMMENTS / EVT_NOTES 只进了缓存）
+      const lateDetail = details.get(noteId);
+      if (lateDetail && !uploadedDetails.has(noteId)) {
+        pendingDetails.set(noteId, {
+          data: lateDetail,
+          colId: cfg.collectionId ?? null,
+        });
+        if (flushTimer) clearTimeout(flushTimer);
+        flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+      }
       const late = commentsMap.get(noteId);
       if (
         detail &&
@@ -448,7 +466,7 @@ if (isWww) {
       ) {
         pendingDetails.set(noteId, {
           data: { ...detail, commentsData: late } as NoteDetail,
-          colId: cfg.collectionId ?? null,
+          colId: colOfUpload.get(noteId) ?? cfg.collectionId ?? null,
         });
         if (flushTimer) clearTimeout(flushTimer);
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
@@ -488,23 +506,17 @@ if (isWww) {
       ).catch(() => ({ cards: [], details: [] }));
       for (const c of res.cards) cards.set(c.noteId, c);
       for (const d of res.details) details.set(d.noteId, d);
-      // 先把缺详情的卡片补齐（正文/图集/tags/互动数）再上报 —— 4 并发拉详情页 HTML；
-      // 有整体 15s 上限，避免超时请求把上传拖住（晚到的详情走补传通道）
-      const missing = [...cards.values()].filter((c) => !details.has(c.noteId) && c.url);
-      const deadline = Date.now() + 15_000;
-      for (let i = 0; i < missing.length && Date.now() < deadline; i += 4) {
-        await Promise.race([
-          Promise.all(
-            missing.slice(i, i + 4).map((c) => {
-              detailRequested.add(c.noteId);
-              return mainRequest<CachedNote>("fetchDetail", { url: c.url }, 15_000).catch(
-                () => null,
-              );
-            }),
-          ),
-          new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now()))),
-        ]);
-      }
+      // 对缺详情的卡片全部发起补齐（4 并发泵在后台跑，不取消）：上传只等 15s，
+      // 之后到达的详情走 EVT_NOTES 补传通道 / 上报后兜底扫一遍
+      const missing = [...cards.values()].filter(
+        (c) => !details.has(c.noteId) && !detailRequested.has(c.noteId) && c.url,
+      );
+      const pump = (async () => {
+        for (let i = 0; i < missing.length; i += 4) {
+          await Promise.all(missing.slice(i, i + 4).map((c) => requestDetail(c)));
+        }
+      })();
+      await Promise.race([pump, new Promise((r) => setTimeout(r, 15_000))]);
       refreshCount();
       const items = [...cards.values()];
       const dets = [...details.values()];
@@ -521,8 +533,17 @@ if (isWww) {
         details: dets.length ? dets : undefined,
       };
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
+      const batchColId = cfg.collectionId ?? null;
       for (const it of items) uploadedCards.add(it.noteId);
       for (const d of dets) uploadedDetails.add(d.noteId);
+      for (const n of [...items, ...dets]) colOfUpload.set(n.noteId, batchColId);
+      // 上传飞行期间到的详情：兜底扫一遍（fetchDetail 在飞的响应可能刚好卡在边界）
+      for (const d of details.values()) {
+        if (uploadedCards.has(d.noteId) && !uploadedDetails.has(d.noteId)) {
+          pendingDetails.set(d.noteId, { data: d, colId: batchColId });
+          uploadedDetails.add(d.noteId); // 防 EVT_NOTES 补传重复入队
+        }
+      }
       // 同 collectOne：飞行期间晚到的评论补传
       for (const d of dets) {
         const late = commentsMap.get(d.noteId);
@@ -530,7 +551,7 @@ if (isWww) {
         if (late?.length && !sent.commentsData?.length) {
           pendingDetails.set(d.noteId, {
             data: { ...d, commentsData: late } as NoteDetail,
-            colId: cfg.collectionId ?? null,
+            colId: batchColId,
           });
         }
       }

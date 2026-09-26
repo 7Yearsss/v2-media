@@ -618,14 +618,15 @@ chrome.runtime.onMessage.addListener(
 
       // --- COLLECT_URL 回执 ---
       case "COLLECT_URL_DONE": {
-        const resolve = collectWaiters.get(msg.noteId ?? "");
-        if (resolve) {
+        const w = collectWaiters.get(msg.noteId ?? "");
+        const sid = sender.tab?.id;
+        // 回执必须来自本次任务开的那个页：SW 重启后旧页的回执不能顶替新页的 waiter
+        if (w && (w.tabId === undefined || sid === undefined || w.tabId === sid)) {
           collectWaiters.delete(msg.noteId ?? "");
-          resolve({ ok: msg.ok, noteId: msg.noteId, error: msg.error });
-        } else if (sender.tab?.id) {
-          // SW 重启把 waiter 丢了：采集页自己上传已完成，顺手收掉这个孤儿隐藏页
-          const tabId = sender.tab.id;
-          setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 1000);
+          w.resolve({ ok: msg.ok, noteId: msg.noteId, error: msg.error });
+        } else if (sid) {
+          // 旧生命周期的孤儿页回执（或 waiter 已失配）：采集页自己上传已完成，收掉发件页
+          setTimeout(() => chrome.tabs.remove(sid).catch(() => {}), 1000);
         }
         sendResponse({ ok: true });
         return false;
@@ -695,7 +696,7 @@ chrome.runtime.onMessage.addListener(
 
 const collectWaiters = new Map<
   string,
-  (r: { ok: boolean; noteId?: string; error?: string }) => void
+  { resolve: (r: { ok: boolean; noteId?: string; error?: string }) => void; tabId?: number }
 >();
 
 async function collectByUrl(url: string) {
@@ -705,8 +706,11 @@ async function collectByUrl(url: string) {
   const noteId = url.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i)?.[1] ?? "";
   const marker = `__v2m_collect=1`;
   const target = url + (url.includes("?") ? "&" : "?") + marker;
+  const waiter: { resolve: (r: { ok: boolean; noteId?: string; error?: string }) => void; tabId?: number } =
+    { resolve: () => {} };
   const done = new Promise<{ ok: boolean; noteId?: string; error?: string }>((resolve) => {
-    collectWaiters.set(noteId, resolve);
+    waiter.resolve = resolve;
+    collectWaiters.set(noteId, waiter);
     setTimeout(() => {
       if (collectWaiters.delete(noteId)) {
         resolve({ ok: false, error: "采集超时（页面 32s 内未回执）" });
@@ -714,6 +718,7 @@ async function collectByUrl(url: string) {
     }, 33000); // 目标页会等评论接口到齐（数据就绪后再等 8s）才回执，给足时间
   });
   const tab = await chrome.tabs.create({ url: target, active: false });
+  waiter.tabId = tab.id; // 绑定 tab：回执只能由它完成（重启后旧页回执不顶包）
   const r = await done;
   // 小宽限后收掉隐藏标签页（回执已尽量等评论到齐；个别慢包仍可能差几秒）
   setTimeout(() => {
@@ -732,8 +737,13 @@ const deepQueuedIds = new Set<string>();
 let deepPumping = false;
 let deepQueueLoaded = false;
 
-async function persistDeepQueue() {
-  await chrome.storage.session.set({ [DEEP_Q_KEY]: deepQueue }).catch(() => {});
+// persist 串行化：多次连续写不同步会乱序，旧快照可能盖掉新入队项
+let persistTail = Promise.resolve();
+function persistDeepQueue() {
+  persistTail = persistTail
+    .then(() => chrome.storage.session.set({ [DEEP_Q_KEY]: deepQueue }))
+    .catch(() => {});
+  return persistTail;
 }
 
 async function loadDeepQueue() {
@@ -747,7 +757,7 @@ async function loadDeepQueue() {
       const id = u.match(/([0-9a-f]{24})/)?.[1] ?? u;
       if (!deepQueuedIds.has(id) && !deepQueue.includes(u)) {
         deepQueuedIds.add(id);
-        deepQueue.unshift(u); // 恢复的排在前面：先跑上次没跑完的
+        deepQueue.push(u); // 保持存储顺序：先恢复上次没跑完的，新入队排后
       }
     }
   }
