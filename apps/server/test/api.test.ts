@@ -219,6 +219,41 @@ describe("collect + notes", () => {
     expect(notes.items[0].commentsData?.[0]?.content).toBe("求链接");
   });
 
+  it("notes export: CSV 按库过滤 + 含 BOM + 转义逗号", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const col = (await (await app.request("/api/collections", authed(token, {
+      method: "POST", body: JSON.stringify({ name: "导出库" }),
+    }))).json()) as any;
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        collectionId: col.id,
+        items: [{ noteId: "e1", title: "有,逗号的标题", author: {}, likes: 5 }],
+      }),
+    }));
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ items: [{ noteId: "e2", title: "别的库外的", author: {} }] }),
+    }));
+    const res = await app.request(
+      `/api/notes/export?collectionId=${col.id}`, authed(token));
+    expect(res.status).toBe(200);
+    // res.text() 会吃掉 BOM，按字节验 EF BB BF
+    expect([...new Uint8Array((await res.arrayBuffer()).slice(0, 3))])
+      .toEqual([0xef, 0xbb, 0xbf]);
+    const csv = new TextDecoder().decode(
+      await (await app.request(`/api/notes/export?collectionId=${col.id}`, authed(token))).arrayBuffer(),
+    );
+    expect(csv).toContain("标题,类型,作者");
+    expect(csv).toContain('"有,逗号的标题"'); // 含逗号字段被引用
+    expect(csv).not.toContain("别的库外的"); // 只导出所选库
+    // 导出接口不吐别人的数据
+    const { token: t2 } = await registerUser(app, "exp@x.yz");
+    const res2 = await app.request("/api/notes/export", authed(t2));
+    expect((await res2.text())).not.toContain("有,逗号");
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");

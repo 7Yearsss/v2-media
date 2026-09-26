@@ -20,6 +20,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/collections/:id/analyze | 对该库互动 top40 笔记跑 AI 爆款分析 → `CollectionAnalysis`（`data.stats`=服务端算的确定性统计、`data.insight`=AI 结构化洞察/`report`=原文兜底；空库 400） |
 | GET | /api/collections/:id/analyses | 该库历史报告列表（不含 report 全文） |
 | GET | /api/collections/:id/analyses/:aid | 报告全文 |
+| GET | /api/notes/export?collectionId= | 导出筛选结果为 CSV（UTF-8 BOM，Excel 直开；`none`=未分组，缺省=全部） |
 | GET | /api/notes/:id | 详情（含评论若有） |
 | DELETE | /api/notes/:id | 删除 |
 | POST | /api/drafts | `{collectedNoteId?}` 或手写 → `Draft`（从内容库深拷贝素材/正文） |
