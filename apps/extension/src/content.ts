@@ -457,7 +457,12 @@ if (isWww) {
   async function deepCollectInline(noteId: string): Promise<boolean> {
     if (modalCollecting || collectFlag) return false;
     const section = cardEls.get(noteId);
-    const link = section?.querySelector<HTMLAnchorElement>(NOTE_LINK);
+    // 卡片内有多个匹配锚点，第一个是 0×0 的不可见幻影；必须取有尺寸的封面锚点
+    const link = section
+      ? [...section.querySelectorAll<HTMLAnchorElement>(NOTE_LINK)].find(
+          (a) => a.getBoundingClientRect().width > 50,
+        )
+      : undefined;
     if (!section || !link || !document.contains(section)) return false;
     modalCollecting = true;
     let challengeToastShown = false;
