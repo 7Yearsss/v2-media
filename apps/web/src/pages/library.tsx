@@ -169,6 +169,7 @@ function NoteDetailDrawer({
     mutationFn: () => api.deleteNote(noteId!),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["notes"] });
+      void queryClient.invalidateQueries({ queryKey: ["collections"] }); // 库计数跟着变
       toast.success("已从内容库删除");
       onClose();
     },

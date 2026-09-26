@@ -26,7 +26,9 @@ export function notesModule(deps: Deps) {
     if (collectionId === "none") {
       conds.push(sql`${collectedNotes.collectionId} IS NULL`);
     } else if (collectionId) {
-      conds.push(eq(collectedNotes.collectionId, Number(collectionId)));
+      const n = Number(collectionId);
+      if (!Number.isInteger(n)) return c.json({ error: "bad collectionId" }, 400);
+      conds.push(eq(collectedNotes.collectionId, n));
     }
     if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
     const rows = await deps.db

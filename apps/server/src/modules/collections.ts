@@ -41,11 +41,22 @@ export function collectionsModule(deps: Deps) {
       .where(and(eq(collections.userId, userId), eq(collections.name, parsed.data.name)))
       .limit(1);
     if (existing) return c.json({ ...existing, noteCount: 0 });
-    const [row] = await deps.db
-      .insert(collections)
-      .values({ userId, name: parsed.data.name })
-      .returning();
-    return c.json({ ...row!, noteCount: 0 }, 201);
+    // 并发同名创建：唯一索引兜底，撞了就把对方先插的那条返回
+    try {
+      const [row] = await deps.db
+        .insert(collections)
+        .values({ userId, name: parsed.data.name })
+        .returning();
+      return c.json({ ...row!, noteCount: 0 }, 201);
+    } catch {
+      const [again] = await deps.db
+        .select()
+        .from(collections)
+        .where(and(eq(collections.userId, userId), eq(collections.name, parsed.data.name)))
+        .limit(1);
+      if (!again) return c.json({ error: "create failed" }, 500);
+      return c.json({ ...again, noteCount: 0 });
+    }
   });
 
   app.patch("/:id", async (c) => {
