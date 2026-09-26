@@ -1,4 +1,4 @@
-import { integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -75,6 +75,10 @@ export const collectedNotes = pgTable("collected_notes", {
   noteId: varchar("note_id", { length: 128 }).notNull(),
   type: varchar("type", { length: 16 }).notNull().default("image"),
   title: varchar("title", { length: 512 }).notNull().default(""),
+  /** 标题是兜底生成的（正文节选/无标题占位），真标题到来时可被替换。 */
+  titleFallback: boolean("title_fallback").notNull().default(false),
+  /** 是否收过详情页数据（藏/评/转/正文/标签只有详情页才有）。 */
+  hasDetail: boolean("has_detail").notNull().default(false),
   content: text("content").notNull().default(""),
   authorName: varchar("author_name", { length: 128 }).notNull().default(""),
   authorId: varchar("author_id", { length: 128 }).notNull().default(""),

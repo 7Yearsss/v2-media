@@ -81,6 +81,8 @@ export interface CollectionAnalysisStats {
   }>;
   /** 高频标签 top。 */
   topTags: Array<{ tag: string; count: number }>;
+  /** 数据覆盖：多少篇进过详情页（藏/评/转/正文只有详情页才采得到）。 */
+  coverage?: { withDetail: number; total: number };
 }
 
 /** AI 对库内内容产出的结构化洞察（JSON 解析失败时为 null，看 report）。 */

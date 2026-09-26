@@ -152,13 +152,18 @@ export function extModule(deps: Deps) {
     for (const noteId of noteIds) {
       const detail = detailMap.get(noteId);
       const item = cardMap.get(noteId) ?? detail!;
+      // 真标题 = 卡片或详情里抓到的；拿不到时用正文前 30 字兜底并打 titleFallback 标记，
+      // 之后真标题到了仍可以把它换掉
+      const realTitle = item.title || detail?.title || "";
       const values = {
         userId,
         // 未显式传（老客户端）时新行也不分组
         collectionId: collectionId,
         noteId: item.noteId,
         type: item.type === "unknown" ? "image" : item.type,
-        title: item.title,
+        title: realTitle || (detail?.content || item.desc || "").slice(0, 30) || "(无标题)",
+        titleFallback: !realTitle,
+        hasDetail: !!detail,
         content: detail?.content || item.desc || item.title,
         authorName: item.author.nickname,
         authorId: item.author.userId,
@@ -190,9 +195,17 @@ export function extModule(deps: Deps) {
       if (existing) {
         // 纯卡片批次不覆盖详情级字段（正文/图集/视频/标签/评论），已入库的值一律优先
         const merged = detail
-          ? values
+          ? {
+              ...values,
+              title: realTitle || existing.title || values.title,
+              titleFallback: !realTitle && existing.titleFallback,
+              hasDetail: true,
+            }
           : {
               ...values,
+              title: realTitle || existing.title,
+              titleFallback: existing.titleFallback && !realTitle,
+              hasDetail: existing.hasDetail,
               content: existing.content || values.content,
               images: existing.images.length ? existing.images : values.images,
               videoUrl: existing.videoUrl ?? values.videoUrl,
