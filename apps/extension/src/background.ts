@@ -297,6 +297,8 @@ async function pollPendingJobs() {
 }
 
 async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
+  // 总开关关：JOB_READY / 手动打开发布页 / tabs.onUpdated 推 payload 都从这里进，先拦住
+  if (!(await getSettings()).enabled) throw new Error("插件已停用");
   // 已认领的任务优先用内存里的 payload（pending 列表不再返回它）。
   const tracked = trackedJobs.get(jobId);
   if (tracked) return tracked.payload;
@@ -324,6 +326,8 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
 }
 
 async function runPublishJobById(jobId: number) {
+  // 工作台 Run Now 也是任务入口，跟轮询一样受总开关约束
+  if (!(await getSettings()).enabled) throw new Error("插件已停用");
   const job =
     (await fetchPendingJobs(true).then((js) => js.find((j) => j.id === jobId))) ??
     (await api<PublishJobPayload>(
@@ -354,11 +358,11 @@ chrome.runtime.onMessage.addListener(
       case "EXT_COLLECT":
         return reply(
           getSettings()
-            .then((s) =>
-              s.enabled
-                ? api<CollectResponse>("/api/ext/collect", { body: msg.batch })
-                : ({ saved: 0, ids: [] } as CollectResponse),
-            )
+            .then((s) => {
+              // 停用中拒绝入库：报错而非假成功，content 侧会把未成功的批次塞回 pending
+              if (!s.enabled) throw new Error("插件已停用");
+              return api<CollectResponse>("/api/ext/collect", { body: msg.batch });
+            })
             .then(async (r) => {
             const { stats } = (await chrome.storage.local.get("stats")) as {
               stats?: { collected?: number };

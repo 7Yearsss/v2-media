@@ -104,6 +104,12 @@ if (isWww) {
     context: CollectBatch["context"],
   ) {
     if (!items.length && !dets.length) return;
+    if (!cfg.enabled) {
+      // 停用中不发：塞回 pending，重新启用后随下一批一起上报
+      for (const it of items) pendingItems.set(it.noteId, it);
+      for (const d of dets) pendingDetails.set(d.noteId, d);
+      return;
+    }
     const batch: CollectBatch = { source, context, items, details: dets.length ? dets : undefined };
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
@@ -113,7 +119,9 @@ if (isWww) {
         toast(`已入库 ${r.saved} 条`);
       }
     } catch (e) {
-      // 未授权/网络错误不打扰页面浏览；手动采集时再提示
+      // 上报失败（含插件被停用拒绝）：塞回 pending 等重试，不标记已上传
+      for (const it of items) pendingItems.set(it.noteId, it);
+      for (const d of dets) pendingDetails.set(d.noteId, d);
       console.debug("[v2m] collect upload failed:", e);
     }
   }

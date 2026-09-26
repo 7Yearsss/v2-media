@@ -12,6 +12,7 @@
 import type { PublishJobPayload } from "./lib/messages";
 import { sendToBackground } from "./lib/messages";
 import { el, shadowHost } from "./lib/ui";
+import { getSettings } from "./lib/settings";
 
 type AnyEl = HTMLElement;
 
@@ -366,9 +367,15 @@ async function awaitResult(): Promise<{ resultUrl?: string }> {
 
 // ---------- 主流程 ----------
 
+// 总开关关闭时中止；在不可逆动作（点发布）前再查一次，停用能真正拦住进行中的任务
+async function ensureEnabled() {
+  if (!(await getSettings()).enabled) throw new Error("插件已停用，发布中止");
+}
+
 async function runJob(job: PublishJobPayload) {
   const { draft } = job;
   step("load", `任务 #${job.id} 加载中`);
+  await ensureEnabled();
   // 1. 确保「上传图文」页签
   const imgTab = byText(["上传图文", "图文"], SEL.uploadTab.join(","));
   if (imgTab) {
@@ -398,6 +405,7 @@ async function runJob(job: PublishJobPayload) {
     step("visibility", "可见性已设置", "ok");
   }
 
+  await ensureEnabled();
   step("publish", "点击发布");
   await clickPublish();
   const { resultUrl } = await awaitResult();
