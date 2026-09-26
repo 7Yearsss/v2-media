@@ -246,3 +246,156 @@ describe("drafts + ai + publish", () => {
     expect(Object.values(ov.trend[6].sources).reduce((s: number, n) => s + (n as number), 0)).toBe(1);
   });
 });
+
+describe("topics 选题池", () => {
+  it("CRUD + plannedAt 驱动状态流转 + 越权 404", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const t = (await (await app.request("/api/topics", authed(token, {
+      method: "POST", body: JSON.stringify({ title: "露营装备清单" }),
+    }))).json()) as any;
+    expect(t.status).toBe("idea");
+    expect(t.sourceType).toBe("manual");
+    // plannedAt → planned；清空 → idea
+    const planned = (await (await app.request(`/api/topics/${t.id}`, authed(token, {
+      method: "PATCH", body: JSON.stringify({ plannedAt: Date.now() + 86400_000 }),
+    }))).json()) as any;
+    expect(planned.status).toBe("planned");
+    const unplanned = (await (await app.request(`/api/topics/${t.id}`, authed(token, {
+      method: "PATCH", body: JSON.stringify({ plannedAt: null }),
+    }))).json()) as any;
+    expect(unplanned.status).toBe("idea");
+    expect(unplanned.plannedAt).toBeNull();
+    // 手动流转系统状态 → 400
+    expect((await app.request(`/api/topics/${t.id}`, authed(token, {
+      method: "PATCH", body: JSON.stringify({ status: "drafted" }),
+    }))).status).toBe(400);
+    // 归档 → 恢复
+    expect(((await (await app.request(`/api/topics/${t.id}`, authed(token, {
+      method: "PATCH", body: JSON.stringify({ status: "archived" }),
+    }))).json()) as any).status).toBe("archived");
+    // 状态过滤
+    const inArchived = (await (await app.request("/api/topics?status=archived", authed(token))).json()) as any;
+    expect(inArchived.items).toHaveLength(1);
+    // 越权
+    const { token: t2 } = await registerUser(app, "other@x.yz");
+    expect((await app.request(`/api/topics/${t.id}`, authed(t2, { method: "DELETE" }))).status).toBe(404);
+  });
+
+  it("to-draft 幂等 + 发布成功后回流 published", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    await app.request("/api/ext/accounts/heartbeat", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ accounts: [{ xhsUserId: "u1", nickname: "薯", subType: "creator" }] }),
+    }));
+    const accounts = (await (await app.request("/api/accounts", authed(token))).json()) as any[];
+    // 采集一篇带图笔记，选题挂它 → to-draft 会把图带进草稿（发布要求有图）
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        items: [{ noteId: "s1", title: "减脂餐", author: {}, cover: "https://cdn/s1.jpg" }],
+      }),
+    }));
+    const notes = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    const topic = (await (await app.request("/api/topics", authed(token, {
+      method: "POST",
+      body: JSON.stringify({ title: "减脂餐单", angle: "七天不重样", sourceNoteId: notes.items[0].id }),
+    }))).json()) as any;
+    expect(topic.sourceType).toBe("note");
+    const r1 = (await (await app.request(`/api/topics/${topic.id}/to-draft`, authed(token, {
+      method: "POST",
+    }))).json()) as any;
+    expect(r1.topic.status).toBe("drafted");
+    expect(r1.draft.content).toContain("七天不重样");
+    expect(r1.draft.images[0].url).toBe("https://cdn/s1.jpg");
+    // 幂等：再调一次返回同一草稿
+    const r2 = (await (await app.request(`/api/topics/${topic.id}/to-draft`, authed(token, {
+      method: "POST",
+    }))).json()) as any;
+    expect(r2.draft.id).toBe(r1.draft.id);
+    // 发布跑完 → 选题 published + publishJobId
+    const job = (await (await app.request("/api/publish/jobs", authed(token, {
+      method: "POST", body: JSON.stringify({ draftId: r1.draft.id, accountId: accounts[0]!.id }),
+    }))).json()) as any;
+    await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
+      method: "POST", body: JSON.stringify({ claimedBy: "sw-test" }),
+    }));
+    await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
+      method: "POST", body: JSON.stringify({ status: "done", resultUrl: "https://xhs/x" }),
+    }));
+    const topics = (await (await app.request("/api/topics", authed(token))).json()) as any;
+    expect(topics.items[0].status).toBe("published");
+    expect(topics.items[0].publishJobId).toBe(job.id);
+  });
+
+  it("ai/topics: 库爆款 → 生成入池 + 服务端加权分", async () => {
+    const ai = {
+      complete: async () =>
+        JSON.stringify({
+          topics: [
+            {
+              title: "宿舍减脂餐",
+              angle: "不开火场景",
+              scoreDetail: { traffic: 10, fit: 10, diff: 10, monetization: 10, evergreen: 10, cost: 10, risk: 10 },
+              reason: "燃脂训练 9k 赞验证了赛道",
+            },
+            { title: "极简版" }, // 维度缺失 → 兜底 5 分
+          ],
+        }),
+    };
+    const { app } = await makeApp(ai);
+    const { token } = await registerUser(app);
+    const col = (await (await app.request("/api/collections", authed(token, {
+      method: "POST", body: JSON.stringify({ name: "健身" }),
+    }))).json()) as any;
+    // 空库 → 400
+    expect((await app.request("/api/ai/topics", authed(token, {
+      method: "POST", body: JSON.stringify({ collectionId: col.id }),
+    }))).status).toBe(400);
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        collectionId: col.id,
+        items: [{ noteId: "a1", title: "燃脂训练", author: {}, cover: "", likes: 9000 }],
+      }),
+    }));
+    const res = (await (await app.request("/api/ai/topics", authed(token, {
+      method: "POST", body: JSON.stringify({ collectionId: col.id, count: 5 }),
+    }))).json()) as any;
+    expect(res.items).toHaveLength(2);
+    expect(res.items[0].score).toBe(100);
+    expect(res.items[0].sourceType).toBe("ai");
+    expect(res.items[0].collectionId).toBe(col.id);
+    expect(res.items[0].angle).toContain("推荐理由");
+    expect(res.items[1].score).toBe(50); // 全维度兜底 5 → 50
+    // 越权 collection → 404
+    const { token: t2 } = await registerUser(app, "other@x.yz");
+    expect((await app.request("/api/ai/topics", authed(t2, {
+      method: "POST", body: JSON.stringify({ collectionId: col.id }),
+    }))).status).toBe(404);
+  });
+
+  it("ai/topic-score: 回写七维分 + verdict/advice", async () => {
+    const ai = {
+      complete: async () =>
+        JSON.stringify({
+          scoreDetail: { traffic: 8, fit: 9, diff: 6, monetization: 5, evergreen: 7, cost: 8, risk: 9 },
+          verdict: "做",
+          advice: "先发一条测试流量",
+        }),
+    };
+    const { app } = await makeApp(ai);
+    const { token } = await registerUser(app);
+    const topic = (await (await app.request("/api/topics", authed(token, {
+      method: "POST", body: JSON.stringify({ title: "早八穿搭" }),
+    }))).json()) as any;
+    const res = (await (await app.request("/api/ai/topic-score", authed(token, {
+      method: "POST", body: JSON.stringify({ topicId: topic.id }),
+    }))).json()) as any;
+    expect(res.verdict).toBe("做");
+    // 加权校验：80/10*25 + 90/10*20 + 60/10*15 + 50/10*15 + 70/10*10 + 80/10*8 + 90/10*7 = 20+18+9+7.5+7+6.4+6.3=74.2 → 74
+    expect(res.topic.score).toBe(74);
+    expect(res.topic.scoreDetail.fit).toBe(9);
+  });
+});

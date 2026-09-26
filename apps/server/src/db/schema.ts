@@ -125,6 +125,31 @@ export const publishJobs = pgTable("publish_jobs", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+/** 选题池（策划层）：一条"想写/计划写"的内容方向，串联 draft → publish_job。 */
+export const topics = pgTable("topics", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  title: varchar("title", { length: 512 }).notNull().default(""),
+  /** 切入角度/要点说明。 */
+  angle: text("angle").notNull().default(""),
+  /** manual | collection | note | ai */
+  sourceType: varchar("source_type", { length: 32 }).notNull().default("manual"),
+  collectionId: integer("collection_id").references(() => collections.id, { onDelete: "set null" }),
+  sourceNoteId: integer("source_note_id").references(() => collectedNotes.id, { onDelete: "set null" }),
+  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "set null" }),
+  /** idea | planned | drafted | published | archived */
+  status: varchar("status", { length: 32 }).notNull().default("idea"),
+  /** AI 综合分 0-100；未评分 NULL。 */
+  score: integer("score"),
+  /** 七维明细，见 shared TopicScoreDetail。 */
+  scoreDetail: jsonb("score_detail").$type<Record<string, number>>(),
+  plannedAt: timestamp("planned_at"),
+  draftId: integer("draft_id").references(() => drafts.id, { onDelete: "set null" }),
+  publishJobId: integer("publish_job_id").references(() => publishJobs.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const jobs = pgTable("jobs", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),

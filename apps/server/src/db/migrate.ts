@@ -111,6 +111,35 @@ ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_draft_id_fkey;
 ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE;
 ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_account_id_fkey;
 ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE CASCADE;
+CREATE TABLE IF NOT EXISTS topics (
+  id serial PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id),
+  title varchar(512) NOT NULL DEFAULT '',
+  angle text NOT NULL DEFAULT '',
+  source_type varchar(32) NOT NULL DEFAULT 'manual',
+  collection_id integer,
+  source_note_id integer,
+  account_id integer,
+  status varchar(32) NOT NULL DEFAULT 'idea',
+  score integer,
+  score_detail jsonb,
+  planned_at timestamp,
+  draft_id integer,
+  publish_job_id integer,
+  created_at timestamp DEFAULT now() NOT NULL,
+  updated_at timestamp DEFAULT now() NOT NULL
+);
+ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_collection_id_fkey;
+ALTER TABLE topics ADD CONSTRAINT topics_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL;
+ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_source_note_id_fkey;
+ALTER TABLE topics ADD CONSTRAINT topics_source_note_id_fkey FOREIGN KEY (source_note_id) REFERENCES collected_notes(id) ON DELETE SET NULL;
+ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_account_id_fkey;
+ALTER TABLE topics ADD CONSTRAINT topics_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE SET NULL;
+ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_draft_id_fkey;
+ALTER TABLE topics ADD CONSTRAINT topics_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE SET NULL;
+ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_publish_job_id_fkey;
+ALTER TABLE topics ADD CONSTRAINT topics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS topics_user_status ON topics(user_id, status);
 `;
 
 export async function migrate(db: Db) {
