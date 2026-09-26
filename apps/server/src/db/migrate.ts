@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash text NOT NULL,
   created_at timestamp DEFAULT now() NOT NULL
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan varchar(16) NOT NULL DEFAULT 'free';
 CREATE TABLE IF NOT EXISTS hosted_accounts (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users(id),
@@ -57,6 +58,9 @@ ALTER TABLE collected_notes ADD CONSTRAINT collected_notes_collection_id_fkey FO
 CREATE UNIQUE INDEX IF NOT EXISTS collected_notes_user_note ON collected_notes(user_id, note_id);
 ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS title_fallback boolean NOT NULL DEFAULT false;
 ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS has_detail boolean NOT NULL DEFAULT false;
+ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS source_keyword varchar(255) NOT NULL DEFAULT '';
+ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS published_at timestamp;
+ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS ip_location varchar(64) NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS collection_analyses (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users(id),

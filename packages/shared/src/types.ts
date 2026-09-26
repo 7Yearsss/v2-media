@@ -157,6 +157,12 @@ export interface CollectedNote {
   tags: string[];
   source: CollectSource;
   sourceUrl: string;
+  /** 搜索采集时带的搜索词（热度归因）。 */
+  sourceKeyword?: string;
+  /** 笔记发布时间（ISO；详情页才有）。 */
+  publishedAt?: string | null;
+  /** 作者 IP 属地（详情页才有）。 */
+  ipLocation?: string;
   savedAt: string;
 }
 

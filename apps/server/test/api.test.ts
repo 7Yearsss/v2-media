@@ -170,6 +170,36 @@ describe("collect + notes", () => {
     expect(list.items[0].title).toBe("晨跑 5 公里计划");
   });
 
+  it("media quality tiers: free 压缩 / pro 原画质", async () => {
+    const { mediaQualityForPlan } = await import("../src/lib/media-store");
+    const free = mediaQualityForPlan("free");
+    const pro = mediaQualityForPlan("pro");
+    expect(free.keepOriginal).toBe(false);
+    expect(free.imageMaxWidth).toBeGreaterThan(0);
+    expect(free.videoMaxBytes).toBeLessThan(pro.videoMaxBytes);
+    expect(pro.keepOriginal).toBe(true);
+    expect(mediaQualityForPlan("unknown")).toEqual(free);
+  });
+
+  it("detail 溯源字段落库: publishedAt / ipLocation / sourceKeyword", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        source: "search",
+        context: { keyword: "健身" },
+        items: [],
+        details: [{ noteId: "d1", title: "深蹲教程", publishedAt: "1700000000000", ipLocation: "北京", author: {} }],
+      }),
+    }));
+    const list = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    const n = list.items[0];
+    expect(n.sourceKeyword).toBe("健身");
+    expect(n.ipLocation).toBe("北京");
+    expect(new Date(n.publishedAt).getTime()).toBe(1700000000000);
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");
