@@ -2,7 +2,7 @@ import { eq, inArray, or, sql } from "drizzle-orm";
 import type { HonoRequest } from "hono";
 
 import type { Deps } from "../context";
-import { collectedNotes, drafts } from "../db/schema";
+import { collectedNotes, drafts, users } from "../db/schema";
 import { env } from "../env";
 import type { R2Storage } from "./r2";
 
@@ -12,6 +12,45 @@ export const MEDIA_SRC_ALLOWED =
 
 const OBJECT_PREFIX = "/api/media/objects/";
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
+/**
+ * 媒体画质分档（会员体系预留）：free=压缩够看、pro=原画质。
+ * 数值走 env 可调；加新档位/新字段在这里扩。
+ */
+export interface MediaQuality {
+  /** true=跳过转码存原图 */
+  keepOriginal: boolean;
+  imageMaxWidth: number;
+  imageQuality: number;
+  videoMaxBytes: number;
+}
+
+export function mediaQualityForPlan(plan: string): MediaQuality {
+  if (plan === "pro")
+    return {
+      keepOriginal: true,
+      imageMaxWidth: 0,
+      imageQuality: 100,
+      videoMaxBytes: env.mediaVideoMaxBytesPro,
+    };
+  return {
+    keepOriginal: false,
+    imageMaxWidth: env.mediaImageMaxWidth,
+    imageQuality: env.mediaImageQuality,
+    videoMaxBytes: env.mediaVideoMaxBytes,
+  };
+}
+
+/** sharp 仅转码时用懒加载：未装/原生模块坏的环境降级存原图。 */
+let _sharp: ((input: Buffer) => import("sharp").Sharp) | null | undefined;
+async function sharpLib() {
+  if (_sharp === undefined) {
+    _sharp = await import("sharp")
+      .then((m) => m.default)
+      .catch(() => null);
+  }
+  return _sharp;
+}
 
 async function sha256Hex(s: string): Promise<string> {
   const buf = await crypto.subtle.digest(
@@ -63,6 +102,7 @@ async function storeRemoteImage(
   r2: R2Storage | null | undefined,
   url: string,
   base: string,
+  quality: MediaQuality,
 ): Promise<string> {
   if (!r2 || !url) return url;
   let host: string;
@@ -81,12 +121,82 @@ async function storeRemoteImage(
         Number(res.headers.get("content-length") ?? 0) > MAX_IMAGE_BYTES
       )
         return url;
-      const body = await res.arrayBuffer();
+      let body: ArrayBuffer = await res.arrayBuffer();
       if (body.byteLength > MAX_IMAGE_BYTES) return url;
+      let contentType = res.headers.get("content-type") ?? "image/jpeg";
+      // free 档：统一压成 webp（≤maxWidth，q=quality），容量约省 70%+
+      if (!quality.keepOriginal) {
+        const sharp = await sharpLib();
+        if (sharp) {
+          try {
+            const out = await sharp(Buffer.from(body))
+              .resize({ width: quality.imageMaxWidth, withoutEnlargement: true })
+              .webp({ quality: quality.imageQuality })
+              .toBuffer();
+            body = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer;
+            contentType = "image/webp";
+          } catch {
+            /* 非图/动图异常等：存原始字节兜底 */
+          }
+        }
+      }
+      await r2.put(key, body, contentType);
+    }
+  } catch {
+    return url;
+  }
+  return `${base}${OBJECT_PREFIX}${key}`;
+}
+
+/**
+ * 转存视频到 R2（vid/<hash>）。容量大：先 HEAD 看 content-length 超限直接放弃，
+ * 下载全程流式计数再截断，不让单个视频打爆桶/内存。
+ */
+async function storeRemoteVideo(
+  r2: R2Storage | null | undefined,
+  url: string | null,
+  base: string,
+  quality: MediaQuality,
+): Promise<string | null> {
+  if (!r2 || !url) return url;
+  let host: string;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return url;
+  }
+  if (!MEDIA_SRC_ALLOWED.test(host)) return url;
+  const key = `vid/${await sha256Hex(url)}`;
+  try {
+    if (!(await r2.head(key))) {
+      const res = await fetchAllowed(url);
+      if (!res?.ok || !res.body) return url;
+      if (Number(res.headers.get("content-length") ?? 0) > quality.videoMaxBytes)
+        return url;
+      // 流式收集 + 超限即断（content-length 可能缺报）
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > quality.videoMaxBytes) {
+          await reader.cancel().catch(() => {});
+          return url;
+        }
+        chunks.push(value);
+      }
+      const buf = new Uint8Array(size);
+      let off = 0;
+      for (const c of chunks) {
+        buf.set(c, off);
+        off += c.byteLength;
+      }
       await r2.put(
         key,
-        body,
-        res.headers.get("content-type") ?? "image/jpeg",
+        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+        res.headers.get("content-type") ?? "video/mp4",
       );
     }
   } catch {
@@ -126,29 +236,46 @@ export async function persistCollectedMedia(
     .select()
     .from(collectedNotes)
     .where(inArray(collectedNotes.id, noteIds));
+  // 按用户档位取画质（同批可能混不同用户）
+  const plans = new Map<number, string>();
   for (const row of rows) {
-    const cover = await storeRemoteImage(deps.r2, row.cover, base);
+    if (!plans.has(row.userId)) {
+      const [u] = await deps.db
+        .select({ plan: users.plan })
+        .from(users)
+        .where(eq(users.id, row.userId))
+        .limit(1);
+      plans.set(row.userId, u?.plan ?? "free");
+    }
+  }
+  for (const row of rows) {
+    const quality = mediaQualityForPlan(plans.get(row.userId) ?? "free");
+    const cover = await storeRemoteImage(deps.r2, row.cover, base, quality);
     const images = await Promise.all(
       (row.images ?? []).map(async (i) => ({
         ...i,
-        url: await storeRemoteImage(deps.r2, i.url, base),
+        url: await storeRemoteImage(deps.r2, i.url, base, quality),
       })),
     );
+    const videoUrl = await storeRemoteVideo(deps.r2, row.videoUrl, base, quality);
     const changed =
       cover !== row.cover ||
+      videoUrl !== row.videoUrl ||
       images.some((img, i) => img.url !== row.images?.[i]?.url);
     if (!changed) continue;
-    // CAS：仅当 cover/images 仍等于我们读取时的快照才回写，防并发 collect 互相覆盖
+    // CAS：仅当 cover/images/videoUrl 仍等于我们读取时的快照才回写，防并发 collect 互相覆盖
     await deps.db
       .update(collectedNotes)
       .set({
         cover,
         images,
+        videoUrl,
       })
       .where(
         sql`${collectedNotes.id} = ${row.id}
             AND ${collectedNotes.cover} = ${row.cover}
-            AND ${collectedNotes.images}::jsonb = ${JSON.stringify(row.images)}::jsonb`,
+            AND ${collectedNotes.images}::jsonb = ${JSON.stringify(row.images)}::jsonb
+            AND coalesce(${collectedNotes.videoUrl}, '') = coalesce(${row.videoUrl}, '')`,
       );
   }
 }
@@ -166,6 +293,7 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
       or(
         sql`${collectedNotes.cover} ~ 'xhscdn|xiaohongshu'`,
         sql`${collectedNotes.images}::text ~ 'xhscdn|xiaohongshu'`,
+        sql`${collectedNotes.videoUrl} ~ 'xhscdn|xiaohongshu'`,
       ),
     )
     .limit(500);
@@ -178,20 +306,20 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
   );
 }
 
-const OBJECT_KEY_RE = /\/api\/media\/objects\/(img\/[0-9a-f]{64})/g;
+const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid)\/[0-9a-f]{64})/g;
 
 /** DB 里仍被引用的 R2 对象 key 集合（采集表 cover/images + 草稿表 images）。 */
 async function referencedKeys(deps: Deps): Promise<Set<string>> {
   const keys = new Set<string>();
   const notes = await deps.db
-    .select({ cover: collectedNotes.cover, images: collectedNotes.images })
+    .select({ cover: collectedNotes.cover, images: collectedNotes.images, videoUrl: collectedNotes.videoUrl })
     .from(collectedNotes);
   const draftRows = await deps.db
     .select({ images: drafts.images })
     .from(drafts);
   const urls: string[] = [];
   for (const n of notes) {
-    urls.push(n.cover, ...(n.images ?? []).map((i) => i.url));
+    urls.push(n.cover, ...(n.images ?? []).map((i) => i.url), ...(n.videoUrl ? [n.videoUrl] : []));
   }
   for (const d of draftRows) {
     urls.push(...(d.images ?? []).map((i) => i.url));
@@ -208,7 +336,10 @@ async function referencedKeys(deps: Deps): Promise<Set<string>> {
  */
 export async function pruneMedia(deps: Deps): Promise<void> {
   if (!deps.r2) return;
-  const objects = await deps.r2.list("img/");
+  const objects = [
+    ...(await deps.r2.list("img/")),
+    ...(await deps.r2.list("vid/")),
+  ];
   if (!objects.length) return;
   const referenced = await referencedKeys(deps);
   // 宽限期：对象刚 PUT 而 persist 的 DB 回写还在路上时，不能被当无引用删掉

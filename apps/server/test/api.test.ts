@@ -170,6 +170,17 @@ describe("collect + notes", () => {
     expect(list.items[0].title).toBe("晨跑 5 公里计划");
   });
 
+  it("media quality tiers: free 压缩 / pro 原画质", async () => {
+    const { mediaQualityForPlan } = await import("../src/lib/media-store");
+    const free = mediaQualityForPlan("free");
+    const pro = mediaQualityForPlan("pro");
+    expect(free.keepOriginal).toBe(false);
+    expect(free.imageMaxWidth).toBeGreaterThan(0);
+    expect(free.videoMaxBytes).toBeLessThan(pro.videoMaxBytes);
+    expect(pro.keepOriginal).toBe(true);
+    expect(mediaQualityForPlan("unknown")).toEqual(free);
+  });
+
   it("isolates data between users", async () => {
     const { app } = await makeApp();
     const { token: t1 } = await registerUser(app, "u1@x.yz");

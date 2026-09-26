@@ -4,6 +4,8 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   email: varchar("email", { length: 255 }).notNull().unique(),
   passwordHash: text("password_hash").notNull(),
+  /** 会员等级：free=压缩存储 / pro=原画质。媒体存储策略按它分档。 */
+  plan: varchar("plan", { length: 16 }).notNull().default("free"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

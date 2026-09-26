@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash text NOT NULL,
   created_at timestamp DEFAULT now() NOT NULL
 );
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan varchar(16) NOT NULL DEFAULT 'free';
 CREATE TABLE IF NOT EXISTS hosted_accounts (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users(id),
