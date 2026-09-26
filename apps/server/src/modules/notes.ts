@@ -44,11 +44,20 @@ export function notesModule(deps: Deps) {
     });
   });
 
-  /** 导出当前筛选为 CSV（UTF-8 BOM，Excel 双击直接开不乱码）。 */
+  /** 导出当前筛选为 CSV（UTF-8 BOM，Excel 双击直接开不乱码）。
+   *  与列表同一套筛选：collectionId + keyword + source + tag。 */
   app.get("/export", async (c) => {
     const userId = c.get("userId");
+    const keyword = (c.req.query("keyword") ?? "").trim();
+    const source = (c.req.query("source") ?? "").trim();
+    const tag = (c.req.query("tag") ?? "").trim();
     const collectionId = (c.req.query("collectionId") ?? "").trim();
     const conds = [eq(collectedNotes.userId, userId)];
+    if (keyword) {
+      const like = `%${keyword}%`;
+      conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
+    }
+    if (source) conds.push(eq(collectedNotes.source, source));
     if (collectionId === "none") {
       conds.push(sql`${collectedNotes.collectionId} IS NULL`);
     } else if (collectionId) {
@@ -56,8 +65,24 @@ export function notesModule(deps: Deps) {
       if (!Number.isInteger(n)) return c.json({ error: "bad collectionId" }, 400);
       conds.push(eq(collectedNotes.collectionId, n));
     }
+    if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
     const rows = await deps.db
-      .select()
+      .select({
+        title: collectedNotes.title,
+        type: collectedNotes.type,
+        authorName: collectedNotes.authorName,
+        likes: collectedNotes.likes,
+        collects: collectedNotes.collects,
+        comments: collectedNotes.comments,
+        shares: collectedNotes.shares,
+        publishedAt: collectedNotes.publishedAt,
+        ipLocation: collectedNotes.ipLocation,
+        sourceKeyword: collectedNotes.sourceKeyword,
+        tags: collectedNotes.tags,
+        commentsData: collectedNotes.commentsData,
+        sourceUrl: collectedNotes.sourceUrl,
+        savedAt: collectedNotes.savedAt,
+      })
       .from(collectedNotes)
       .where(and(...conds))
       .orderBy(collectedNotes.id)
@@ -65,7 +90,9 @@ export function notesModule(deps: Deps) {
 
     const cell = (v: unknown) => {
       const s = v == null ? "" : String(v);
-      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      // 防 CSV 公式注入：= + - @ / 制表符开头加前导单引号
+      const safe = /^\s*[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+      return /[",\n\r]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
     };
     const hot = (r: (typeof rows)[number]) =>
       (Array.isArray(r.commentsData) ? r.commentsData : [])
@@ -76,9 +103,10 @@ export function notesModule(deps: Deps) {
         .join(" | ");
     const daily = (r: (typeof rows)[number]) => {
       if (!r.publishedAt) return "";
+      // 与分析口径一致：整天数向上取整、最少 1 天
       const days = Math.max(
-        (deps.now().getTime() - r.publishedAt.getTime()) / 86400000,
-        0.04,
+        1,
+        Math.ceil((deps.now().getTime() - r.publishedAt.getTime()) / 86_400_000),
       );
       return Math.round(
         (r.likes + r.collects + r.comments + r.shares) / days,

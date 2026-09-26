@@ -248,6 +248,25 @@ describe("collect + notes", () => {
     expect(csv).toContain("标题,类型,作者");
     expect(csv).toContain('"有,逗号的标题"'); // 含逗号字段被引用
     expect(csv).not.toContain("别的库外的"); // 只导出所选库
+    // keyword/source 与列表同一套筛选
+    const kw = await (await app.request(
+      `/api/notes/export?collectionId=${col.id}&keyword=${encodeURIComponent("不存在词")}`,
+      authed(token))).text();
+    expect(kw).not.toContain("有,逗号");
+    const src = await (await app.request(
+      `/api/notes/export?collectionId=${col.id}&source=search`, authed(token))).text();
+    expect(src).not.toContain("有,逗号");
+    // 公式注入：以 = 开头的值被加前导单引号
+    await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        collectionId: col.id,
+        items: [{ noteId: "e3", title: "=cmd|'/c calc'!A1", author: {} }],
+      }),
+    }));
+    const inj = await (await app.request(
+      `/api/notes/export?collectionId=${col.id}&keyword=cmd`, authed(token))).text();
+    expect(inj).toContain("'=cmd");
     // 导出接口不吐别人的数据
     const { token: t2 } = await registerUser(app, "exp@x.yz");
     const res2 = await app.request("/api/notes/export", authed(t2));

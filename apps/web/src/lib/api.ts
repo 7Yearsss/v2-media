@@ -298,8 +298,12 @@ export const api = {
   deleteNote: (id: number) =>
     request<void>(`/api/notes/${id}`, { method: "DELETE" }),
   /** GET /api/notes/export → CSV blob（带 BOM，Excel 直开）。 */
-  exportNotes: async (collectionId?: string): Promise<Blob> => {
-    const qs = collectionId ? `?collectionId=${encodeURIComponent(collectionId)}` : "";
+  exportNotes: async (f?: { collectionId?: string; keyword?: string; source?: string }): Promise<Blob> => {
+    const p = new URLSearchParams();
+    if (f?.collectionId) p.set("collectionId", f.collectionId);
+    if (f?.keyword) p.set("keyword", f.keyword);
+    if (f?.source) p.set("source", f.source);
+    const qs = p.size ? `?${p}` : "";
     const token = getToken();
     const res = await fetch(`/api/notes/export${qs}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},

@@ -380,7 +380,11 @@ export default function LibraryPage() {
     if (exporting) return;
     setExporting(true);
     try {
-      const blob = await api.exportNotes(collection || undefined);
+      const blob = await api.exportNotes({
+        collectionId: collection || undefined,
+        keyword: keyword || undefined,
+        source: source || undefined,
+      });
       const colName =
         collection === "none"
           ? "未分组"
