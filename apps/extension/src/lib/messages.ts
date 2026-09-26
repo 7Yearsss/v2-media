@@ -29,12 +29,18 @@ export interface CommentsEventDetail {
   comments: NoteComment[];
 }
 
-export type MainAction = "getNote" | "listCached" | "loginState" | "reparseInitialState";
+export type MainAction =
+  | "getNote"
+  | "listCached"
+  | "loginState"
+  | "reparseInitialState"
+  | "fetchDetail"; // 后台拉详情页 HTML 解 __INITIAL_STATE__（不用打开页面）
 
 export interface MainRequest {
   requestId: string;
   action: MainAction;
   noteId?: string;
+  url?: string;
 }
 
 export interface MainResponse {
@@ -60,7 +66,7 @@ export interface CachedNote {
 /** isolated world 调 MAIN world（window.CustomEvent 往返）。 */
 export function mainRequest<T = unknown>(
   action: MainAction,
-  extra: { noteId?: string } = {},
+  extra: { noteId?: string; url?: string } = {},
   timeoutMs = 8000,
 ): Promise<T> {
   const requestId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -92,6 +98,8 @@ export type BgMessage =
   | { type: "EXT_COLLECT"; batch: CollectBatch }
   | { type: "GET_STATUS" }
   | { type: "COLLECT_URL_DONE"; ok: boolean; noteId?: string; error?: string }
+  // 深度采集：后台开隐藏标签页进详情，嗅探评论接口后自动关闭
+  | { type: "DEEP_COLLECT"; url: string }
   | { type: "GET_LOGIN_STATE" } // bg -> xhs content script
   | { type: "JOB_READY"; jobId: number } // creator-publish -> bg（拉取任务数据）
   | {

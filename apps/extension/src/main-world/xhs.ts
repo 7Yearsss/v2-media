@@ -355,6 +355,44 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     };
   }
 
+  // ---------- 后台补采详情：fetch 详情页 HTML 解 __INITIAL_STATE__ ----------
+
+  /**
+   * 详情页是 SSR 渲染：HTML 里的 __INITIAL_STATE__ 带 tags/正文/发布时间/IP属地/互动数，
+   * 不用打开 tab 就能拿到。评论仍在异步接口（需签名），这里拿不到。
+   */
+  function initialStateFromHtml(html: string): Any | null {
+    const i = html.indexOf("__INITIAL_STATE__");
+    if (i < 0) return null;
+    const eq = html.indexOf("=", i);
+    const end = html.indexOf("</script>", eq);
+    if (eq < 0 || end < 0) return null;
+    // XHS SSR 会写裸 undefined，不是合法 JSON
+    const raw = html
+      .slice(eq + 1, end)
+      .trim()
+      .replace(/;$/, "")
+      .replace(/:\s*undefined\s*([,}])/g, ":null$1");
+    try {
+      return JSON.parse(raw) as Any;
+    } catch {
+      return null;
+    }
+  }
+
+  async function fetchDetailFromHtml(url: string): Promise<NoteDetail | null> {
+    if (!url) return null;
+    const res = await fetch(url, { credentials: "include" }).catch(() => null);
+    if (!res?.ok) return null;
+    const state = initialStateFromHtml(await res.text());
+    if (!state) return null;
+    const details = detailsFromInitialState(state);
+    if (!details.length) return null;
+    // 走正常 EVT_NOTES 管道：隔离 world 会更新缓存并（自动采集开启时）入库
+    emitNotes("detail", [], details);
+    return details[0] ?? null;
+  }
+
   // ---------- 隔离 world 请求（v2m:req / v2m:res） ----------
 
   function loginState() {
@@ -373,6 +411,10 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
   document.addEventListener(EVT_REQ, (ev) => {
     const req = (ev as CustomEvent<MainRequest>).detail;
     if (!req?.requestId) return;
+    void handleRequest(req);
+  });
+
+  async function handleRequest(req: MainRequest) {
     const reply = (r: Omit<MainResponse, "requestId">) =>
       document.dispatchEvent(
         new CustomEvent<MainResponse>(EVT_RES, {
@@ -413,11 +455,16 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
           scanInitialState();
           reply({ ok: true, result: reparseInitialState() });
           break;
+        case "fetchDetail": {
+          const detail = await fetchDetailFromHtml(req.url ?? "");
+          reply({ ok: true, result: { detail } });
+          break;
+        }
         default:
           reply({ ok: false, error: `unknown action ${String(req.action)}` });
       }
     } catch (e) {
       reply({ ok: false, error: String((e as Error)?.message ?? e) });
     }
-  });
+  }
 }
