@@ -5,6 +5,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# 同仓 main 部署串行：后到者排队而非并发写同一目录（防止旧构建后完成回滚线上）
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -29,10 +34,12 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          # 固定的主机公钥（非 TOFU keyscan，防中间人伪装服务器）
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
 
       - name: Sync code to server
         run: |
