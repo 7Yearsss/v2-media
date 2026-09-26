@@ -33,8 +33,9 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 |---|---|---|
 | POST | /api/ext/accounts/heartbeat | `AccountHeartbeat`：插件每 5min 上报已登录账号 |
 | POST | /api/ext/collect | `CollectBatch` → `{saved,ids}`（按 noteId 去重 upsert） |
-| GET | /api/ext/publish/pending | 该插件托管账号名下的 pending job（含草稿全文+图片URL） |
-| POST | /api/ext/publish/:id/claim | 认领任务（防重） |
+| GET | /api/ext/publish/pending | pending job 列表（job 全字段 + `xhsUserId` + draft 全文）。`?all=1` 含未来定时；`?account=<xhsUserId>` 只回该账号任务 |
+| GET | /api/ext/publish/:id | 单条任务+草稿全文。pending 任意认领方可见；running 仅 `?claimer=<SW_ID>` 匹配原认领方可见 |
+| POST | /api/ext/publish/:id/claim | `{claimedBy}` 认领任务（防重） |
 | POST | /api/ext/publish/:id/result | `{status:'done'\|'failed',resultUrl?,error?}` |
 
 ## 插件 ↔ 工作台桥（window.postMessage）

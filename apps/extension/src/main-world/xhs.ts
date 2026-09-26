@@ -111,7 +111,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     }
     for (const d of details ?? []) cache.details[d.noteId] = d;
     touchCache();
-    window.dispatchEvent(
+    document.dispatchEvent(
       new CustomEvent(EVT_NOTES, {
         detail: { source, context: pageContext(), items, details },
       }),
@@ -122,7 +122,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     if (!comments.length) return;
     if (noteId) cache.comments[noteId] = comments;
     touchCache();
-    window.dispatchEvent(
+    document.dispatchEvent(
       new CustomEvent(EVT_COMMENTS, { detail: { noteId, comments } }),
     );
   }

@@ -17,7 +17,18 @@ import type {
 import type { BgMessage, BgResponse, LoginState, PublishJobPayload } from "./lib/messages";
 
 const VERSION = chrome.runtime.getManifest().version;
-const SW_ID = `${VERSION}-${Math.random().toString(36).slice(2, 8)}`; // 认领标识（防多实例重复 claim）
+
+/**
+ * 认领标识：storage.session 持久 → SW 重启后同一浏览器仍是同一认领方
+ * （GET /publish/:id?claimer= 校验用）；换浏览器则 id 不同，防止重复执行 running 任务。
+ */
+async function swId(): Promise<string> {
+  const { swId } = (await chrome.storage.session.get("swId")) as { swId?: string };
+  if (swId) return swId;
+  const id = `${VERSION}-${Math.random().toString(36).slice(2, 8)}`;
+  await chrome.storage.session.set({ swId: id });
+  return id;
+}
 
 interface ExtAuth {
   apiBase: string;
@@ -174,14 +185,68 @@ async function heartbeat() {
 const trackedJobs = new Map<number, TrackedJob>();
 const JOB_TIMEOUT_MS = 10 * 60 * 1000;
 
-async function fetchPendingJobs(): Promise<PublishJobPayload[]> {
-  const res = await api<PendingPublishJobsResponse>("/api/ext/publish/pending");
+async function fetchPendingJobs(includeFuture = false): Promise<PublishJobPayload[]> {
+  // 带上当前登录号做服务端过滤：不匹配的任务不占 limit 名额（防饿死）
+  const account = await currentXhsUserId();
+  const qs = [includeFuture ? "all=1" : "", account ? `account=${encodeURIComponent(account)}` : ""]
+    .filter(Boolean)
+    .join("&");
+  const res = await api<PendingPublishJobsResponse>(
+    `/api/ext/publish/pending${qs ? `?${qs}` : ""}`,
+  );
   return res.jobs ?? [];
 }
 
-async function claimAndOpen(job: PublishJobPayload) {
-  if (trackedJobs.has(job.id)) return;
-  await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: SW_ID } });
+let _curAccountCache: { id: string; at: number } | null = null;
+
+/** claim 前的实时账号身份：开着的 xhs tab → 抓首页 __INITIAL_STATE__ → 上次心跳。60s 内复用结果，避免轮询反复抓首页。 */
+async function currentXhsUserId(): Promise<string> {
+  if (_curAccountCache && Date.now() - _curAccountCache.at < 60_000) {
+    return _curAccountCache.id;
+  }
+  const id = await resolveXhsUserId();
+  _curAccountCache = { id, at: Date.now() };
+  return id;
+}
+
+async function resolveXhsUserId(): Promise<string> {
+  const tab = await accountFromOpenTab();
+  if (tab?.xhsUserId) return tab.xhsUserId;
+  try {
+    const res = await fetch("https://www.xiaohongshu.com/", { credentials: "include" });
+    if (res.ok) {
+      const html = await res.text();
+      const m = html.match(/"user(?:I|_i)nfo"\s*:\s*\{[^}]*?"(?:userId|user_id|red_id)"\s*:\s*"([^"]+)"/i);
+      if (m?.[1]) return m[1];
+    }
+  } catch {
+    // 抓不到就落到 lastAccount
+  }
+  const { lastAccount } = (await chrome.storage.local.get("lastAccount")) as {
+    lastAccount?: DetectedAccount;
+  };
+  return lastAccount?.xhsUserId ?? "";
+}
+
+/** 任务指定了托管账号时，当前浏览器登录的小红书号必须一致；校验不了就失败关闭（不发错账号）。 */
+async function accountMismatch(job: PublishJobPayload): Promise<string | null> {
+  const want = job.xhsUserId;
+  if (!want) return null;
+  const cur = await currentXhsUserId();
+  if (!cur) return `任务绑定账号 ${want}，当前浏览器登录态不可验证`;
+  return cur === want
+    ? null
+    : `任务绑定账号 ${want}，当前浏览器登录 ${cur}`;
+}
+
+async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
+  if (trackedJobs.has(job.id)) return true;
+  const mismatch = await accountMismatch(job);
+  if (mismatch) {
+    console.warn(`[v2m] job ${job.id} skipped: ${mismatch}`);
+    return false;
+  }
+  await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: await swId() } });
   const tracked: TrackedJob = {
     jobId: job.id,
     state: "opening",
@@ -195,6 +260,7 @@ async function claimAndOpen(job: PublishJobPayload) {
     active: false,
   });
   tracked.tabId = tab.id;
+  return true;
 }
 
 async function pollPendingJobs() {
@@ -231,14 +297,19 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
   // 已认领的任务优先用内存里的 payload（pending 列表不再返回它）。
   const tracked = trackedJobs.get(jobId);
   if (tracked) return tracked.payload;
-  // 未认领（手动打开 ?job_id=N 或 SW 重启丢了状态）：从 pending 找并认领。
-  // TODO(契约): pending 列表是唯一能拿到草稿全文的接口；已 claim 任务被过滤，
-  // SW 重启后 trackedJobs 丢失即拿不到 payload —— 契约需补 GET /api/ext/publish/:id
-  //（或 claim 响应直接回草稿）。
-  const jobs = await fetchPendingJobs();
-  const job = jobs.find((j) => j.id === jobId);
+  // 未认领（手动打开 ?job_id=N 或 SW 重启丢了状态）：单条接口能恢复 pending/running 任务
+  const job = await api<PublishJobPayload>(
+    `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}`,
+  ).catch(async () => (await fetchPendingJobs()).find((j) => j.id === jobId));
   if (!job) throw new Error(`服务端没有 job ${jobId} 的待发布任务`);
-  await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: SW_ID } });
+  // Run Now 标记持久在 storage.session：SW 重启后恢复 payload 时重新覆盖掉原定时
+  const runNowKey = `runNow:${job.id}`;
+  if ((await chrome.storage.session.get(runNowKey))[runNowKey]) {
+    job.scheduledAt = undefined;
+  }
+  if (job.status === "pending") {
+    await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: await swId() } });
+  }
   trackedJobs.set(job.id, {
     jobId: job.id,
     state: "running",
@@ -250,9 +321,16 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
 }
 
 async function runPublishJobById(jobId: number) {
-  const job = (await fetchPendingJobs()).find((j) => j.id === jobId);
+  const job =
+    (await fetchPendingJobs(true).then((js) => js.find((j) => j.id === jobId))) ??
+    (await api<PublishJobPayload>(
+      `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}`,
+    ).catch(() => null));
   if (!job) throw new Error(`任务 ${jobId} 不在待发布列表（可能已被认领/执行）`);
-  await claimAndOpen(job);
+  job.scheduledAt = undefined; // Run Now 语义：忽略定时，立即发
+  await chrome.storage.session.set({ [`runNow:${jobId}`]: true }); // SW 重启后仍生效
+  const opened = await claimAndOpen(job);
+  if (!opened) throw new Error(`任务 ${jobId} 绑定的是另一个托管账号，当前浏览器登录号不匹配`);
   return { opened: true, jobId };
 }
 

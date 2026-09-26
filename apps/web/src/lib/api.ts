@@ -178,7 +178,7 @@ export function normalizeOverview(raw: unknown): OverviewStats {
   let rate: number | null = null;
   const rateRaw = r.publishSuccessRate ?? r.successRate ?? r.publishRate;
   if (typeof rateRaw === "number" && Number.isFinite(rateRaw)) {
-    rate = rateRaw <= 1 ? rateRaw * 100 : rateRaw;
+    rate = rateRaw; // 服务端契约：0-100 百分比（不再对 ≤1 做比例猜测）
   }
 
   const trendRaw = r.trend ?? r.collectTrend ?? r.daily;

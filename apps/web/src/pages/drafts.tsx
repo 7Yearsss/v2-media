@@ -53,10 +53,17 @@ export default function DraftsPage() {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const timerRef = useRef<number | undefined>(undefined);
   const editingIdRef = useRef<number | null>(null);
+  const pendingSaveRef = useRef<{
+    draftId: number;
+    fields: { title: string; content: string; tags: string[]; images: NoteImage[] };
+  } | null>(null);
 
-  // 切换草稿 → 装载字段
+  // 切换草稿 → 先把上一个草稿未落盘的编辑立即保存，再装载字段
   useEffect(() => {
     window.clearTimeout(timerRef.current);
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (pending) void persist(pending.draftId, pending.fields);
     if (selected) {
       editingIdRef.current = selected.id;
       setTitle(selected.title);
@@ -137,14 +144,16 @@ export default function DraftsPage() {
       setImages((cur) => patch.images ?? cur);
       setSaveState("dirty");
       window.clearTimeout(timerRef.current);
+      const fields = {
+        title: patch.title ?? title,
+        content: patch.content ?? content,
+        tags: patch.tags ?? tags,
+        images: patch.images ?? images,
+      };
+      pendingSaveRef.current = { draftId, fields }; // 切换草稿时立即落盘
       timerRef.current = window.setTimeout(() => {
-        // 用 ref 读最新值，避免闭包旧值覆盖
-        void persist(draftId, {
-          title: (patch.title ?? title),
-          content: (patch.content ?? content),
-          tags: (patch.tags ?? tags),
-          images: (patch.images ?? images),
-        });
+        pendingSaveRef.current = null;
+        void persist(draftId, fields);
       }, 900);
     },
     [content, images, persist, tags, title],
