@@ -129,7 +129,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
 
   // ---------- 响应处理 ----------
 
-  const FEED_PATH = "/api/sns/web/v1/feed"; // 详情接口
+  // 详情接口路径（v1/v2 都吃）：/api/sns/web/v1/feed
 
   function commentNoteId(url: URL): string | undefined {
     // 评论接口 query 里带 note_id / noteId / item_id，视版本而定
@@ -150,7 +150,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     }
     // TODO(契约): shared 的 classifyXhsApiUrl 未覆盖详情接口 /v1/feed，
     // 这里在插件侧补分支；契约若补 kind:"detail" 可并回去。
-    if (u.pathname === FEED_PATH) {
+    if (/\/api\/sns\/web\/v\d+\/feed$/.test(u.pathname)) {
       const detail = noteDetailFromFeedResponse(parsed);
       if (detail) {
         emitNotes("detail", [
@@ -179,8 +179,24 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
       emitComments(commentNoteId(u), commentsFromResponse(parsed));
     } else {
       const { items } = noteCardsFromResponse(parsed, cls.source);
-      emitNotes(cls.source, items);
+      emitNotes(cls.source, items, detailsFromListItems(parsed));
     }
+  }
+
+  /** 列表响应的 note_card 常已带完整 image_list/video/tag_list/desc
+   *  （modal 直接读 store 不再发详情请求）——卡片顺带提升为详情入库。 */
+  function detailsFromListItems(parsed: Any): NoteDetail[] {
+    const rawItems: Any[] = parsed?.data?.items ?? parsed?.data?.notes ?? [];
+    const out: NoteDetail[] = [];
+    for (const it of rawItems) {
+      const card = it?.note_card ?? it?.noteCard;
+      if (!card) continue;
+      if (!card.image_list?.length && !card.video && !card.tag_list?.length && !card.desc)
+        continue;
+      const d = noteDetailFromFeedResponse({ data: { items: [it] } });
+      if (d) out.push(d);
+    }
+    return out;
   }
 
   function sniffText(url: string, text: string) {
@@ -310,14 +326,46 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     return out;
   }
 
+  /** SSR 列表（feed.feeds 等）的 note_card 也常带完整 image_list/video —— 顺带提升为详情。 */
+  function detailsFromInitialList(state: Any, path: string): NoteDetail[] {
+    let cur: any = state;
+    for (const key of path.split(".")) {
+      cur = unwrap(cur?.[key]);
+      if (cur == null) return [];
+    }
+    const list = Array.isArray(cur) ? cur : unwrap(cur?.[0]);
+    if (!Array.isArray(list)) return [];
+    const out: NoteDetail[] = [];
+    for (const raw of list) {
+      const it = unwrap<Any>(raw);
+      const rawCard = unwrap<Any>(it?.note_card ?? it?.noteCard);
+      if (!rawCard) continue;
+      const card = adaptDetailKeys(rawCard);
+      if (!card.image_list?.length && !card.video && !card.tag_list?.length && !card.desc)
+        continue;
+      const noteId = card.note_id ?? it.id ?? it.note_id;
+      const d = noteDetailFromFeedResponse({
+        data: {
+          items: [
+            { id: noteId, xsec_token: it.xsec_token ?? it.xsecToken, note_card: card },
+          ],
+        },
+      });
+      if (d) out.push(d);
+    }
+    return out;
+  }
+
   function reparseInitialState(): { items: NoteCard[]; details: NoteDetail[] } {
     const state = window.__INITIAL_STATE__;
     if (!state || typeof state !== "object") return { items: [], details: [] };
     const items: NoteCard[] = [];
+    const details: NoteDetail[] = [];
     for (const { path, source } of INITIAL_PATHS) {
       items.push(...noteCardsFromInitialState(state, path, source));
+      details.push(...detailsFromInitialList(state, path));
     }
-    const details = detailsFromInitialState(state);
+    details.push(...detailsFromInitialState(state));
     return { items, details };
   }
 
