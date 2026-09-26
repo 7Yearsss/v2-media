@@ -1,3 +1,9 @@
+import { createReadStream, createWriteStream } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { Readable, Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+
 import { eq, inArray, or, sql } from "drizzle-orm";
 import type { HonoRequest } from "hono";
 
@@ -112,7 +118,8 @@ async function storeRemoteImage(
     return url;
   }
   if (!MEDIA_SRC_ALLOWED.test(host)) return url;
-  const key = `img/${await sha256Hex(url)}`;
+  // key 带画质档位：不同档位的同名源图存不同对象，pro 不会被 free 的压缩版顶掉
+  const key = `img/${await sha256Hex(url)}${quality.keepOriginal ? "-orig" : ""}`;
   try {
     if (!(await r2.head(key))) {
       const res = await fetchAllowed(url);
@@ -149,8 +156,8 @@ async function storeRemoteImage(
 }
 
 /**
- * 转存视频到 R2（vid/<hash>）。容量大：先 HEAD 看 content-length 超限直接放弃，
- * 下载全程流式计数再截断，不让单个视频打爆桶/内存。
+ * 转存视频到 R2（vid/<hash>）。容量大、并发多：先 HEAD 看 content-length 超限直接
+ * 放弃；下载落临时文件（计数超限即断），再流式上传 —— 全程不整包进内存。
  */
 async function storeRemoteVideo(
   r2: R2Storage | null | undefined,
@@ -167,40 +174,43 @@ async function storeRemoteVideo(
   }
   if (!MEDIA_SRC_ALLOWED.test(host)) return url;
   const key = `vid/${await sha256Hex(url)}`;
+  const tmp = `${tmpdir()}/v2m-vid-${await sha256Hex(url).then((h) => h.slice(0, 16))}-${Date.now()}`;
   try {
     if (!(await r2.head(key))) {
       const res = await fetchAllowed(url);
       if (!res?.ok || !res.body) return url;
-      if (Number(res.headers.get("content-length") ?? 0) > quality.videoMaxBytes)
+      if (Number(res.headers.get("content-length") ?? 0) > quality.videoMaxBytes) {
+        // 预检超限：取消 body 释放连接，不真正拉视频
+        await res.body?.cancel().catch(() => {});
         return url;
-      // 流式收集 + 超限即断（content-length 可能缺报）
-      const reader = res.body.getReader();
-      const chunks: Uint8Array[] = [];
+      }
+      // 下载 → 临时文件，Transform 里计数超限即中止（content-length 可能缺报）
       let size = 0;
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.byteLength;
-        if (size > quality.videoMaxBytes) {
-          await reader.cancel().catch(() => {});
-          return url;
-        }
-        chunks.push(value);
-      }
-      const buf = new Uint8Array(size);
-      let off = 0;
-      for (const c of chunks) {
-        buf.set(c, off);
-        off += c.byteLength;
-      }
-      await r2.put(
+      let over = false;
+      const counter = new Transform({
+        transform(chunk, _enc, cb) {
+          size += chunk.length;
+          if (size > quality.videoMaxBytes) {
+            over = true;
+            cb(new Error("video too large"));
+          } else cb(null, chunk);
+        },
+      });
+      await pipeline(Readable.fromWeb(res.body as any), counter, createWriteStream(tmp)).catch(
+        () => {},
+      );
+      if (over || !size) return url;
+      await r2.putStream(
         key,
-        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+        createReadStream(tmp),
         res.headers.get("content-type") ?? "video/mp4",
+        size,
       );
     }
   } catch {
     return url;
+  } finally {
+    await unlink(tmp).catch(() => {});
   }
   return `${base}${OBJECT_PREFIX}${key}`;
 }
@@ -306,7 +316,7 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
   );
 }
 
-const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid)\/[0-9a-f]{64})/g;
+const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid)\/[0-9a-f]{64}(?:-orig)?)/g;
 
 /** DB 里仍被引用的 R2 对象 key 集合（采集表 cover/images + 草稿表 images）。 */
 async function referencedKeys(deps: Deps): Promise<Set<string>> {
