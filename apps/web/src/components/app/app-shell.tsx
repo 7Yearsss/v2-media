@@ -8,6 +8,7 @@ import {
   NotebookPen,
   PanelLeft,
   Plus,
+  Puzzle,
   SendHorizontal,
   Sparkles,
   Users,
@@ -68,6 +69,7 @@ const NAV = [
   { to: "/drafts", label: "草稿工坊", icon: NotebookPen, match: /^\/drafts/ },
   { to: "/accounts", label: "账号矩阵", icon: Users, match: /^\/accounts/ },
   { to: "/publish", label: "发布中心", icon: SendHorizontal, match: /^\/publish/ },
+  { to: "/extension", label: "采集插件", icon: Puzzle, match: /^\/extension/ },
 ] as const;
 
 const PAGE_TITLES: [RegExp, string][] = [
@@ -76,6 +78,7 @@ const PAGE_TITLES: [RegExp, string][] = [
   [/^\/drafts/, "草稿工坊"],
   [/^\/accounts/, "账号矩阵"],
   [/^\/publish/, "发布中心"],
+  [/^\/extension/, "采集插件"],
 ];
 
 const ExtensionCtx = createContext<{ online: boolean | null }>({

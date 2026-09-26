@@ -11,6 +11,7 @@ import { useAuth } from "@/lib/auth";
 import AccountsPage from "@/pages/accounts";
 import DashboardPage from "@/pages/dashboard";
 import DraftsPage from "@/pages/drafts";
+import ExtensionPage from "@/pages/extension";
 import LibraryPage from "@/pages/library";
 import LoginPage from "@/pages/login";
 import PublishPage from "@/pages/publish";
@@ -41,6 +42,7 @@ export default function App() {
         <Route path="drafts/:id" element={<DraftsPage />} />
         <Route path="accounts" element={<AccountsPage />} />
         <Route path="publish" element={<PublishPage />} />
+        <Route path="extension" element={<ExtensionPage />} />
         <Route
           path="*"
           element={
