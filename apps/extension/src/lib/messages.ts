@@ -107,7 +107,10 @@ export type BgMessage =
   | { type: "SITE_SET_AUTH"; apiBase: string; token: string }
   | { type: "SITE_SYNC_ACCOUNTS" }
   | { type: "SITE_COLLECT_URL"; url: string }
-  | { type: "SITE_RUN_PUBLISH_JOB"; jobId: number };
+  | { type: "SITE_RUN_PUBLISH_JOB"; jobId: number }
+  // --- popup 采集库下拉 ---
+  | { type: "LIST_COLLECTIONS" }
+  | { type: "CREATE_COLLECTION"; name: string };
 
 export interface BgResponse<T = unknown> {
   ok: boolean;

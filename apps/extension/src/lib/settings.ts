@@ -7,10 +7,12 @@
 export interface ExtSettings {
   enabled: boolean;
   autoCollect: boolean;
+  /** 当前采集库 id（null/undefined = 不分组进总池）。 */
+  collectionId?: number | null;
 }
 
 const KEY = "v2m_settings";
-const DEFAULTS: ExtSettings = { enabled: true, autoCollect: true };
+const DEFAULTS: ExtSettings = { enabled: true, autoCollect: true, collectionId: null };
 
 export async function getSettings(): Promise<ExtSettings> {
   const { [KEY]: s } = (await chrome.storage.local.get(KEY)) as {

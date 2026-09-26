@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { collectedNotes, drafts, hostedAccounts, publishJobs } from "../db/schema";
+import { collectedNotes, collections, drafts, hostedAccounts, publishJobs } from "../db/schema";
 import { persistCollectedMedia, publicBase } from "../lib/media-store";
 
 const heartbeatSchema = z.object({
@@ -65,6 +65,7 @@ const collectSchema = z.object({
       pageUrl: z.string().optional(),
     })
     .optional(),
+  collectionId: z.number().int().positive().nullish(),
   items: z.array(cardSchema),
   details: z.array(detailSchema).optional(),
 });
@@ -131,6 +132,18 @@ export function extModule(deps: Deps) {
     const parsed = collectSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const p = parsed.data;
+    // collectionId 三态：undefined=老客户端不动分组；null=显式不分组；number=归库（校验归属）
+    const hasCollection = p.collectionId !== undefined;
+    let collectionId: number | null = null;
+    if (hasCollection && p.collectionId != null) {
+      const [col] = await deps.db
+        .select({ id: collections.id })
+        .from(collections)
+        .where(and(eq(collections.id, p.collectionId), eq(collections.userId, userId)))
+        .limit(1);
+      if (!col) return c.json({ error: "collection not found" }, 400);
+      collectionId = col.id;
+    }
     const detailMap = new Map(p.details?.map((d) => [d.noteId, d]) ?? []);
     const cardMap = new Map(p.items.map((i) => [i.noteId, i]));
     // detail-only 批（单篇采集）也要落库：detailSchema 含全部卡片字段
@@ -141,6 +154,8 @@ export function extModule(deps: Deps) {
       const item = cardMap.get(noteId) ?? detail!;
       const values = {
         userId,
+        // 未显式传（老客户端）时新行也不分组
+        collectionId: collectionId,
         noteId: item.noteId,
         type: item.type === "unknown" ? "image" : item.type,
         title: item.title,
@@ -186,7 +201,12 @@ export function extModule(deps: Deps) {
             };
         await deps.db
           .update(collectedNotes)
-          .set({ ...merged, savedAt: deps.now() })
+          // collectionId 显式传了才改分组（含 null=移回未分组）；缺省不动原分组
+          .set({
+            ...merged,
+            savedAt: deps.now(),
+            ...(hasCollection ? { collectionId } : {}),
+          })
           .where(eq(collectedNotes.id, existing.id));
         ids.push(existing.id);
       } else {

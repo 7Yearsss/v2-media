@@ -12,7 +12,11 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/auth/register · /api/auth/login | `{email,password}` → `{token,user}` |
 | GET | /api/accounts | 托管账号列表 `HostedAccount[]` |
 | DELETE | /api/accounts/:id | 解绑 |
-| GET | /api/notes?keyword=&tag=&source=&cursor= | 内容库列表（分页 `{items,nextCursor}`） |
+| GET | /api/notes?keyword=&tag=&source=&collectionId=&cursor= | 内容库列表（分页 `{items,nextCursor}`；`collectionId` 数字=该库、`none`=未分组） |
+| GET | /api/collections | 采集库列表 `{items:[{id,name,noteCount,createdAt}]}` |
+| POST | /api/collections | `{name}` → `Collection`（同名幂等返回已有） |
+| PATCH | /api/collections/:id | `{name}` 改名 |
+| DELETE | /api/collections/:id | 删库（笔记 collection_id SET NULL 回未分组） |
 | GET | /api/notes/:id | 详情（含评论若有） |
 | DELETE | /api/notes/:id | 删除 |
 | POST | /api/drafts | `{collectedNoteId?}` 或手写 → `Draft`（从内容库深拷贝素材/正文） |
@@ -32,7 +36,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | /api/ext/accounts/heartbeat | `AccountHeartbeat`：插件每 5min 上报已登录账号 |
-| POST | /api/ext/collect | `CollectBatch` → `{saved,ids}`（按 noteId 去重 upsert） |
+| POST | /api/ext/collect | `CollectBatch` → `{saved,ids}`（按 noteId 去重 upsert；`collectionId` 三态：缺省=不动分组、`null`=回未分组、数字=归库且校验归属） |
 | GET | /api/ext/publish/pending | pending job 列表（job 全字段 + `xhsUserId` + draft 全文）。`?all=1` 含未来定时；`?account=<xhsUserId>` 只回该账号任务 |
 | GET | /api/ext/publish/:id | 单条任务+草稿全文。pending 任意认领方可见；running 仅 `?claimer=<SW_ID>` 匹配原认领方可见 |
 | POST | /api/ext/publish/:id/claim | `{claimedBy}` 认领任务（防重） |

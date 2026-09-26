@@ -21,9 +21,18 @@ export const hostedAccounts = pgTable("hosted_accounts", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/** 采集分组：一批采集归到一个库（如「健身」），便于按主题分析。 */
+export const collections = pgTable("collections", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  name: varchar("name", { length: 64 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const collectedNotes = pgTable("collected_notes", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
+  collectionId: integer("collection_id").references(() => collections.id, { onDelete: "set null" }),
   noteId: varchar("note_id", { length: 128 }).notNull(),
   type: varchar("type", { length: 16 }).notNull().default("image"),
   title: varchar("title", { length: 512 }).notNull().default(""),
