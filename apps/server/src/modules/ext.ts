@@ -158,6 +158,9 @@ export function extModule(deps: Deps) {
       // 真标题 = 卡片或详情里抓到的；拿不到时用正文前 30 字兜底并打 titleFallback 标记，
       // 之后真标题到了仍可以把它换掉
       const realTitle = item.title || detail?.title || "";
+      // publishedAt 可能是超出 Date 范围的乱值 —— 转换后再校验，坏值按未采集处理
+      const pubDate = detail?.publishedAt ? new Date(+detail.publishedAt) : null;
+      const publishedAt = pubDate && Number.isFinite(pubDate.getTime()) && pubDate.getTime() > 0 ? pubDate : null;
       const values = {
         userId,
         // 未显式传（老客户端）时新行也不分组
@@ -190,9 +193,7 @@ export function extModule(deps: Deps) {
         sourceUrl: p.context?.pageUrl || item.url,
         // 搜索场景的关键词归因（context.keyword 由插件从页面 URL 提取）
         sourceKeyword: p.context?.keyword ?? "",
-        publishedAt: detail?.publishedAt && Number.isFinite(+detail.publishedAt) && +detail.publishedAt > 0
-          ? new Date(+detail.publishedAt)
-          : null,
+        publishedAt,
         ipLocation: detail?.ipLocation || "",
         rawJson: null as any,
       };

@@ -168,21 +168,39 @@ export function collectionsModule(deps: Deps) {
       .orderBy(
         desc(sql`${collectedNotes.likes} + ${collectedNotes.collects} + ${collectedNotes.comments} + ${collectedNotes.shares}`),
       )
-      .limit(ANALYZE_LIMIT);
+      // 拉宽候选池：高日均互动的新帖可能总量还没进 top40，不能漏掉
+      .limit(ANALYZE_LIMIT * 3);
     if (!notes.length) return c.json({ error: "库里还没有笔记" }, 400);
 
-    // 确定性统计：爆款榜 + 标签热度 + 总量/均值（前端画图用，不走 AI）
     const engagement = (n: (typeof notes)[number]) => n.likes + n.collects + n.comments + n.shares;
+    const dayAge = (n: (typeof notes)[number]) =>
+      n.publishedAt
+        ? Math.max(1, Math.ceil((deps.now().getTime() - n.publishedAt.getTime()) / 86_400_000))
+        : null;
+    // 分析样本 = 总互动 top40 ∪ 日均互动 top10（后进来的新爆款）
+    const pool = new Map(notes.map((n) => [n.noteId, n]));
+    const analysisNotes = new Map<string, (typeof notes)[number]>();
+    for (const n of notes.slice(0, ANALYZE_LIMIT)) analysisNotes.set(n.noteId, n);
+    const byDailyRate = [...pool.values()]
+      .filter((n) => dayAge(n) != null)
+      .sort((a, b) => engagement(b) / dayAge(b)! - engagement(a) / dayAge(a)!)
+      .slice(0, 10);
+    for (const n of byDailyRate) analysisNotes.set(n.noteId, n);
+    const analysisList = [...analysisNotes.values()];
+
+    // 确定性统计：爆款榜 + 标签热度 + 总量/均值（前端画图用，不走 AI）
+    // 口径与原来一致：只算总互动 top40；候选池里的新爆款只进 AI 输入不进统计
+    const statNotes = notes.slice(0, ANALYZE_LIMIT);
     const tagFreq = new Map<string, number>();
-    for (const n of notes) for (const t of n.tags) tagFreq.set(t, (tagFreq.get(t) ?? 0) + 1);
+    for (const n of statNotes) for (const t of n.tags) tagFreq.set(t, (tagFreq.get(t) ?? 0) + 1);
     const stats = {
-      totalNotes: notes.length,
-      totalLikes: notes.reduce((s, n) => s + n.likes, 0),
-      totalCollects: notes.reduce((s, n) => s + n.collects, 0),
-      totalComments: notes.reduce((s, n) => s + n.comments, 0),
-      totalShares: notes.reduce((s, n) => s + n.shares, 0),
-      avgEngagement: Math.round(notes.reduce((s, n) => s + engagement(n), 0) / notes.length),
-      topNotes: notes.slice(0, 8).map((n) => ({
+      totalNotes: statNotes.length,
+      totalLikes: statNotes.reduce((s, n) => s + n.likes, 0),
+      totalCollects: statNotes.reduce((s, n) => s + n.collects, 0),
+      totalComments: statNotes.reduce((s, n) => s + n.comments, 0),
+      totalShares: statNotes.reduce((s, n) => s + n.shares, 0),
+      avgEngagement: Math.round(statNotes.reduce((s, n) => s + engagement(n), 0) / statNotes.length),
+      topNotes: statNotes.slice(0, 8).map((n) => ({
         noteId: n.noteId,
         title: n.title,
         likes: n.likes,
@@ -197,25 +215,24 @@ export function collectionsModule(deps: Deps) {
         .map(([tag, cnt]) => ({ tag, count: cnt })),
       // 数据覆盖：藏/评/转/正文只有详情页才采得到 —— 按 hasDetail 溯源而不是按数值猜
       coverage: {
-        withDetail: notes.filter((n) => n.hasDetail).length,
-        total: notes.length,
+        withDetail: statNotes.filter((n) => n.hasDetail).length,
+        total: statNotes.length,
       },
     };
 
     // 热门评论 top3 喂给 AI：评论是观众真实需求的一手信号
+    const COMMENT_MAX = 120; // 截断超长评论，控制 AI 请求体量
     type Cmt = { content?: string; likes?: number };
     const topComments = (raw: unknown[]): Cmt[] =>
       (Array.isArray(raw) ? raw : [])
-        .map((cm) => ({ content: String((cm as Cmt)?.content ?? ""), likes: Number((cm as Cmt)?.likes ?? 0) }))
+        .map((cm) => ({ content: String((cm as Cmt)?.content ?? "").slice(0, COMMENT_MAX), likes: Number((cm as Cmt)?.likes ?? 0) }))
         .filter((cm) => cm.content)
         .sort((a, b) => b.likes - a.likes)
         .slice(0, 3);
-    const payload = notes
+    const payload = analysisList
       .map((n) => {
         const eng = engagement(n);
-        const days = n.publishedAt
-          ? Math.max(1, Math.ceil((deps.now().getTime() - n.publishedAt.getTime()) / 86_400_000))
-          : null;
+        const days = dayAge(n);
         return {
           标题: n.title,
           赞: n.likes,
