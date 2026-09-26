@@ -648,24 +648,7 @@ chrome.runtime.onMessage.addListener(
         const w = collectWaiters.get(msg.noteId ?? "");
         const sid = sender.tab?.id;
         if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
-          if (w.timeoutId) {
-            clearTimeout(w.timeoutId);
-            w.timeoutId = undefined;
-          }
-          // 不把验证中转页（/404/sec_）顶到前台——它验证后不会回跳；
-          // 改为前台打开笔记正常页让用户验证，隐藏采集页自行重试续跑
-          if (!w.challengeTabOpened) {
-            w.challengeTabOpened = true;
-            const nid = msg.noteId ?? "";
-            if (nid) {
-              void chrome.tabs.create({
-                url: `https://www.xiaohongshu.com/explore/${nid}`,
-                active: true,
-              });
-            } else {
-              void chrome.tabs.update(sid, { active: true });
-            }
-          }
+          void onCollectChallenge(msg.noteId ?? "", w, sid);
         }
         sendResponse({ ok: true });
         return false;
@@ -675,8 +658,7 @@ chrome.runtime.onMessage.addListener(
         const w = collectWaiters.get(noteId);
         const sid = sender.tab?.id;
         if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
-          w.challengeTabOpened = false; // 再次触发验证码时允许再开一次前台页
-          armCollectWaiterTimeout(noteId, w);
+          onCollectChallengeCleared(noteId, w);
         }
         sendResponse({ ok: true });
         return false;
@@ -759,6 +741,8 @@ const collectWaiters = new Map<
     timeoutId?: ReturnType<typeof setTimeout>;
     hardTimeoutId?: ReturnType<typeof setTimeout>;
     challengeTabOpened?: boolean;
+    challengeRetryId?: ReturnType<typeof setInterval>;
+    collectUrl?: string;
   }
 >();
 
@@ -767,6 +751,7 @@ function clearCollectWaiterTimers(
 ) {
   if (waiter.timeoutId) clearTimeout(waiter.timeoutId);
   if (waiter.hardTimeoutId) clearTimeout(waiter.hardTimeoutId);
+  if (waiter.challengeRetryId) clearInterval(waiter.challengeRetryId);
 }
 
 function armCollectWaiterTimeout(
@@ -782,6 +767,52 @@ function armCollectWaiterTimeout(
   }, 120000);
 }
 
+type CollectWaiter = typeof collectWaiters extends Map<string, infer V> ? V : never;
+
+function isChallengeUrl(url: string) {
+  return /\/404\/sec_|\/sec_[a-z]|\/404\?source=/i.test(url);
+}
+
+// 采集页触发验证：暂停回执超时；中转页留在后台自行每 12s 跳回原笔记页重试，
+// 前台另开笔记正常页给用户验证（不顶那个验证后不回跳的 sec_ 死页）
+async function onCollectChallenge(noteId: string, w: CollectWaiter, tabId: number) {
+  if (w.timeoutId) {
+    clearTimeout(w.timeoutId);
+    w.timeoutId = undefined;
+  }
+  if (!w.challengeRetryId) {
+    w.challengeRetryId = setInterval(() => {
+      void chrome.tabs
+        .get(tabId)
+        .then((t) => {
+          if (w.collectUrl && isChallengeUrl(t.url ?? "")) {
+            void chrome.tabs.update(tabId, { url: w.collectUrl }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 12000);
+  }
+  if (w.challengeTabOpened) return;
+  w.challengeTabOpened = true;
+  const t = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (noteId && isChallengeUrl(t?.url ?? "")) {
+    void chrome.tabs
+      .create({ url: `https://www.xiaohongshu.com/explore/${noteId}`, active: true })
+      .catch(() => {});
+  } else {
+    void chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  }
+}
+
+function onCollectChallengeCleared(noteId: string, w: CollectWaiter) {
+  w.challengeTabOpened = false;
+  if (w.challengeRetryId) {
+    clearInterval(w.challengeRetryId);
+    w.challengeRetryId = undefined;
+  }
+  armCollectWaiterTimeout(noteId, w);
+}
+
 async function collectByUrl(url: string) {
   if (!/^https:\/\/(www\.)?xiaohongshu\.com\//.test(url)) {
     throw new Error("仅支持 xiaohongshu.com 链接");
@@ -789,8 +820,7 @@ async function collectByUrl(url: string) {
   const noteId = url.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i)?.[1] ?? "";
   const marker = `__v2m_collect=1`;
   const target = url + (url.includes("?") ? "&" : "?") + marker;
-  const waiter: (typeof collectWaiters extends Map<string, infer V> ? V : never) =
-    { resolve: () => {} };
+  const waiter: CollectWaiter = { resolve: () => {}, collectUrl: target };
   const done = new Promise<Parameters<typeof waiter.resolve>[0]>((resolve) => {
     waiter.resolve = resolve;
     collectWaiters.set(noteId, waiter);
@@ -957,6 +987,19 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (/login|passport/i.test(redirectUrl)) {
     for (const t of trackedTasks.values()) {
       if (t.tabId === tabId) t.loginSuspected = true;
+    }
+  }
+  // 采集页被服务端 302 到验证中转页时内容脚本不会加载，只能靠 URL 变化识别
+  for (const [noteId, w] of collectWaiters) {
+    if (w.tabId !== tabId) continue;
+    if (isChallengeUrl(redirectUrl)) {
+      void onCollectChallenge(noteId, w, tabId);
+    } else if (
+      redirectUrl &&
+      info.status === "complete" &&
+      (w.challengeRetryId || w.challengeTabOpened)
+    ) {
+      onCollectChallengeCleared(noteId, w);
     }
   }
   if (info.status !== "complete") return;
