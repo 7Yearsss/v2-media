@@ -91,19 +91,32 @@ CREATE TABLE IF NOT EXISTS publish_jobs (
   claimed_by varchar(128),
   error text,
   result_url text,
+  outcome varchar(32),
+  note_id varchar(128),
+  verified_at timestamp,
   created_at timestamp DEFAULT now() NOT NULL,
   updated_at timestamp DEFAULT now() NOT NULL
 );
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS outcome varchar(32);
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS note_id varchar(128);
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS verified_at timestamp;
 CREATE TABLE IF NOT EXISTS jobs (
   id serial PRIMARY KEY,
   user_id integer NOT NULL REFERENCES users(id),
   type varchar(64) NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}',
   status varchar(32) NOT NULL DEFAULT 'pending',
+  due_at timestamp,
+  claimed_by varchar(128),
+  claimed_at timestamp,
   error text,
   created_at timestamp DEFAULT now() NOT NULL,
   finished_at timestamp
 );
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS due_at timestamp;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS claimed_by varchar(128);
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS claimed_at timestamp;
+CREATE INDEX IF NOT EXISTS jobs_status_due ON jobs(status, due_at);
 -- 幂等约束修补：删采集笔记保留草稿（SET NULL），删草稿/账号联动删除发布任务（CASCADE）
 ALTER TABLE drafts DROP CONSTRAINT IF EXISTS drafts_collected_note_id_fkey;
 ALTER TABLE drafts ADD CONSTRAINT drafts_collected_note_id_fkey FOREIGN KEY (collected_note_id) REFERENCES collected_notes(id) ON DELETE SET NULL;
@@ -140,6 +153,40 @@ ALTER TABLE topics ADD CONSTRAINT topics_draft_id_fkey FOREIGN KEY (draft_id) RE
 ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_publish_job_id_fkey;
 ALTER TABLE topics ADD CONSTRAINT topics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS topics_user_status ON topics(user_id, status);
+
+-- 归因底座（切片②）：已发笔记指标时序 + 账号概览快照
+CREATE TABLE IF NOT EXISTS note_metrics (
+  id serial PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id),
+  publish_job_id integer,
+  note_id varchar(128) NOT NULL DEFAULT '',
+  note_url text,
+  captured_at timestamp DEFAULT now() NOT NULL,
+  views integer,
+  likes integer,
+  collects integer,
+  comments integer,
+  shares integer,
+  exposure integer,
+  extra jsonb
+);
+ALTER TABLE note_metrics DROP CONSTRAINT IF EXISTS note_metrics_publish_job_id_fkey;
+ALTER TABLE note_metrics ADD CONSTRAINT note_metrics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS note_metrics_user_note ON note_metrics(user_id, note_id, captured_at);
+
+CREATE TABLE IF NOT EXISTS account_snapshots (
+  id serial PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id),
+  account_id integer,
+  captured_at timestamp DEFAULT now() NOT NULL,
+  followers integer,
+  likes_total integer,
+  notes_count integer,
+  extra jsonb
+);
+ALTER TABLE account_snapshots DROP CONSTRAINT IF EXISTS account_snapshots_account_id_fkey;
+ALTER TABLE account_snapshots ADD CONSTRAINT account_snapshots_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS account_snapshots_user_account ON account_snapshots(user_id, account_id, captured_at);
 `;
 
 export async function migrate(db: Db) {

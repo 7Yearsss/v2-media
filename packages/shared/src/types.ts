@@ -241,6 +241,13 @@ export type PublishJobStatus =
   | "failed"
   | "canceled";
 
+/** 读回对账结论：插件回创作者中心核对已发列表后的结果。 */
+export type PublishOutcome =
+  | "verified"        // 在已发列表里按标题+时间窗匹配到 → 拿到真实 noteId
+  | "unverified"      // 列表读到了但没匹配上（可能还在审、或标题被改）
+  | "login_required"  // 创作中心未登录/登录过期
+  | "readback_error"; // 其他读回失败（超时/页面结构变了）
+
 export interface PublishJob {
   id: number;
   draftId: number;
@@ -251,6 +258,41 @@ export interface PublishJob {
   visibility: "public" | "private" | "friends";
   error?: string;
   resultUrl?: string;
+  /** 读回对账结论（done 后由插件回采回填）。 */
+  outcome?: PublishOutcome;
+  /** 读回确认的小红书 note_id。 */
+  noteId?: string;
+  /** 对账通过时间。 */
+  verifiedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** 已发笔记指标快照（一条笔记的一次回采）。 */
+export interface NoteMetrics {
+  id: number;
+  publishJobId?: number;
+  noteId: string;
+  noteUrl?: string;
+  capturedAt: string;
+  views?: number;
+  likes?: number;
+  collects?: number;
+  comments?: number;
+  shares?: number;
+  /** 曝光量——创作中心才有；www 侧回采拿不到。 */
+  exposure?: number;
+  /** 流量来源拆解等原始字段。 */
+  extra?: Record<string, unknown>;
+}
+
+/** 账号概览快照（粉丝/获赞/发文数的时序）。 */
+export interface AccountSnapshot {
+  id: number;
+  accountId: number;
+  capturedAt: string;
+  followers?: number;
+  likesTotal?: number;
+  notesCount?: number;
+  extra?: Record<string, unknown>;
 }
