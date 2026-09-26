@@ -872,7 +872,11 @@ async function pumpDeepQueue() {
       try {
         await collectByUrl(url);
         deepAttempts.delete(id);
-        await chrome.storage.local.remove("lastDeepCollectFailure");
+        const storedFailure = (await chrome.storage.local.get("lastDeepCollectFailure"))
+          .lastDeepCollectFailure as { noteId?: string } | undefined;
+        if (storedFailure?.noteId === id) {
+          await chrome.storage.local.remove("lastDeepCollectFailure");
+        }
       } catch (error) {
         const attempts = (deepAttempts.get(id) ?? 0) + 1;
         const message = String((error as Error)?.message ?? error);
