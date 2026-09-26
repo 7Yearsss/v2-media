@@ -21,6 +21,7 @@ import type {
   LoginState,
 } from "./lib/messages";
 import { el, shadowHost, toastIn } from "./lib/ui";
+import { getSettings, onSettingsChanged } from "./lib/settings";
 
 const isWww =
   location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
@@ -68,6 +69,28 @@ if (isWww) {
   const bar = el("div", { class: "bar" }, dot, countEl, collectAllBtn, collectThisBtn);
   shadow.append(overlay, bar);
 
+  // ---------- 启停开关（popup 写入 chrome.storage.local.v2m_settings） ----------
+  let cfg = { enabled: true, autoCollect: true };
+  function applySettings() {
+    // 停用：隐藏全部注入 UI，嗅探只记内存不上报
+    bar.style.display = cfg.enabled ? "" : "none";
+    overlay.style.display = cfg.enabled ? "" : "none";
+  }
+  void getSettings().then((s) => {
+    cfg = s;
+    applySettings();
+  });
+  onSettingsChanged((s) => {
+    const wasAuto = cfg.autoCollect;
+    cfg = s;
+    // 关掉自动采集：已经在排队的那批也不能再发出去
+    if (wasAuto && !s.autoCollect && flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+    }
+    applySettings();
+  });
+
   const toast = (msg: string, ok = true) => toastIn(shadow, msg, ok);
 
   function refreshCount() {
@@ -87,6 +110,12 @@ if (isWww) {
     context: CollectBatch["context"],
   ) {
     if (!items.length && !dets.length) return;
+    if (!cfg.enabled) {
+      // 停用中不发：塞回 pending，重新启用后随下一批一起上报
+      for (const it of items) pendingItems.set(it.noteId, it);
+      for (const d of dets) pendingDetails.set(d.noteId, d);
+      return;
+    }
     const batch: CollectBatch = { source, context, items, details: dets.length ? dets : undefined };
     try {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
@@ -96,7 +125,9 @@ if (isWww) {
         toast(`已入库 ${r.saved} 条`);
       }
     } catch (e) {
-      // 未授权/网络错误不打扰页面浏览；手动采集时再提示
+      // 上报失败（含插件被停用拒绝）：塞回 pending 等重试，不标记已上传
+      for (const it of items) pendingItems.set(it.noteId, it);
+      for (const d of dets) pendingDetails.set(d.noteId, d);
       console.debug("[v2m] collect upload failed:", e);
     }
   }
@@ -122,6 +153,7 @@ if (isWww) {
   // ---------- 事件接入 ----------
 
   document.addEventListener(EVT_NOTES, (ev) => {
+    if (!cfg.enabled) return; // 总开关关：不动
     const batch = (ev as CustomEvent<CollectBatch>).detail;
     if (!batch) return;
     lastContext = batch.context ?? lastContext;
@@ -132,11 +164,12 @@ if (isWww) {
     }
     for (const d of batch.details ?? []) details.set(d.noteId, d);
     refreshCount();
-    queueUpload(batch);
+    if (cfg.autoCollect) queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
     scheduleScan();
   });
 
   document.addEventListener(EVT_COMMENTS, (ev) => {
+    if (!cfg.enabled) return;
     const d = (ev as CustomEvent<CommentsEventDetail>).detail;
     if (d?.noteId) commentsMap.set(d.noteId, d.comments);
   });
@@ -218,6 +251,10 @@ if (isWww) {
   }
 
   async function collectOne(noteId: string): Promise<boolean> {
+    if (!cfg.enabled) {
+      toast("插件已停用", false);
+      return false;
+    }
     let card = cards.get(noteId);
     let detail = details.get(noteId);
     if (!card && !detail) {
@@ -259,6 +296,10 @@ if (isWww) {
   }
 
   async function collectAll() {
+    if (!cfg.enabled) {
+      toast("插件已停用", false);
+      return;
+    }
     collectAllBtn.disabled = true;
     collectAllBtn.textContent = "入库中…";
     try {
@@ -356,6 +397,11 @@ if (isWww) {
     const started = Date.now();
     const tick = async () => {
       if (done) return;
+      cfg = await getSettings(); // 同步 cfg 可能还没加载，这里每次拿最新的
+      if (!cfg.enabled) {
+        finish(false, "插件已停用");
+        return;
+      }
       if (noteId && (cards.has(noteId) || details.has(noteId))) {
         finish(await collectOne(noteId));
         return;

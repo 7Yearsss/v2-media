@@ -2,11 +2,20 @@ import { AwsClient } from "aws4fetch";
 
 import { env } from "../env";
 
+export interface R2Object {
+  key: string;
+  size: number;
+  lastModified: number;
+}
+
 /** R2（S3 兼容）对象存储；未配置凭据时 createR2 返回 null，调用方回退原逻辑。 */
 export interface R2Storage {
   head(key: string): Promise<boolean>;
   put(key: string, body: ArrayBuffer, contentType: string): Promise<void>;
   get(key: string): Promise<Response | null>;
+  list(prefix: string): Promise<R2Object[]>;
+  /** true = 已不存在/删除成功；false = 删除失败（对象可能还在）。 */
+  delete(key: string): Promise<boolean>;
 }
 
 export function createR2(): R2Storage | null {
@@ -44,6 +53,34 @@ export function createR2(): R2Storage | null {
     async get(key) {
       const res = await client.fetch(url(key)).catch(() => null);
       return res && res.ok ? res : null;
+    },
+    async list(prefix) {
+      const out: R2Object[] = [];
+      let token = "";
+      do {
+        const res = await client.fetch(
+          `${base}?list-type=2&prefix=${encodeURIComponent(prefix)}${token ? `&continuation-token=${encodeURIComponent(token)}` : ""}`,
+        );
+        if (!res.ok) throw new Error(`r2 list ${res.status}`);
+        const xml = await res.text();
+        for (const m of xml.matchAll(
+          /<Contents>[\s\S]*?<Key>([\s\S]*?)<\/Key>[\s\S]*?<LastModified>([\s\S]*?)<\/LastModified>[\s\S]*?<Size>(\d+)<\/Size>[\s\S]*?<\/Contents>/g,
+        )) {
+          out.push({
+            key: m[1]!,
+            lastModified: Date.parse(m[2]!),
+            size: Number(m[3]),
+          });
+        }
+        token = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(
+          xml,
+        )?.[1] ?? "";
+      } while (token);
+      return out;
+    },
+    async delete(key) {
+      const res = await client.fetch(url(key), { method: "DELETE" });
+      return res.ok || res.status === 404;
     },
   };
 }

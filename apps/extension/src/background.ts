@@ -15,6 +15,7 @@ import type {
   PendingPublishJobsResponse,
 } from "@v2media/shared";
 import type { BgMessage, BgResponse, LoginState, PublishJobPayload } from "./lib/messages";
+import { getSettings } from "./lib/settings";
 
 const VERSION = chrome.runtime.getManifest().version;
 
@@ -156,6 +157,7 @@ async function accountFromCookies(): Promise<DetectedAccount | null> {
 }
 
 async function heartbeat() {
+  if (!(await getSettings()).enabled) return; // 总开关关闭：不上报心跳
   const auth = await getAuth();
   if (!auth) return;
   const detected = (await accountFromOpenTab()) ?? (await accountFromCookies());
@@ -264,6 +266,17 @@ async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
 }
 
 async function pollPendingJobs() {
+  // 超时兜底先做：停用期间也要回收卡死的已认领任务，不随总开关停
+  for (const [id, t] of trackedJobs) {
+    if ((t.state === "opening" || t.state === "running") && Date.now() > t.deadline) {
+      trackedJobs.delete(id);
+      await api(`/api/ext/publish/${id}/result`, {
+        body: { status: "failed", error: "插件执行超时（发布页未回传结果）" },
+      }).catch(() => {});
+      if (t.tabId) chrome.tabs.remove(t.tabId).catch(() => {});
+    }
+  }
+  if (!(await getSettings()).enabled) return; // 总开关关闭：不领发布任务
   const auth = await getAuth();
   if (!auth) return;
   let jobs: PublishJobPayload[];
@@ -281,19 +294,11 @@ async function pollPendingJobs() {
       console.warn(`[v2m] claim job ${job.id} failed:`, e);
     }
   }
-  // 超时兜底：内容脚本一直没回传 -> failed
-  for (const [id, t] of trackedJobs) {
-    if ((t.state === "opening" || t.state === "running") && Date.now() > t.deadline) {
-      trackedJobs.delete(id);
-      await api(`/api/ext/publish/${id}/result`, {
-        body: { status: "failed", error: "插件执行超时（发布页未回传结果）" },
-      }).catch(() => {});
-      if (t.tabId) chrome.tabs.remove(t.tabId).catch(() => {});
-    }
-  }
 }
 
 async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
+  // 总开关关：JOB_READY / 手动打开发布页 / tabs.onUpdated 推 payload 都从这里进，先拦住
+  if (!(await getSettings()).enabled) throw new Error("插件已停用");
   // 已认领的任务优先用内存里的 payload（pending 列表不再返回它）。
   const tracked = trackedJobs.get(jobId);
   if (tracked) return tracked.payload;
@@ -321,6 +326,8 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
 }
 
 async function runPublishJobById(jobId: number) {
+  // 工作台 Run Now 也是任务入口，跟轮询一样受总开关约束
+  if (!(await getSettings()).enabled) throw new Error("插件已停用");
   const job =
     (await fetchPendingJobs(true).then((js) => js.find((j) => j.id === jobId))) ??
     (await api<PublishJobPayload>(
@@ -350,7 +357,13 @@ chrome.runtime.onMessage.addListener(
       // --- content script 采集上报 ---
       case "EXT_COLLECT":
         return reply(
-          api<CollectResponse>("/api/ext/collect", { body: msg.batch }).then(async (r) => {
+          getSettings()
+            .then((s) => {
+              // 停用中拒绝入库：报错而非假成功，content 侧会把未成功的批次塞回 pending
+              if (!s.enabled) throw new Error("插件已停用");
+              return api<CollectResponse>("/api/ext/collect", { body: msg.batch });
+            })
+            .then(async (r) => {
             const { stats } = (await chrome.storage.local.get("stats")) as {
               stats?: { collected?: number };
             };

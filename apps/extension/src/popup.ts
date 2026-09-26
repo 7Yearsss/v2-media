@@ -1,21 +1,45 @@
 /**
- * Popup：连接状态 + 已采数量 + 「打开工作台」。
+ * Popup：启停开关 + 连接状态 + 已采数量 + 「打开工作台」。
  * 授权信息由工作台「授权插件」经 site-bridge SET_AUTH 写入。
  */
 
 import { sendToBackground } from "./lib/messages";
+import { getSettings, setSettings, type ExtSettings } from "./lib/settings";
 
 interface Status {
   version: string;
   authorized: boolean;
   appUrl: string | null;
   collected: number;
+  settings?: Partial<ExtSettings>;
 }
 
 async function render() {
   const statusEl = document.getElementById("status");
   const openBtn = document.getElementById("open") as HTMLButtonElement | null;
-  if (!statusEl || !openBtn) return;
+  const enabledEl = document.getElementById("enabled") as HTMLInputElement | null;
+  const autoEl = document.getElementById("autoCollect") as HTMLInputElement | null;
+  if (!statusEl || !openBtn || !enabledEl || !autoEl) return;
+
+  const settings = await getSettings();
+  enabledEl.checked = settings.enabled;
+  autoEl.checked = settings.autoCollect;
+  autoEl.disabled = !settings.enabled;
+
+  enabledEl.onchange = async () => {
+    await setSettings({ enabled: enabledEl.checked });
+    autoEl.disabled = !enabledEl.checked;
+    statusEl.textContent = enabledEl.checked
+      ? "插件已启用"
+      : "插件已停用（采集/心跳/发布都暂停）";
+  };
+  autoEl.onchange = async () => {
+    await setSettings({ autoCollect: autoEl.checked });
+    statusEl.textContent = autoEl.checked
+      ? "浏览小红书时会自动采集"
+      : "已关自动采集，仍可用卡片按钮手动采";
+  };
+
   try {
     const s = await sendToBackground<Status>({ type: "GET_STATUS" });
     statusEl.textContent = s.authorized

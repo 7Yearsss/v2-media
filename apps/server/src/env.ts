@@ -14,4 +14,7 @@ export const env = {
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
   // 对外可达的站点地址（生成给插件用的绝对媒体 URL）；空则用请求 origin
   publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
+  // 媒体 GC：周期分钟数（默认每小时），桶容量上限字节（默认 ~5GB，R2 免费额度 10GB）
+  mediaGcMinutes: Number(process.env.MEDIA_GC_MINUTES ?? 60),
+  r2MaxBytes: Number(process.env.R2_MAX_BYTES ?? 5_000_000_000),
 };
