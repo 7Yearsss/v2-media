@@ -22,3 +22,9 @@ npm workspaces，TypeScript 全栈：
 
 - `npm run typecheck`（全仓）· `npm test`（server）· `npm run build:ext`
 - dev：`npm run dev:server`（:3000）+ `npm run dev:web`（:5173）+ `npm run build:ext` 后 chrome://extensions 加载 `apps/extension/dist`
+
+## 生产部署
+
+- 线上： https://xhs.v2api.top → nginx → 127.0.0.1:3000（systemd `v2-media`，目录 `~/apps/v2-media`，Postgres 走 `v2media-postgres` docker on 127.0.0.1:5433）
+- CI：push/merge 到 main 触发 `.github/workflows/deploy.yml`（build web → rsync → npm install → `systemctl restart`）；仓库需配 secrets `SSH_PRIVATE_KEY`/`SSH_HOST`/`SSH_USER`
+- Devin 连服务器走 SSH 隧道而非公网：`ssh -i ~/.ssh/v2media_actions -L 3000:127.0.0.1:3000 ubuntu@40.160.139.134` 后访问 localhost:3000；服务器在共享生产机上，勿动其他 nginx vhost / docker 容器
