@@ -311,7 +311,9 @@ export function extModule(deps: Deps) {
           subComments: cm.subComments ?? [],
         })),
         source: p.source,
-        sourceUrl: p.context?.pageUrl || item.url,
+        // 原笔记链接必须是笔记自身 URL（item.url 恒为 explore/<id> 形态）；
+        // context.pageUrl 只是采集发生的页面（feed 列表地址会让「原笔记」失效）
+        sourceUrl: item.url || p.context?.pageUrl || "",
         // 搜索场景的关键词归因（context.keyword 由插件从页面 URL 提取）
         sourceKeyword: p.context?.keyword ?? "",
         publishedAt,

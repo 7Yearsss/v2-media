@@ -107,9 +107,20 @@ export type PublishJobPayload = PendingPublishJobsResponse["jobs"][number];
 export type BgMessage =
   | { type: "EXT_COLLECT"; batch: CollectBatch }
   | { type: "GET_STATUS" }
-  | { type: "COLLECT_URL_DONE"; ok: boolean; noteId?: string; error?: string }
+  | {
+      type: "COLLECT_URL_DONE";
+      ok: boolean;
+      noteId?: string;
+      error?: string;
+      detailCaptured?: boolean;
+      commentsCaptured?: boolean;
+      imageCount?: number;
+    }
+  | { type: "COLLECT_URL_CHALLENGE"; noteId?: string }
+  | { type: "COLLECT_URL_CHALLENGE_DONE"; noteId?: string }
   // 深度采集：后台开隐藏标签页进详情，嗅探评论接口后自动关闭
   | { type: "DEEP_COLLECT"; url: string }
+  | { type: "DEEP_COLLECT_CANCEL"; noteId: string } // 弹窗采集成功后取消队列里同笔记的兜底任务
   | { type: "GET_LOGIN_STATE" } // bg -> xhs content script
   | { type: "JOB_READY"; jobId: number } // creator-publish -> bg（拉取任务数据）
   | {
@@ -128,6 +139,7 @@ export type BgMessage =
   | { type: "SITE_SET_AUTH"; apiBase: string; token: string }
   | { type: "SITE_SYNC_ACCOUNTS" }
   | { type: "SITE_COLLECT_URL"; url: string }
+  | { type: "TRUSTED_CLICK"; x: number; y: number } // content -> bg：debugger 真实点击开详情弹窗
   | { type: "SITE_RUN_PUBLISH_JOB"; jobId: number }
   // --- popup 采集库下拉 ---
   | { type: "LIST_COLLECTIONS" }

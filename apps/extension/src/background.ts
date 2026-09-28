@@ -545,14 +545,19 @@ chrome.runtime.onMessage.addListener(
       case "GET_STATUS":
         return reply(
           getAuth().then(async (auth) => {
-            const { stats } = (await chrome.storage.local.get("stats")) as {
+            const { stats, lastDeepCollectFailure } = (await chrome.storage.local.get([
+              "stats",
+              "lastDeepCollectFailure",
+            ])) as {
               stats?: { collected?: number };
+              lastDeepCollectFailure?: { noteId: string; error: string; at: number };
             };
             return {
               version: VERSION,
               authorized: !!auth,
               appUrl: auth?.apiBase ?? defaultAppOrigin(),
               collected: stats?.collected ?? 0,
+              lastDeepCollectFailure,
             };
           }),
           sendResponse,
@@ -623,10 +628,37 @@ chrome.runtime.onMessage.addListener(
         // 回执必须来自本次任务开的那个页：SW 重启后旧页的回执不能顶替新页的 waiter
         if (w && (w.tabId === undefined || sid === undefined || w.tabId === sid)) {
           collectWaiters.delete(msg.noteId ?? "");
-          w.resolve({ ok: msg.ok, noteId: msg.noteId, error: msg.error });
+          clearCollectWaiterTimers(w);
+          w.resolve({
+            ok: msg.ok,
+            noteId: msg.noteId,
+            error: msg.error,
+            detailCaptured: msg.detailCaptured,
+            commentsCaptured: msg.commentsCaptured,
+            imageCount: msg.imageCount,
+          });
         } else if (sid) {
           // 旧生命周期的孤儿页回执（或 waiter 已失配）：采集页自己上传已完成，收掉发件页
           setTimeout(() => chrome.tabs.remove(sid).catch(() => {}), 1000);
+        }
+        sendResponse({ ok: true });
+        return false;
+      }
+      case "COLLECT_URL_CHALLENGE": {
+        const w = collectWaiters.get(msg.noteId ?? "");
+        const sid = sender.tab?.id;
+        if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
+          void onCollectChallenge(msg.noteId ?? "", w, sid);
+        }
+        sendResponse({ ok: true });
+        return false;
+      }
+      case "COLLECT_URL_CHALLENGE_DONE": {
+        const noteId = msg.noteId ?? "";
+        const w = collectWaiters.get(noteId);
+        const sid = sender.tab?.id;
+        if (w && sid && (w.tabId === undefined || w.tabId === sid)) {
+          onCollectChallengeCleared(noteId, w);
         }
         sendResponse({ ok: true });
         return false;
@@ -667,6 +699,17 @@ chrome.runtime.onMessage.addListener(
         );
       case "SITE_COLLECT_URL":
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
+      case "TRUSTED_CLICK":
+        // 内容脚本的 .click() 是不可信事件，XHS 的弹窗 handler 会忽略；
+        // 用 chrome.debugger 派发真实鼠标点击来打开笔记详情弹窗
+        return reply(
+          Promise.resolve(sender?.tab?.id).then(async (tid) =>
+            tid == null
+              ? { ok: false }
+              : { ok: await trustedClick(tid, Number(msg.x), Number(msg.y)) },
+          ),
+          sendResponse,
+        );
       case "DEEP_COLLECT":
         // 总开关约束同样适用：停用期间不开任何隐藏标签页。
         // 失败不回传错误：深度采集是尽力而为的补充通道；进顺序队列逐篇执行
@@ -674,6 +717,13 @@ chrome.runtime.onMessage.addListener(
           getSettings().then((s) => ({
             queued: s.enabled ? queueDeepCollect(String(msg.url ?? "")) : false,
           })),
+          sendResponse,
+        );
+      case "DEEP_COLLECT_CANCEL":
+        // 列表页弹窗已采到评论：删掉队列里同笔记的兜底隐藏页任务，
+        // 防止残留项被 SW 反复重放成验证码死页
+        return reply(
+          cancelDeepCollect(String(msg.noteId ?? "")).then((removed) => ({ removed })),
           sendResponse,
         );
       case "SITE_RUN_PUBLISH_JOB":
@@ -692,12 +742,121 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
+// chrome.debugger 真实点击：dispatchMouseEvent 产生 isTrusted 事件，
+// 是 XHS 弹窗 handler 唯一认的触发方式（合成 .click() 会被忽略走默认跳转）
+async function trustedClick(tabId: number, x: number, y: number): Promise<boolean> {
+  const target = { tabId };
+  try {
+    await chrome.debugger.attach(target, "1.3");
+    for (const type of ["mousePressed", "mouseReleased"] as const) {
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type,
+        x,
+        y,
+        button: "left",
+        clickCount: 1,
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  } finally {
+    try {
+      await chrome.debugger.detach(target);
+    } catch {
+      /* 已分离 */
+    }
+  }
+}
+
 // ---------- COLLECT_URL：工作台点名采集某篇 ----------
 
 const collectWaiters = new Map<
   string,
-  { resolve: (r: { ok: boolean; noteId?: string; error?: string }) => void; tabId?: number }
+  {
+    resolve: (r: {
+      ok: boolean;
+      noteId?: string;
+      error?: string;
+      detailCaptured?: boolean;
+      commentsCaptured?: boolean;
+      imageCount?: number;
+    }) => void;
+    tabId?: number;
+    timeoutId?: ReturnType<typeof setTimeout>;
+    hardTimeoutId?: ReturnType<typeof setTimeout>;
+    challengeTabOpened?: boolean;
+    challengeRetryId?: ReturnType<typeof setInterval>;
+    collectUrl?: string;
+  }
 >();
+
+function clearCollectWaiterTimers(
+  waiter: (typeof collectWaiters extends Map<string, infer V> ? V : never),
+) {
+  if (waiter.timeoutId) clearTimeout(waiter.timeoutId);
+  if (waiter.hardTimeoutId) clearTimeout(waiter.hardTimeoutId);
+  if (waiter.challengeRetryId) clearInterval(waiter.challengeRetryId);
+}
+
+function armCollectWaiterTimeout(
+  noteId: string,
+  waiter: (typeof collectWaiters extends Map<string, infer V> ? V : never),
+) {
+  if (waiter.timeoutId) clearTimeout(waiter.timeoutId);
+  waiter.timeoutId = setTimeout(() => {
+    if (collectWaiters.delete(noteId)) {
+      clearCollectWaiterTimers(waiter);
+      waiter.resolve({ ok: false, error: "采集超时（页面 120s 内未回执）" });
+    }
+  }, 120000);
+}
+
+type CollectWaiter = typeof collectWaiters extends Map<string, infer V> ? V : never;
+
+function isChallengeUrl(url: string) {
+  return /\/404\/sec_|\/sec_[a-z]|\/404\?source=/i.test(url);
+}
+
+// 采集页触发验证：暂停回执超时；中转页留在后台自行每 12s 跳回原笔记页重试，
+// 前台另开笔记正常页给用户验证（不顶那个验证后不回跳的 sec_ 死页）
+async function onCollectChallenge(noteId: string, w: CollectWaiter, tabId: number) {
+  if (w.timeoutId) {
+    clearTimeout(w.timeoutId);
+    w.timeoutId = undefined;
+  }
+  if (!w.challengeRetryId) {
+    w.challengeRetryId = setInterval(() => {
+      void chrome.tabs
+        .get(tabId)
+        .then((t) => {
+          if (w.collectUrl && isChallengeUrl(t.url ?? "")) {
+            void chrome.tabs.update(tabId, { url: w.collectUrl }).catch(() => {});
+          }
+        })
+        .catch(() => {});
+    }, 12000);
+  }
+  if (w.challengeTabOpened) return;
+  w.challengeTabOpened = true;
+  const t = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (noteId && isChallengeUrl(t?.url ?? "")) {
+    void chrome.tabs
+      .create({ url: `https://www.xiaohongshu.com/explore/${noteId}`, active: true })
+      .catch(() => {});
+  } else {
+    void chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  }
+}
+
+function onCollectChallengeCleared(noteId: string, w: CollectWaiter) {
+  w.challengeTabOpened = false;
+  if (w.challengeRetryId) {
+    clearInterval(w.challengeRetryId);
+    w.challengeRetryId = undefined;
+  }
+  armCollectWaiterTimeout(noteId, w);
+}
 
 async function collectByUrl(url: string) {
   if (!/^https:\/\/(www\.)?xiaohongshu\.com\//.test(url)) {
@@ -706,26 +865,50 @@ async function collectByUrl(url: string) {
   const noteId = url.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i)?.[1] ?? "";
   const marker = `__v2m_collect=1`;
   const target = url + (url.includes("?") ? "&" : "?") + marker;
-  const waiter: { resolve: (r: { ok: boolean; noteId?: string; error?: string }) => void; tabId?: number } =
-    { resolve: () => {} };
-  const done = new Promise<{ ok: boolean; noteId?: string; error?: string }>((resolve) => {
+  const waiter: CollectWaiter = { resolve: () => {}, collectUrl: target };
+  const done = new Promise<Parameters<typeof waiter.resolve>[0]>((resolve) => {
     waiter.resolve = resolve;
     collectWaiters.set(noteId, waiter);
-    setTimeout(() => {
+    armCollectWaiterTimeout(noteId, waiter);
+    waiter.hardTimeoutId = setTimeout(() => {
       if (collectWaiters.delete(noteId)) {
-        resolve({ ok: false, error: "采集超时（页面 32s 内未回执）" });
+        clearCollectWaiterTimers(waiter);
+        resolve({ ok: false, error: "验证码等待超过 15 分钟，任务已取消" });
       }
-    }, 33000); // 目标页会等评论接口到齐（数据就绪后再等 8s）才回执，给足时间
+    }, 15 * 60 * 1000);
   });
+  // SW 重启后队列头会重放同一 noteId：先收掉旧生命周期残留的采集页，避免同一笔记堆多个隐藏页
+  if (noteId) {
+    const stale = await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" });
+    for (const t of stale) {
+      if (
+        t.id &&
+        t.url?.includes("__v2m_collect") &&
+        t.url.includes(noteId)
+      ) {
+        await chrome.tabs.remove(t.id).catch(() => {});
+      }
+    }
+  }
   const tab = await chrome.tabs.create({ url: target, active: false });
   waiter.tabId = tab.id; // 绑定 tab：回执只能由它完成（重启后旧页回执不顶包）
   const r = await done;
-  // 小宽限后收掉隐藏标签页（回执已尽量等评论到齐；个别慢包仍可能差几秒）
-  setTimeout(() => {
-    if (tab.id) chrome.tabs.remove(tab.id).catch(() => {});
-  }, 2000);
-  if (!r.ok) throw new Error(r.error ?? "采集失败");
-  return { collected: true, noteId: r.noteId };
+  if (!r.ok) {
+    if (tab.id && r.error?.includes("验证码")) {
+      await chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+    } else if (tab.id) {
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
+    throw new Error(r.error ?? "采集失败");
+  }
+  if (tab.id) await chrome.tabs.remove(tab.id).catch(() => {});
+  return {
+    collected: true,
+    noteId: r.noteId,
+    detailCaptured: r.detailCaptured,
+    commentsCaptured: r.commentsCaptured,
+    imageCount: r.imageCount,
+  };
 }
 
 // ---------- DEEP_COLLECT 顺序队列：一次只开一个隐藏页，避免批量并发开 tab ----------
@@ -734,6 +917,7 @@ async function collectByUrl(url: string) {
 const DEEP_Q_KEY = "deepQueue";
 let deepQueue: string[] = [];
 const deepQueuedIds = new Set<string>();
+const deepAttempts = new Map<string, number>();
 let deepPumping = false;
 let deepQueueLoaded = false;
 
@@ -763,6 +947,20 @@ async function loadDeepQueue() {
   }
 }
 
+async function cancelDeepCollect(noteId: string): Promise<number> {
+  if (!noteId) return 0;
+  await loadDeepQueue();
+  const before = deepQueue.length;
+  deepQueue = deepQueue.filter((u) => {
+    const id = u.match(/([0-9a-f]{24})/)?.[1] ?? u;
+    return id !== noteId;
+  });
+  deepQueuedIds.delete(noteId);
+  deepAttempts.delete(noteId);
+  if (deepQueue.length !== before) await persistDeepQueue();
+  return before - deepQueue.length;
+}
+
 function queueDeepCollect(url: string): boolean {
   const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
   if (deepQueuedIds.has(id) || deepQueue.length >= 30) return false;
@@ -788,7 +986,28 @@ async function pumpDeepQueue() {
       }
       const url = deepQueue[0]!;
       const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
-      await collectByUrl(url).catch(() => {}); // 尽力而为：单篇失败不阻塞队列
+      try {
+        await collectByUrl(url);
+        deepAttempts.delete(id);
+        const storedFailure = (await chrome.storage.local.get("lastDeepCollectFailure"))
+          .lastDeepCollectFailure as { noteId?: string } | undefined;
+        if (storedFailure?.noteId === id) {
+          await chrome.storage.local.remove("lastDeepCollectFailure");
+        }
+      } catch (error) {
+        const attempts = (deepAttempts.get(id) ?? 0) + 1;
+        const message = String((error as Error)?.message ?? error);
+        const challenge = message.includes("验证码");
+        deepAttempts.set(id, challenge ? 2 : attempts);
+        await chrome.storage.local.set({
+          lastDeepCollectFailure: { noteId: id, error: message, at: Date.now() },
+        });
+        if (!challenge && attempts < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          continue;
+        }
+        deepAttempts.delete(id);
+      }
       // 先跑完再出队：处理中若 SW 重启，该 URL 仍在队列里会被重试（幂等）
       deepQueue.shift();
       deepQueuedIds.delete(id);
@@ -827,6 +1046,19 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (/login|passport/i.test(redirectUrl)) {
     for (const t of trackedTasks.values()) {
       if (t.tabId === tabId) t.loginSuspected = true;
+    }
+  }
+  // 采集页被服务端 302 到验证中转页时内容脚本不会加载，只能靠 URL 变化识别
+  for (const [noteId, w] of collectWaiters) {
+    if (w.tabId !== tabId) continue;
+    if (isChallengeUrl(redirectUrl)) {
+      void onCollectChallenge(noteId, w, tabId);
+    } else if (
+      redirectUrl &&
+      info.status === "complete" &&
+      (w.challengeRetryId || w.challengeTabOpened)
+    ) {
+      onCollectChallengeCleared(noteId, w);
     }
   }
   if (info.status !== "complete") return;

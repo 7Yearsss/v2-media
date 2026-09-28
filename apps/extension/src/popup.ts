@@ -12,6 +12,7 @@ interface Status {
   appUrl: string | null;
   collected: number;
   settings?: Partial<ExtSettings>;
+  lastDeepCollectFailure?: { noteId: string; error: string; at: number };
 }
 
 async function render() {
@@ -120,7 +121,9 @@ async function render() {
   try {
     const s = await sendToBackground<Status>({ type: "GET_STATUS" });
     statusEl.textContent = s.authorized
-      ? `已连接 ${s.appUrl} · 已入库 ${s.collected} 条`
+      ? s.lastDeepCollectFailure
+        ? `深度采集失败：${s.lastDeepCollectFailure.error}`
+        : `已连接 ${s.appUrl} · 已入库 ${s.collected} 条`
       : "未授权：打开工作台 →「授权插件」";
     if (s.authorized) await renderCollections();
     else colSel!.disabled = true;

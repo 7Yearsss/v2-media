@@ -3,7 +3,7 @@
   "name": "v2-media 小红书助手",
   "version": "0.1.0",
   "description": "采集小红书热门笔记到 v2-media 工作台，并驱动一键发布",
-  "permissions": ["storage", "alarms", "tabs", "scripting", "cookies"],
+  "permissions": ["storage", "alarms", "tabs", "scripting", "cookies", "debugger"],
   "host_permissions": [
     "https://*.xiaohongshu.com/*",
     "https://edith.xiaohongshu.com/*",

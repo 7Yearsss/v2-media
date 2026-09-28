@@ -32,6 +32,7 @@ if (isWww) {
   const cards = new Map<string, NoteCard>();
   const details = new Map<string, NoteDetail>();
   const commentsMap = new Map<string, NoteComment[]>();
+  const verifiedDetailIds = new Set<string>();
   // 卡片/详情分开记：卡片已传不阻挡后续到达的详情（详情含完整正文/图集/评论）
   const uploadedCards = new Set<string>();
   const uploadedDetails = new Set<string>();
@@ -261,9 +262,25 @@ if (isWww) {
     for (const d of batch.details ?? []) {
       // 评论可能先于详情到（隐藏页/详情浏览）：合并进缓存，后续上传带上
       const cms = commentsMap.get(d.noteId);
+      const incoming = (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail;
+      // 与 main-world emitNotes 同款合并：瘦详情（SSR 重扫）不能冲掉富详情
+      const prev = details.get(d.noteId);
       details.set(
         d.noteId,
-        (cms?.length ? { ...d, commentsData: cms } : d) as NoteDetail,
+        prev
+          ? {
+              ...incoming,
+              images:
+                incoming.images.length >= prev.images.length ? incoming.images : prev.images,
+              videoUrl: incoming.videoUrl ?? prev.videoUrl,
+              tags: incoming.tags.length ? incoming.tags : prev.tags,
+              content: incoming.content || prev.content,
+              desc: incoming.desc || prev.desc,
+              cover: incoming.cover || prev.cover,
+              publishedAt: incoming.publishedAt || prev.publishedAt,
+              ipLocation: incoming.ipLocation || prev.ipLocation,
+            }
+          : incoming,
       );
       // 手动模式下，晚到的详情对已采卡片做补传（autoCollect 走 queueUpload 已覆盖）；
       // 沿用卡片入库时的库，不取当前选择（用户可能已换库）
@@ -324,6 +341,7 @@ if (isWww) {
   const NOTE_LINK =
     'a[href*="/explore/"], a[href*="/search_result/"], a[href*="/discovery/item/"]';
   const pickBtns = new Map<Element, { btn: HTMLElement; noteId: string }>();
+  const cardEls = new Map<string, Element>();
   let rafScheduled = false;
 
   function noteIdFromCard(section: Element): string | null {
@@ -338,6 +356,7 @@ if (isWww) {
       const noteId = noteIdFromCard(section);
       if (!noteId) continue;
       seen.add(section);
+      cardEls.set(noteId, section);
       if (!pickBtns.has(section)) {
         const btn = el("button", { class: "pick", onclick: () => void collectOne(noteId) }, "采集本篇");
         overlay.append(btn);
@@ -349,6 +368,7 @@ if (isWww) {
       if (!seen.has(section) || !document.contains(section)) {
         rec.btn.remove();
         pickBtns.delete(section);
+        cardEls.delete(rec.noteId);
       }
     }
     reposition();
@@ -395,6 +415,144 @@ if (isWww) {
     return m?.[1] ?? null;
   }
 
+  const detectChallenge = () => {
+    if (/\/404\/sec_|\/sec_[a-z]/i.test(location.pathname)) return true;
+    const text = document.body?.innerText ?? "";
+    return (
+      /请完成验证|安全验证|拖动滑块|拖动箭头|验证后继续|Security Verification|完成拼图/i.test(text) ||
+      Boolean(document.querySelector('iframe[src*="captcha"], iframe[src*="verify"]'))
+    );
+  };
+
+  const advanceComments = () => {
+    const roots = document.querySelectorAll<HTMLElement>(
+      '.comments-container, [class*="comments-container"], [class*="comment-list"], [class*="comments-list"], .parent-comment',
+    );
+    const candidates = new Set<HTMLElement>();
+    for (const root of roots) {
+      let current: HTMLElement | null = root;
+      for (let depth = 0; current && depth < 6; depth += 1) {
+        const style = getComputedStyle(current);
+        if (
+          current.scrollHeight - current.clientHeight > 50 &&
+          current.offsetParent !== null &&
+          /(auto|scroll)/.test(style.overflowY)
+        ) {
+          candidates.add(current);
+          break;
+        }
+        current = current.parentElement;
+      }
+    }
+    const noteScroller = document.querySelector<HTMLElement>(".note-scroller");
+    if (
+      noteScroller &&
+      noteScroller.scrollHeight - noteScroller.clientHeight > 50 &&
+      noteScroller.offsetParent !== null
+    ) {
+      candidates.add(noteScroller);
+    }
+    const target = [...candidates].reduce<HTMLElement | null>((best, el) => {
+      const range = el.scrollHeight - el.clientHeight;
+      const bestRange = best ? best.scrollHeight - best.clientHeight : 0;
+      return range > Math.max(50, bestRange) ? el : best;
+    }, null);
+    const fallback = document.scrollingElement as HTMLElement | null;
+    const scrollTarget = target ?? fallback;
+    if (!scrollTarget) return;
+    const top = 400 + Math.round(Math.random() * 300);
+    scrollTarget.scrollBy({ top, behavior: "smooth" });
+    scrollTarget.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: top }));
+  };
+
+  let modalCollecting = false;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // 原地详情弹窗采集：点当前页的笔记卡片打开原生 modal（不新开 tab），
+  // modal 自己发签名接口被嗅探；滚动评论容器翻页；验证码也在当前可见页由用户处理
+  async function deepCollectInline(noteId: string): Promise<boolean> {
+    if (modalCollecting || collectFlag) return false;
+    const section = cardEls.get(noteId);
+    // 卡片内有多个匹配锚点，第一个是 0×0 的不可见幻影；必须取有尺寸的封面锚点
+    const link = section
+      ? [...section.querySelectorAll<HTMLAnchorElement>(NOTE_LINK)].find(
+          (a) => a.getBoundingClientRect().width > 50,
+        )
+      : undefined;
+    if (!section || !link || !document.contains(section)) return false;
+    modalCollecting = true;
+    let challengeToastShown = false;
+    try {
+      // .click() 是非受信任事件会被 XHS 弹窗 handler 忽略（走默认跳转被 302）；
+      // 必须滚动到可见后用 chrome.debugger 发真实鼠标点击
+      link.scrollIntoView({ block: "center" });
+      await sleep(500);
+      const rect = link.getBoundingClientRect();
+      const cx = Math.round(rect.left + rect.width / 2);
+      const cy = Math.round(rect.top + rect.height / 2);
+      const clickRes = await sendToBackground<{ ok?: boolean }>({
+        type: "TRUSTED_CLICK",
+        x: cx,
+        y: cy,
+      }).catch(() => null);
+      if (!clickRes?.ok) return false;
+      // 等弹窗路由生效（URL pushState 到 /explore/<id>）
+      let opened = false;
+      for (let i = 0; i < 10; i++) {
+        await sleep(500);
+        if (pageNoteId() === noteId) {
+          opened = true;
+          break;
+        }
+      }
+      if (!opened) return false;
+      const startAt = Date.now();
+      let challengeMs = 0;
+      let challengeSince: number | undefined;
+      let lastCount = commentsMap.get(noteId)?.length ?? 0;
+      let stableSince = Date.now();
+      while (Date.now() - startAt - challengeMs < 30_000 && Date.now() - startAt < 120_000) {
+        if (detectChallenge()) {
+          if (!challengeToastShown) {
+            challengeToastShown = true;
+            toast("需要验证：请在当前页面完成，完成后自动继续", true);
+          }
+          challengeSince ??= Date.now();
+          await sleep(1500);
+          continue;
+        }
+        if (challengeSince) {
+          challengeMs += Date.now() - challengeSince;
+          challengeSince = undefined;
+        }
+        const count = commentsMap.get(noteId)?.length ?? 0;
+        if (count > lastCount) {
+          lastCount = count;
+          stableSince = Date.now();
+        } else if (count > 0 && Date.now() - stableSince > 3500) {
+          break;
+        }
+        advanceComments();
+        await sleep(1200);
+      }
+      try {
+        const res = await mainRequest<CachedNote>("getNote", { noteId });
+        if (res.card) cards.set(noteId, res.card);
+        if (res.detail) {
+          verifiedDetailIds.add(noteId);
+          details.set(noteId, res.detail);
+        }
+        if (res.comments?.length) commentsMap.set(noteId, res.comments);
+      } catch {
+        /* 收尾读取失败就按已缓存的上传 */
+      }
+      return Boolean(commentsMap.get(noteId)?.length);
+    } finally {
+      modalCollecting = false;
+      if (pageNoteId() === noteId) history.back();
+    }
+  }
+
   async function collectOne(noteId: string): Promise<boolean> {
     if (!cfg.enabled) {
       toast("插件已停用", false);
@@ -413,15 +571,50 @@ if (isWww) {
         /* 页面数据读不到 */
       }
     }
-    // 只有卡片没有详情：后台拉详情页 HTML 补齐（tags/正文/发布时间/互动数），不用点进去
-    if (!detail && card?.url) {
+    // 页面详情经常先只给封面；SSR 详情可补齐完整图集、正文和标签。
+    // SSR fetch 详情要带 xsec_token 才不被 302：优先选已带 token 的
+    // 详情/卡片 URL（接口嗅探到的 detail.url 有，feed 卡片常没有）
+    const urlCandidates = [detail?.url, card?.url].filter((u): u is string => Boolean(u));
+    let detailUrl =
+      urlCandidates.find((u) => u.includes("xsec_token")) ??
+      (pageNoteId() === noteId
+        ? `${location.origin}${location.pathname}${location.search}`
+        : undefined) ??
+      urlCandidates[0];
+    const xsec = card?.xsecToken || detail?.xsecToken;
+    if (detailUrl && xsec && !detailUrl.includes("xsec_token")) {
+      detailUrl += `${detailUrl.includes("?") ? "&" : "?"}xsec_token=${encodeURIComponent(xsec)}&xsec_source=pc_feed`;
+    }
+    if (
+      detailUrl &&
+      (!detail ||
+        !detail.content ||
+        !detail.tags.length ||
+        (detail.type === "image" && detail.images.length <= 1))
+    ) {
       try {
         const res = await mainRequest<CachedNote>(
           "fetchDetail",
-          { url: card.url },
+          { url: detailUrl },
           15_000,
         );
-        detail = detail ?? res.detail;
+        if (res.detail) {
+          verifiedDetailIds.add(noteId);
+          detail = detail
+            ? {
+                ...detail,
+                ...res.detail,
+                content: res.detail.content || detail.content,
+                tags: res.detail.tags.length ? res.detail.tags : detail.tags,
+                images:
+                  res.detail.images.length > detail.images.length
+                    ? res.detail.images
+                    : detail.images,
+                videoUrl: res.detail.videoUrl || detail.videoUrl,
+              }
+            : res.detail;
+          details.set(noteId, detail);
+        }
       } catch {
         /* 详情拉不到就按卡片上报 */
       }
@@ -472,18 +665,25 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`已入库：${(card?.title || detail?.title || noteId).slice(0, 30)}${r?.saved === 0 ? "（已存在）" : ""}`);
-      // 手动点采集 = 明确要这篇，始终深度补评论：后台排队开隐藏标签页进详情页，
-      // 让页面自己发签名评论接口被嗅探（隐藏页会等评论到齐再回执）。
+      // 手动点采集 = 明确要这篇，始终深度补评论。优先在当前列表页原地打开
+      // 笔记详情弹窗采集（不新开 tab，验证码也只在当前可见页弹）；卡片不在
+      // DOM 里打不开弹窗时退回后台隐藏页通道。
       // collectFlag 页本身就在详情页、不再套娃触发。
       if (
         !collectFlag &&
         !commentsMap.get(noteId)?.length &&
         (card?.url || detail?.url)
       ) {
-        void sendToBackground({
-          type: "DEEP_COLLECT",
-          url: card?.url || detail!.url,
-        }).catch(() => {});
+        const url = detail?.url || card!.url; // 详情 URL 带 xsec_token，兜底隐藏页也更不容易被 302
+        void deepCollectInline(noteId).then(async (got) => {
+          if (got) {
+            // 弹窗已采到评论：取消队列里同笔记的兜底隐藏页任务（防 SW 重放死页）
+            void sendToBackground({ type: "DEEP_COLLECT_CANCEL", noteId }).catch(() => {});
+            await collectOne(noteId); // 重传一次带评论明细的详情
+          } else {
+            void sendToBackground({ type: "DEEP_COLLECT", url }).catch(() => {});
+          }
+        });
       }
       return true;
     } catch (e) {
@@ -560,19 +760,40 @@ if (isWww) {
         flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
       }
       toast(`全部入库完成（${r?.saved ?? items.length} 条）`);
-      // 深度采集开：给还没有评论的笔记排队开隐藏页补评论（背景顺序执行）；
-      // 逐条等回执计数，队列满了被拒的不会算进去
+      // 深度采集开：缺评论的笔记优先原地弹窗补（可见页面，验证码可直接人工处理）；
+      // 卡片不在 DOM 里的退回后台隐藏页队列
       if (cfg.deepCollect) {
+        let inline = 0;
         let queued = 0;
         for (const n of [...items, ...dets]) {
-          const url = n.url;
-          if (!url || commentsMap.get(n.noteId)?.length) continue;
-          const r = await sendToBackground<{ queued?: boolean }>({
-            type: "DEEP_COLLECT",
-            url,
-          }).catch(() => null);
-          if (r?.queued) queued++;
+          if (commentsMap.get(n.noteId)?.length) continue;
+          if (cardEls.has(n.noteId)) {
+            const got = await deepCollectInline(n.noteId);
+            if (got) {
+              inline++;
+              void sendToBackground({ type: "DEEP_COLLECT_CANCEL", noteId: n.noteId }).catch(() => {});
+              const d = details.get(n.noteId);
+              const late = commentsMap.get(n.noteId);
+              if (d && late?.length) {
+                pendingDetails.set(n.noteId, {
+                  data: { ...d, commentsData: late } as NoteDetail,
+                  colId: batchColId,
+                });
+              }
+            }
+          } else if (n.url) {
+            const r = await sendToBackground<{ queued?: boolean }>({
+              type: "DEEP_COLLECT",
+              url: n.url,
+            }).catch(() => null);
+            if (r?.queued) queued++;
+          }
         }
+        if (pendingDetails.size) {
+          if (flushTimer) clearTimeout(flushTimer);
+          flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
+        }
+        if (inline) toast(`弹窗补评论完成 ${inline} 篇`);
         if (queued) toast(`深度补评论已排队 ${queued} 篇（较慢，后台进行）`);
       }
     } catch (e) {
@@ -634,16 +855,38 @@ if (isWww) {
   // ---------- __v2m_collect=1：工作台 COLLECT_URL 打开的页 ----------
 
   const collectFlag = new URL(location.href).searchParams.get("__v2m_collect");
-  if (collectFlag) {
-    const noteId = pageNoteId();
+  if (collectFlag) sessionStorage.setItem("v2m_collect_url", location.href);
+  const storedCollectUrl = sessionStorage.getItem("v2m_collect_url");
+  if (collectFlag || storedCollectUrl) {
+    const collectUrl = collectFlag ? location.href : storedCollectUrl!;
+    const noteId =
+      pageNoteId() ??
+      collectUrl.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i)?.[1] ??
+      null;
     let done = false;
-    const finish = (ok: boolean, error?: string) => {
+    let challengeNotified = false;
+    const finish = (
+      ok: boolean,
+      error?: string,
+      result?: {
+        detailCaptured: boolean;
+        commentsCaptured: boolean;
+        imageCount: number;
+      },
+    ) => {
       if (done) return;
       done = true;
-      void sendToBackground({ type: "COLLECT_URL_DONE", ok, noteId: noteId ?? undefined, error });
+      void sendToBackground({
+        type: "COLLECT_URL_DONE",
+        ok,
+        noteId: noteId ?? undefined,
+        error,
+        ...result,
+      });
     };
-    const started = Date.now();
-    let dataSince: number | undefined; // 数据就绪时刻：评论再等最多 8s
+    let started = Date.now();
+    let challengeBegan: number | undefined;
+    let dataSince: number | undefined;
     const tick = async () => {
       if (done) return;
       cfg = await getSettings(); // 同步 cfg 可能还没加载，这里每次拿最新的
@@ -651,22 +894,90 @@ if (isWww) {
         finish(false, "插件已停用");
         return;
       }
+      if (detectChallenge()) {
+        challengeBegan ??= Date.now();
+        if (!challengeNotified) {
+          challengeNotified = true;
+          void sendToBackground({
+            type: "COLLECT_URL_CHALLENGE",
+            noteId: noteId ?? undefined,
+          });
+        }
+        // 被重定向到验证中转页（无 collectFlag）：周期性跳回原笔记页，
+        // 用户验证通过后即可回到采集流程；未通过则再次落在验证页循环。
+        if (!collectFlag) {
+          setTimeout(() => {
+            location.href = collectUrl;
+          }, 10_000);
+          return;
+        }
+        setTimeout(tick, 1200);
+        return;
+      }
+      if (!collectFlag) return; // 中转页未命中验证文案但也不是笔记页：不再继续
+      if (challengeBegan) {
+        const pausedFor = Date.now() - challengeBegan;
+        started += pausedFor;
+        if (dataSince) dataSince += pausedFor;
+        challengeBegan = undefined;
+        void sendToBackground({
+          type: "COLLECT_URL_CHALLENGE_DONE",
+          noteId: noteId ?? undefined,
+        });
+      }
+      challengeNotified = false;
       if (noteId && (cards.has(noteId) || details.has(noteId))) {
         dataSince ??= Date.now();
-        // 等评论接口回来再收：评论随 collectOne 一起上传，不靠事后补传竞态
-        if (
-          (commentsMap.get(noteId)?.length ?? 0) > 0 ||
-          Date.now() - dataSince > 8000
-        ) {
-          finish(await collectOne(noteId));
+        advanceComments();
+        const detail = details.get(noteId);
+        const card = cards.get(noteId);
+        const expectedComments = Math.max(detail?.comments ?? 0, card?.comments ?? 0);
+        const commentsCount = commentsMap.get(noteId)?.length ?? 0;
+        const elapsed = Date.now() - dataSince;
+        const commentsCaptured =
+          commentsCount > 0 || (expectedComments === 0 && elapsed > 4000);
+        const detailCaptured = Boolean(
+          detail &&
+            (detail.type === "video"
+              ? detail.videoUrl
+              : detail.images.length > 1 ||
+                (detail.images.length === 1 && verifiedDetailIds.has(noteId))),
+        );
+        const waitExpired = elapsed > 15_000;
+        if ((detailCaptured && commentsCaptured) || waitExpired) {
+          const uploaded = await collectOne(noteId);
+          const finalDetail = details.get(noteId);
+          const finalDetailCaptured = Boolean(
+            finalDetail &&
+              (finalDetail.type === "video"
+                ? finalDetail.videoUrl
+                : finalDetail.images.length > 1 ||
+                  (finalDetail.images.length === 1 && verifiedDetailIds.has(noteId))),
+          );
+          const imageCount = finalDetail?.images.length ?? 0;
+          const complete = uploaded && finalDetailCaptured && commentsCaptured;
+          finish(
+            complete,
+            complete
+              ? undefined
+              : !finalDetailCaptured
+                ? "详情或完整媒体未采集到"
+                : `评论采集超时（笔记显示 ${expectedComments} 条评论）`,
+            { detailCaptured: finalDetailCaptured, commentsCaptured, imageCount },
+          );
           return;
         }
       }
       // 还没嗅探到：催 main world 重扫 __INITIAL_STATE__，再等嗅探响应
       await mainRequest("reparseInitialState").catch(() => undefined);
-      if (Date.now() - started > 20000) {
-        // 最后兜底：直接按缓存/SSR 里有什么算什么
-        finish(noteId ? await collectOne(noteId) : false, "等待页面数据超时");
+      if (Date.now() - started > 32_000) {
+        const uploaded = noteId ? await collectOne(noteId) : false;
+        const detail = noteId ? details.get(noteId) : undefined;
+        finish(false, uploaded ? "深度采集等待数据超时" : "等待页面数据超时", {
+          detailCaptured: Boolean(detail),
+          commentsCaptured: Boolean(noteId && commentsMap.get(noteId)?.length),
+          imageCount: detail?.images.length ?? 0,
+        });
         return;
       }
       setTimeout(tick, 1200);
