@@ -129,6 +129,56 @@ describe("collect + notes", () => {
     expect(after.items[0].collectionId).toBeNull();
   });
 
+  it("notes: 范围筛选 + 批量移库/删除 + 按 ids 导出", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const post = (path: string, body: unknown) =>
+      app.request(path, authed(token, { method: "POST", body: JSON.stringify(body) }));
+    await post("/api/ext/collect", {
+      source: "search",
+      items: [
+        { noteId: "f1", title: "低赞图文", likes: 50 },
+        { noteId: "f2", title: "高赞图文", likes: 5000 },
+        { noteId: "f3", title: "高赞视频", likes: 8000, type: "video" },
+      ],
+    });
+    const list = async (qs: string) => ((await (await app.request(`/api/notes?${qs}`, authed(token))).json()) as any).items;
+    expect(await list("minLikes=1000")).toHaveLength(2);
+    expect(await list("minLikes=1000&type=video")).toHaveLength(1);
+    // 没采到发布时间的笔记不匹配时间范围
+    expect(await list("withinDays=7")).toHaveLength(0);
+    expect((await app.request("/api/notes?minLikes=-1", authed(token))).status).toBe(400);
+    expect((await app.request("/api/notes?type=gif", authed(token))).status).toBe(400);
+
+    const summary = (await (await app.request("/api/notes/summary?minLikes=1000", authed(token))).json()) as any;
+    expect(summary).toMatchObject({ notes: 2, likes: 13000, withDetail: 0, topTags: [] });
+
+    const all = await list("");
+    const ids = all.map((n: any) => n.id);
+    const col = (await (await post("/api/collections", { name: "批量" })).json()) as any;
+    const moved = (await (await post("/api/notes/batch", { action: "move", ids: ids.slice(0, 2), collectionId: col.id })).json()) as any;
+    expect(moved.affected).toBe(2);
+    expect(await list(`collectionId=${col.id}`)).toHaveLength(2);
+    // 别人的库、非法 ids、未知动作
+    const { token: t2 } = await registerUser(app, "other2@x.yz");
+    const foreign = await app.request("/api/notes/batch", authed(t2, { method: "POST", body: JSON.stringify({ action: "move", ids, collectionId: col.id }) }));
+    expect(foreign.status).toBe(404);
+    expect((await post("/api/notes/batch", { action: "move", ids: [] })).status).toBe(400);
+    expect((await post("/api/notes/batch", { action: "nope", ids })).status).toBe(400);
+    // 别人的笔记 id 不会被删
+    const stolen = (await (await app.request("/api/notes/batch", authed(t2, { method: "POST", body: JSON.stringify({ action: "delete", ids }) }))).json()) as any;
+    expect(stolen.affected).toBe(0);
+    // 移出库
+    await post("/api/notes/batch", { action: "move", ids, collectionId: null });
+    expect(await list(`collectionId=${col.id}`)).toHaveLength(0);
+
+    const csv = await (await app.request(`/api/notes/export?ids=${ids[0]}`, authed(token))).text();
+    expect(csv.trim().split("\r\n")).toHaveLength(2);
+    const del = (await (await post("/api/notes/batch", { action: "delete", ids: ids.slice(0, 2) })).json()) as any;
+    expect(del.affected).toBe(2);
+    expect(await list("")).toHaveLength(1);
+  });
+
   it("collection analyze: AI 报告落库 + 越权 404 + 空库 400", async () => {
     const { app } = await makeApp();
     const { token } = await registerUser(app);

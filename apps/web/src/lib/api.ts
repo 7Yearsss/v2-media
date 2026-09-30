@@ -14,6 +14,7 @@ import type {
   AuthRequest,
   AuthResponse,
   CollectedNote,
+  NotesSummary,
   Collection,
   CollectionAnalysis,
   Draft,
@@ -140,6 +141,13 @@ async function request<T>(
 }
 
 // ---------- 归一化响应类型 ----------
+
+/** 内容库范围筛选（0/缺省 = 不限）。 */
+export interface NoteRangeFilter {
+  type?: "image" | "video";
+  minLikes?: number;
+  withinDays?: number;
+}
 
 /** GET /api/notes 分页载荷（契约：{items,nextCursor}）。 */
 export interface NotesPage {
@@ -268,7 +276,7 @@ export const api = {
     cursor?: string | null;
     sort?: NoteSortField;
     direction?: NoteSortDirection;
-  }) =>
+  } & NoteRangeFilter) =>
     request<NotesPage>("/api/notes", {
       query: {
         keyword: params.keyword,
@@ -278,6 +286,9 @@ export const api = {
         cursor: params.cursor ?? undefined,
         sort: params.sort,
         direction: params.direction,
+        type: params.type,
+        minLikes: params.minLikes,
+        withinDays: params.withinDays,
       },
     }).then((res) =>
       // 防御：服务端若直接返回数组也兜住
@@ -285,6 +296,11 @@ export const api = {
         ? { items: res, nextCursor: null }
         : { items: res.items ?? [], nextCursor: res.nextCursor ?? null },
     ),
+  /** 当前筛选范围的摘要（与 notes 同一套筛选，不含分页/排序）。 */
+  notesSummary: (params: { keyword?: string; source?: string; collectionId?: string; tag?: string } & NoteRangeFilter) =>
+    request<NotesSummary>("/api/notes/summary", {
+      query: { ...params, collectionId: params.collectionId || undefined },
+    }),
   collections: () => request<{ items: Collection[] }>("/api/collections"),
   createCollection: (name: string) =>
     request<Collection>("/api/collections", { method: "POST", body: { name } }),
@@ -303,11 +319,16 @@ export const api = {
   deleteNote: (id: number) =>
     request<void>(`/api/notes/${id}`, { method: "DELETE" }),
   /** GET /api/notes/export → CSV blob（带 BOM，Excel 直开）。 */
-  exportNotes: async (f?: { collectionId?: string; keyword?: string; source?: string }): Promise<Blob> => {
+  exportNotes: async (f?: { collectionId?: string; keyword?: string; source?: string; tag?: string; ids?: number[] } & NoteRangeFilter): Promise<Blob> => {
     const p = new URLSearchParams();
     if (f?.collectionId) p.set("collectionId", f.collectionId);
     if (f?.keyword) p.set("keyword", f.keyword);
     if (f?.source) p.set("source", f.source);
+    if (f?.tag) p.set("tag", f.tag);
+    if (f?.type) p.set("type", f.type);
+    if (f?.minLikes) p.set("minLikes", String(f.minLikes));
+    if (f?.withinDays) p.set("withinDays", String(f.withinDays));
+    if (f?.ids?.length) p.set("ids", f.ids.join(","));
     const qs = p.size ? `?${p}` : "";
     const token = getToken();
     const res = await fetch(`/api/notes/export${qs}`, {
@@ -321,6 +342,10 @@ export const api = {
     if (!res.ok) throw new ApiError(`导出失败（${res.status}）`, res.status);
     return res.blob();
   },
+
+  /** 批量移库（collectionId=null 移出）或删除，返回实际影响条数。 */
+  batchNotes: (body: { action: "move"; ids: number[]; collectionId: number | null } | { action: "delete"; ids: number[] }) =>
+    request<{ affected: number }>("/api/notes/batch", { method: "POST", body }),
 
   drafts: () => request<Draft[]>("/api/drafts"),
   draft: (id: number) => request<Draft>(`/api/drafts/${id}`),

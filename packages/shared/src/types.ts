@@ -158,6 +158,8 @@ export interface CollectedNote {
   collects: number;
   comments: number;
   shares: number;
+  /** 是否收过详情页数据；false 时收藏/评论/分享的 0 只是"未采到"。 */
+  hasDetail?: boolean;
   tags: string[];
   source: CollectSource;
   sourceUrl: string;
@@ -168,6 +170,17 @@ export interface CollectedNote {
   /** 作者 IP 属地（详情页才有）。 */
   ipLocation?: string;
   savedAt: string;
+}
+
+/** GET /api/notes/summary：当前筛选范围的摘要。 */
+export interface NotesSummary {
+  notes: number;
+  likes: number;
+  collects: number;
+  comments: number;
+  /** 其中收过详情的笔记数（收藏/评论合计只覆盖这部分）。 */
+  withDetail: number;
+  topTags: Array<{ tag: string; notes: number }>;
 }
 
 export interface Draft {
