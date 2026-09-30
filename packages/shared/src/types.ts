@@ -172,6 +172,17 @@ export interface CollectedNote {
   savedAt: string;
 }
 
+/** GET /api/notes/summary：当前筛选范围的摘要。 */
+export interface NotesSummary {
+  notes: number;
+  likes: number;
+  collects: number;
+  comments: number;
+  /** 其中收过详情的笔记数（收藏/评论合计只覆盖这部分）。 */
+  withDetail: number;
+  topTags: Array<{ tag: string; notes: number }>;
+}
+
 export interface Draft {
   id: number;
   collectedNoteId?: number;

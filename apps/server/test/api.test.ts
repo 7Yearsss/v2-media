@@ -150,6 +150,9 @@ describe("collect + notes", () => {
     expect((await app.request("/api/notes?minLikes=-1", authed(token))).status).toBe(400);
     expect((await app.request("/api/notes?type=gif", authed(token))).status).toBe(400);
 
+    const summary = (await (await app.request("/api/notes/summary?minLikes=1000", authed(token))).json()) as any;
+    expect(summary).toMatchObject({ notes: 2, likes: 13000, withDetail: 0, topTags: [] });
+
     const all = await list("");
     const ids = all.map((n: any) => n.id);
     const col = (await (await post("/api/collections", { name: "批量" })).json()) as any;

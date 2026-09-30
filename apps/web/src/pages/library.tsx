@@ -32,6 +32,7 @@ import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { LibraryNoteDetail } from "@/components/app/library-note-detail";
 import { LibraryBulkBar } from "@/components/app/library-bulk-bar";
 import { LibraryFilterBar, rangeFilterActive } from "@/components/app/library-filter-bar";
+import { LibrarySummary } from "@/components/app/library-summary";
 import { LibraryNoteCard } from "@/components/app/library-note-card";
 import { LibraryNoteRow, NOTE_ROW_COLUMNS } from "@/components/app/library-note-row";
 import { api, type NoteRangeFilter } from "@/lib/api";
@@ -60,6 +61,7 @@ export default function LibraryPage() {
   const [newColName, setNewColName] = useState("");
   const [showNewCol, setShowNewCol] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [tag, setTag] = useState("");
   const [range, setRange] = useState<NoteRangeFilter>({});
   const [checked, setChecked] = useState<Set<number>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -87,6 +89,7 @@ export default function LibraryPage() {
         collectionId: collection || undefined,
         keyword: keyword || undefined,
         source: source || undefined,
+        tag: tag || undefined,
         ...range,
       });
       const colName =
@@ -142,11 +145,16 @@ export default function LibraryPage() {
   });
 
   const notesQuery = useInfiniteQuery({
-    queryKey: ["notes", keyword, source, collection, sort, direction, range],
+    queryKey: ["notes", keyword, source, collection, sort, direction, range, tag],
     queryFn: ({ pageParam }) =>
-      api.notes({ keyword, source, collectionId: collection || undefined, cursor: pageParam, sort, direction, ...range }),
+      api.notes({ keyword, source, tag, collectionId: collection || undefined, cursor: pageParam, sort, direction, ...range }),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
+  });
+
+  const summaryQuery = useQuery({
+    queryKey: ["notes-summary", keyword, source, collection, range, tag],
+    queryFn: () => api.notesSummary({ keyword, source, tag, collectionId: collection || undefined, ...range }),
   });
 
   const items = useMemo(
@@ -157,7 +165,7 @@ export default function LibraryPage() {
   const hotAt = useMemo(() => hotThreshold(items), [items]);
 
   // 筛选/排序变了，可见列表就变了：清掉勾选，避免对看不见的笔记做批量操作
-  useEffect(() => setChecked(new Set()), [keyword, source, collection, sort, direction, range]);
+  useEffect(() => setChecked(new Set()), [keyword, source, collection, sort, direction, range, tag]);
   useEffect(() => {
     if (checked.size === 0) return;
     const onKey = (e: KeyboardEvent) => {
@@ -179,6 +187,7 @@ export default function LibraryPage() {
   const afterBulk = () => {
     setChecked(new Set());
     void queryClient.invalidateQueries({ queryKey: ["notes"] });
+    void queryClient.invalidateQueries({ queryKey: ["notes-summary"] });
     void queryClient.invalidateQueries({ queryKey: ["collections"] });
     void queryClient.invalidateQueries({ queryKey: ["overview"] });
   };
@@ -321,6 +330,7 @@ export default function LibraryPage() {
           </div>
 
           <LibraryFilterBar value={range} onChange={setRange} />
+          {summaryQuery.data ? <LibrarySummary summary={summaryQuery.data} activeTag={tag} onTag={setTag} /> : null}
 
           {/* 采集库筛选：插件「当前采集库」把一批笔记归组 */}
           <div className="flex flex-wrap items-center gap-2">
@@ -443,9 +453,9 @@ export default function LibraryPage() {
             />
           ) : items.length === 0 ? (
             <EmptyState
-              title={keyword || rangeFilterActive(range) ? "没有匹配的笔记" : "内容库还是空的"}
+              title={keyword || tag || rangeFilterActive(range) ? "没有匹配的笔记" : "内容库还是空的"}
               description={
-                keyword || rangeFilterActive(range)
+                keyword || tag || rangeFilterActive(range)
                   ? "换个关键词或放宽筛选条件试试"
                   : "安装并授权浏览器插件后，在小红书页面浏览即可自动采集"
               }

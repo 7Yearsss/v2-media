@@ -186,6 +186,27 @@ export function notesModule(deps: Deps) {
     });
   });
 
+  /** 当前筛选范围的摘要：条数、互动合计、热门话题。与列表同一套筛选（不含 ids）。 */
+  app.get("/summary", async (c) => {
+    const filtered = filterConds(c.get("userId"), (n) => (n === "ids" ? undefined : c.req.query(n)), deps.now());
+    if ("error" in filtered) return c.json({ error: filtered.error }, 400);
+    const where = and(...filtered.conds);
+    const [totals] = await deps.db.select({
+      notes: sql<number>`count(*)::int`,
+      likes: sql<number>`coalesce(sum(${collectedNotes.likes}), 0)::bigint`.mapWith(Number),
+      collects: sql<number>`coalesce(sum(${collectedNotes.collects}), 0)::bigint`.mapWith(Number),
+      comments: sql<number>`coalesce(sum(${collectedNotes.comments}), 0)::bigint`.mapWith(Number),
+      withDetail: sql<number>`count(*) filter (where ${collectedNotes.hasDetail})::int`,
+    }).from(collectedNotes).where(where);
+    const tagRows = await deps.db.execute(sql`
+      select t.tag as tag, count(*)::int as notes
+      from ${collectedNotes}, jsonb_array_elements_text(${collectedNotes.tags}) as t(tag)
+      where ${where} and t.tag <> ''
+      group by t.tag order by count(*) desc, t.tag limit 8`);
+    const rows = (Array.isArray(tagRows) ? tagRows : (tagRows as { rows: unknown[] }).rows) as Array<{ tag: string; notes: number }>;
+    return c.json({ ...totals, topTags: rows.map((r) => ({ tag: r.tag, notes: Number(r.notes) })) });
+  });
+
   /** 批量操作：move（移入库，collectionId=null 即移出）/ delete。只作用于当前用户的笔记。 */
   app.post("/batch", async (c) => {
     const userId = c.get("userId");

@@ -14,6 +14,7 @@ import type {
   AuthRequest,
   AuthResponse,
   CollectedNote,
+  NotesSummary,
   Collection,
   CollectionAnalysis,
   Draft,
@@ -295,6 +296,11 @@ export const api = {
         ? { items: res, nextCursor: null }
         : { items: res.items ?? [], nextCursor: res.nextCursor ?? null },
     ),
+  /** 当前筛选范围的摘要（与 notes 同一套筛选，不含分页/排序）。 */
+  notesSummary: (params: { keyword?: string; source?: string; collectionId?: string; tag?: string } & NoteRangeFilter) =>
+    request<NotesSummary>("/api/notes/summary", {
+      query: { ...params, collectionId: params.collectionId || undefined },
+    }),
   collections: () => request<{ items: Collection[] }>("/api/collections"),
   createCollection: (name: string) =>
     request<Collection>("/api/collections", { method: "POST", body: { name } }),
@@ -313,11 +319,12 @@ export const api = {
   deleteNote: (id: number) =>
     request<void>(`/api/notes/${id}`, { method: "DELETE" }),
   /** GET /api/notes/export → CSV blob（带 BOM，Excel 直开）。 */
-  exportNotes: async (f?: { collectionId?: string; keyword?: string; source?: string; ids?: number[] } & NoteRangeFilter): Promise<Blob> => {
+  exportNotes: async (f?: { collectionId?: string; keyword?: string; source?: string; tag?: string; ids?: number[] } & NoteRangeFilter): Promise<Blob> => {
     const p = new URLSearchParams();
     if (f?.collectionId) p.set("collectionId", f.collectionId);
     if (f?.keyword) p.set("keyword", f.keyword);
     if (f?.source) p.set("source", f.source);
+    if (f?.tag) p.set("tag", f.tag);
     if (f?.type) p.set("type", f.type);
     if (f?.minLikes) p.set("minLikes", String(f.minLikes));
     if (f?.withinDays) p.set("withinDays", String(f.withinDays));
