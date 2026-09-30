@@ -158,6 +158,8 @@ export interface CollectedNote {
   collects: number;
   comments: number;
   shares: number;
+  /** 是否收过详情页数据；false 时收藏/评论/分享的 0 只是"未采到"。 */
+  hasDetail?: boolean;
   tags: string[];
   source: CollectSource;
   sourceUrl: string;

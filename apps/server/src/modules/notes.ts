@@ -1,14 +1,65 @@
-import { and, asc, eq, gt, lt, ilike, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, lt, ilike, isNull, or, sql } from "drizzle-orm";
 import type { NoteSortField, NoteSortDirection } from "@v2media/shared";
 import { Hono } from "hono";
 
 import type { Deps } from "../context";
-import { collectedNotes } from "../db/schema";
+import { collectedNotes, collections } from "../db/schema";
 
 const PAGE = 30;
+const MAX_BATCH = 200;
 const withAvatar = <T extends { rawJson: unknown }>(row: T) => ({
   ...row, authorAvatar: (row.rawJson as { authorAvatar?: string } | null)?.authorAvatar ?? "",
 });
+
+type Query = (name: string) => string | undefined;
+
+/** 列表与导出共用的筛选：keyword / source / tag / collectionId / type / minLikes / withinDays / ids。 */
+function filterConds(userId: number, q: Query, now: Date) {
+  const conds = [eq(collectedNotes.userId, userId)];
+  const keyword = (q("keyword") ?? "").trim();
+  const source = (q("source") ?? "").trim();
+  const tag = (q("tag") ?? "").trim();
+  if (keyword) {
+    const like = `%${keyword}%`;
+    conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
+  }
+  if (source) conds.push(eq(collectedNotes.source, source));
+  // collectionId：数字=该库；字面量 "none"=只看未分组的
+  const collectionId = (q("collectionId") ?? "").trim();
+  if (collectionId === "none") {
+    conds.push(sql`${collectedNotes.collectionId} IS NULL`);
+  } else if (collectionId) {
+    const n = Number(collectionId);
+    if (!Number.isInteger(n)) return { error: "bad collectionId" } as const;
+    conds.push(eq(collectedNotes.collectionId, n));
+  }
+  if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
+  const type = (q("type") ?? "").trim();
+  if (type) {
+    if (type !== "image" && type !== "video") return { error: "bad type" } as const;
+    conds.push(eq(collectedNotes.type, type));
+  }
+  const minLikes = (q("minLikes") ?? "").trim();
+  if (minLikes) {
+    const n = Number(minLikes);
+    if (!Number.isSafeInteger(n) || n < 0) return { error: "bad minLikes" } as const;
+    conds.push(gte(collectedNotes.likes, n));
+  }
+  // 发布时间在最近 N 天内；没采到发布时间的不匹配（不能拿采集时间代替）
+  const withinDays = (q("withinDays") ?? "").trim();
+  if (withinDays) {
+    const n = Number(withinDays);
+    if (!Number.isInteger(n) || n < 1 || n > 3650) return { error: "bad withinDays" } as const;
+    conds.push(gte(collectedNotes.publishedAt, new Date(now.getTime() - n * 86_400_000)));
+  }
+  const ids = (q("ids") ?? "").trim();
+  if (ids) {
+    const list = ids.split(",").map(Number);
+    if (list.length > MAX_BATCH || !list.every((n) => Number.isSafeInteger(n) && n > 0)) return { error: "bad ids" } as const;
+    conds.push(inArray(collectedNotes.id, list));
+  }
+  return { conds } as const;
+}
 
 export function notesModule(deps: Deps) {
   const app = new Hono<{ Variables: { userId: number } }>();
@@ -21,7 +72,9 @@ export function notesModule(deps: Deps) {
     const isTime = sort === "savedAt" || sort === "publishedAt";
     // Match JavaScript Date's millisecond precision for stable cursor equality.
     const column = isTime ? sql`floor(extract(epoch from ${collectedNotes[sort]}) * 1000)` : sql`${collectedNotes[sort]}`;
-    const conds = [eq(collectedNotes.userId, userId)];
+    const filtered = filterConds(userId, (n) => c.req.query(n), deps.now());
+    if ("error" in filtered) return c.json({ error: filtered.error }, 400);
+    const conds = filtered.conds;
     const rawCursor = c.req.query("cursor");
     if (rawCursor) {
       try {
@@ -36,24 +89,6 @@ export function notesModule(deps: Deps) {
         )!);
       } catch { return c.json({ error: "bad cursor" }, 400); }
     }
-    const keyword = (c.req.query("keyword") ?? "").trim();
-    const source = (c.req.query("source") ?? "").trim();
-    const tag = (c.req.query("tag") ?? "").trim();
-    if (keyword) {
-      const like = `%${keyword}%`;
-      conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
-    }
-    if (source) conds.push(eq(collectedNotes.source, source));
-    // collectionId：数字=该库；字面量 "none"=只看未分组的
-    const collectionId = (c.req.query("collectionId") ?? "").trim();
-    if (collectionId === "none") {
-      conds.push(sql`${collectedNotes.collectionId} IS NULL`);
-    } else if (collectionId) {
-      const n = Number(collectionId);
-      if (!Number.isInteger(n)) return c.json({ error: "bad collectionId" }, 400);
-      conds.push(eq(collectedNotes.collectionId, n));
-    }
-    if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
     const rows = await deps.db
       .select()
       .from(collectedNotes)
@@ -71,24 +106,10 @@ export function notesModule(deps: Deps) {
    *  与列表同一套筛选：collectionId + keyword + source + tag。 */
   app.get("/export", async (c) => {
     const userId = c.get("userId");
-    const keyword = (c.req.query("keyword") ?? "").trim();
-    const source = (c.req.query("source") ?? "").trim();
-    const tag = (c.req.query("tag") ?? "").trim();
     const collectionId = (c.req.query("collectionId") ?? "").trim();
-    const conds = [eq(collectedNotes.userId, userId)];
-    if (keyword) {
-      const like = `%${keyword}%`;
-      conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
-    }
-    if (source) conds.push(eq(collectedNotes.source, source));
-    if (collectionId === "none") {
-      conds.push(sql`${collectedNotes.collectionId} IS NULL`);
-    } else if (collectionId) {
-      const n = Number(collectionId);
-      if (!Number.isInteger(n)) return c.json({ error: "bad collectionId" }, 400);
-      conds.push(eq(collectedNotes.collectionId, n));
-    }
-    if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
+    const filtered = filterConds(userId, (n) => c.req.query(n), deps.now());
+    if ("error" in filtered) return c.json({ error: filtered.error }, 400);
+    const conds = filtered.conds;
     const rows = await deps.db
       .select({
         title: collectedNotes.title,
@@ -163,6 +184,34 @@ export function notesModule(deps: Deps) {
         "Content-Disposition": `attachment; filename="${name}"`,
       },
     });
+  });
+
+  /** 批量操作：move（移入库，collectionId=null 即移出）/ delete。只作用于当前用户的笔记。 */
+  app.post("/batch", async (c) => {
+    const userId = c.get("userId");
+    const body = await c.req.json().catch(() => null) as
+      | { action?: string; ids?: unknown; collectionId?: number | null } | null;
+    const ids = body?.ids;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_BATCH
+      || !ids.every((n) => Number.isSafeInteger(n) && n > 0)) return c.json({ error: "bad ids" }, 400);
+    const scope = and(eq(collectedNotes.userId, userId), inArray(collectedNotes.id, ids as number[]));
+    if (body?.action === "delete") {
+      const gone = await deps.db.delete(collectedNotes).where(scope).returning({ id: collectedNotes.id });
+      return c.json({ affected: gone.length });
+    }
+    if (body?.action === "move") {
+      const target = body.collectionId ?? null;
+      if (target !== null) {
+        if (!Number.isSafeInteger(target)) return c.json({ error: "bad collectionId" }, 400);
+        const [col] = await deps.db.select({ id: collections.id }).from(collections)
+          .where(and(eq(collections.id, target), eq(collections.userId, userId))).limit(1);
+        if (!col) return c.json({ error: "collection not found" }, 404);
+      }
+      const moved = await deps.db.update(collectedNotes).set({ collectionId: target })
+        .where(scope).returning({ id: collectedNotes.id });
+      return c.json({ affected: moved.length });
+    }
+    return c.json({ error: "bad action" }, 400);
   });
 
   app.get("/:id", async (c) => {

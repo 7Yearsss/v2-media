@@ -4,18 +4,14 @@ import {
   ArrowUp,
   ArrowUpDown,
   FolderOpen,
-  Heart,
-  ImageOff,
   LayoutGrid,
   List,
   Pencil,
   Plus,
   Search,
-  SendToBack,
-  Star,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   useInfiniteQuery,
@@ -32,13 +28,15 @@ import {
   type MorphingSearchItem,
 } from "@/components/motion/morphing-search";
 import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
-import { TiltCard } from "@/components/motion/tilt-card";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { LibraryNoteDetail } from "@/components/app/library-note-detail";
-import { NoteAvatar } from "@/components/app/note-avatar";
+import { LibraryBulkBar } from "@/components/app/library-bulk-bar";
+import { LibraryFilterBar, rangeFilterActive } from "@/components/app/library-filter-bar";
+import { LibraryNoteCard } from "@/components/app/library-note-card";
 import { LibraryNoteRow, NOTE_ROW_COLUMNS } from "@/components/app/library-note-row";
-import { api, mediaUrl } from "@/lib/api";
+import { api, type NoteRangeFilter } from "@/lib/api";
 import { formatCount } from "@/lib/format";
+import { hotThreshold } from "@/lib/note-insight";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
 
@@ -49,100 +47,6 @@ const SOURCE_TABS = [
   { value: "collect_page", label: "收藏" },
   { value: "like_page", label: "点赞" },
 ] as const;
-
-function NoteCard({
-  note,
-  onOpen,
-  onEnqueue,
-  enqueuing,
-  selected,
-}: {
-  note: CollectedNote;
-  onOpen: () => void;
-  onEnqueue: () => void;
-  enqueuing: boolean;
-  selected: boolean;
-}) {
-  const cover = mediaUrl(note.cover || note.images[0]?.url);
-  return (
-    <TiltCard max={6} glare={false} className="h-full">
-      <div
-        role="button"
-        tabIndex={0}
-        aria-pressed={selected}
-        onClick={onOpen}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onOpen();
-          }
-        }}
-        className={cn("group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", selected ? "border-primary ring-2 ring-primary/15" : "border-border hover:border-foreground/20")}
-      >
-        <div className="relative aspect-[4/3] w-full overflow-hidden bg-muted">
-          {cover ? (
-            <img
-              src={cover}
-              alt={note.title}
-              loading="lazy"
-              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-            />
-          ) : (
-            <div className="grid h-full w-full place-items-center text-muted-foreground">
-              <ImageOff className="size-6" />
-            </div>
-          )}
-          {note.type === "video" ? (
-            <span className="absolute left-2 top-2 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white">
-              视频
-            </span>
-          ) : null}
-          <div className="absolute inset-x-0 bottom-0 flex justify-end bg-gradient-to-t from-black/45 to-transparent p-2 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={enqueuing}
-              onClick={(e) => {
-                e.stopPropagation();
-                onEnqueue();
-              }}
-              className="pointer-events-auto bg-white/90 text-neutral-900 hover:bg-white"
-            >
-              <SendToBack className="size-3.5" />
-              送入草稿
-            </Button>
-          </div>
-        </div>
-        <div className="flex flex-1 flex-col gap-2 p-3">
-          <p className="line-clamp-2 text-sm font-medium leading-5 text-foreground">
-            {note.title || "（无标题）"}
-          </p>
-          <div className="mt-auto flex items-center gap-1.5">
-            {note.authorName ? (
-              <>
-                <NoteAvatar name={note.authorName} src={note.authorAvatar} className="size-4 text-[9px]" />
-                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                  {note.authorName}
-                </span>
-              </>
-            ) : (
-              <span className="min-w-0 flex-1" />
-            )}
-            <span className="inline-flex items-center gap-0.5 text-[11px] tabular-nums text-muted-foreground">
-              <Heart className="size-3" />
-              {formatCount(note.likes)}
-            </span>
-            <span className="inline-flex items-center gap-0.5 text-[11px] tabular-nums text-muted-foreground">
-              <Star className="size-3" />
-              {formatCount(note.collects)}
-            </span>
-          </div>
-        </div>
-      </div>
-    </TiltCard>
-  );
-}
 
 export default function LibraryPage() {
   const toast = useToast();
@@ -156,6 +60,9 @@ export default function LibraryPage() {
   const [newColName, setNewColName] = useState("");
   const [showNewCol, setShowNewCol] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [range, setRange] = useState<NoteRangeFilter>({});
+  const [checked, setChecked] = useState<Set<number>>(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [sort, setSort] = useState<NoteSortField>("id");
   const [direction, setDirection] = useState<NoteSortDirection>("asc");
   const sortBy = (field: NoteSortField) => {
@@ -180,6 +87,7 @@ export default function LibraryPage() {
         collectionId: collection || undefined,
         keyword: keyword || undefined,
         source: source || undefined,
+        ...range,
       });
       const colName =
         collection === "none"
@@ -234,9 +142,9 @@ export default function LibraryPage() {
   });
 
   const notesQuery = useInfiniteQuery({
-    queryKey: ["notes", keyword, source, collection, sort, direction],
+    queryKey: ["notes", keyword, source, collection, sort, direction, range],
     queryFn: ({ pageParam }) =>
-      api.notes({ keyword, source, collectionId: collection || undefined, cursor: pageParam, sort, direction }),
+      api.notes({ keyword, source, collectionId: collection || undefined, cursor: pageParam, sort, direction, ...range }),
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.nextCursor,
   });
@@ -245,6 +153,89 @@ export default function LibraryPage() {
     () => notesQuery.data?.pages.flatMap((p) => p.items) ?? [],
     [notesQuery.data],
   );
+
+  const hotAt = useMemo(() => hotThreshold(items), [items]);
+
+  // 筛选/排序变了，可见列表就变了：清掉勾选，避免对看不见的笔记做批量操作
+  useEffect(() => setChecked(new Set()), [keyword, source, collection, sort, direction, range]);
+  useEffect(() => {
+    if (checked.size === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (e.key === "Escape" && !el?.closest("input, textarea, select")) setChecked(new Set());
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [checked.size]);
+  const toggleChecked = useCallback((id: number) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }, []);
+
+  const ids = () => [...checked];
+  const afterBulk = () => {
+    setChecked(new Set());
+    void queryClient.invalidateQueries({ queryKey: ["notes"] });
+    void queryClient.invalidateQueries({ queryKey: ["collections"] });
+    void queryClient.invalidateQueries({ queryKey: ["overview"] });
+  };
+  const runBulk = async (label: string, job: () => Promise<void>) => {
+    if (bulkBusy) return;
+    setBulkBusy(true);
+    try {
+      await job();
+    } catch (e) {
+      toast.error(`${label}失败`, e instanceof Error ? e.message : undefined);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+  const bulkMove = (collectionId: number | null) =>
+    runBulk("移入库", async () => {
+      const { affected } = await api.batchNotes({ action: "move", ids: ids(), collectionId });
+      toast.success(`已${collectionId === null ? "移出库" : "移入库"}`, `${affected} 条笔记`);
+      afterBulk();
+    });
+  const bulkDelete = () => {
+    if (!window.confirm(`删除选中的 ${checked.size} 条笔记？此操作不可恢复。`)) return;
+    return runBulk("删除", async () => {
+      const list = ids();
+      const { affected } = await api.batchNotes({ action: "delete", ids: list });
+      if (selected !== null && list.includes(selected)) setSelected(null);
+      toast.success("已删除", `${affected} 条笔记`);
+      afterBulk();
+    });
+  };
+  const bulkDraft = () =>
+    runBulk("送入草稿", async () => {
+      let ok = 0;
+      for (const id of ids()) {
+        try {
+          await api.createDraft({ collectedNoteId: id });
+          ok++;
+        } catch { /* 逐条统计，单条失败不中断其余 */ }
+      }
+      void queryClient.invalidateQueries({ queryKey: ["drafts"] });
+      const failed = checked.size - ok;
+      toast.toast({
+        title: failed ? `已送入 ${ok} 条草稿，${failed} 条失败` : `已送入草稿工坊 ${ok} 条`,
+        status: failed ? "error" : "success",
+        action: { label: "打开", onClick: () => navigate("/drafts") },
+      });
+      if (ok > 0) setChecked(new Set());
+    });
+  const bulkExport = () =>
+    runBulk("导出", async () => {
+      const blob = await api.exportNotes({ ids: ids() });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `v2media-已选${checked.size}条-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
 
   const enqueue = useMutation({
     mutationFn: (noteId: number) =>
@@ -279,7 +270,7 @@ export default function LibraryPage() {
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
-      <div className={cn("min-h-0 min-w-0 flex-1 flex-col", selected !== null ? "hidden lg:flex" : "flex")}>
+      <div className={cn("relative min-h-0 min-w-0 flex-1 flex-col", selected !== null ? "hidden lg:flex" : "flex")}>
         <div className="shrink-0 space-y-4 px-6 pt-6">
           <div className="flex flex-wrap items-center gap-3">
             <div>
@@ -328,6 +319,8 @@ export default function LibraryPage() {
           </div>
           </div>
           </div>
+
+          <LibraryFilterBar value={range} onChange={setRange} />
 
           {/* 采集库筛选：插件「当前采集库」把一批笔记归组 */}
           <div className="flex flex-wrap items-center gap-2">
@@ -450,10 +443,10 @@ export default function LibraryPage() {
             />
           ) : items.length === 0 ? (
             <EmptyState
-              title={keyword ? "没有匹配的笔记" : "内容库还是空的"}
+              title={keyword || rangeFilterActive(range) ? "没有匹配的笔记" : "内容库还是空的"}
               description={
-                keyword
-                  ? "换个关键词试试"
+                keyword || rangeFilterActive(range)
+                  ? "换个关键词或放宽筛选条件试试"
                   : "安装并授权浏览器插件后，在小红书页面浏览即可自动采集"
               }
               className="h-full"
@@ -473,15 +466,20 @@ export default function LibraryPage() {
               key={`${view}-${sort}-${direction}`}
               items={items}
               getItemKey={(n) => n.id}
-              renderItem={(n) => view === "list" ? <LibraryNoteRow note={n} selected={selected === n.id} onOpen={() => setSelected(n.id)} onEnqueue={() => enqueue.mutate(n.id)} enqueuing={enqueue.isPending} /> : (
-                <NoteCard
-                  note={n}
-                  selected={selected === n.id}
-                  onOpen={() => setSelected(n.id)}
-                  onEnqueue={() => enqueue.mutate(n.id)}
-                  enqueuing={enqueue.isPending}
-                />
-              )}
+              renderItem={(n) => {
+                const props = {
+                  note: n,
+                  selected: selected === n.id,
+                  checked: checked.has(n.id),
+                  selecting: checked.size > 0,
+                  onToggle: () => toggleChecked(n.id),
+                  onOpen: () => setSelected(n.id),
+                  onEnqueue: () => enqueue.mutate(n.id),
+                  enqueuing: enqueue.isPending,
+                  hotAt,
+                };
+                return view === "list" ? <LibraryNoteRow {...props} /> : <LibraryNoteCard {...props} />;
+              }}
               estimateSize={(n) => {
                 if (view === "list") return 80;
                 const img = n.images[0];
@@ -525,6 +523,22 @@ export default function LibraryPage() {
           )}
         </div>
 
+        {checked.size > 0 ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-5 z-20 flex justify-center px-6">
+            <LibraryBulkBar
+              count={checked.size}
+              totalShown={items.length}
+              collections={collections}
+              busy={bulkBusy}
+              onSelectAll={() => setChecked(new Set(items.map((n) => n.id)))}
+              onClear={() => setChecked(new Set())}
+              onMove={(id) => void bulkMove(id)}
+              onDraft={() => void bulkDraft()}
+              onExport={() => void bulkExport()}
+              onDelete={() => void bulkDelete()}
+            />
+          </div>
+        ) : null}
       </div>
       {selected !== null ? (
         <LibraryNoteDetail key={selected} noteId={selected} onClose={closeDetail} />
