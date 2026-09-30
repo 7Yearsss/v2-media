@@ -53,6 +53,16 @@ export interface NoteComment {
   userId?: string;
   content: string;
   likes: number;
+  /** 评论发布时间（毫秒时间戳）。 */
+  createdAt?: number;
+  /** 评论者 IP 属地。 */
+  ipLocation?: string;
+  /** 评论附带的图片地址。 */
+  pictures?: string[];
+  /** 是否笔记作者本人的评论。 */
+  isAuthor?: boolean;
+  /** 站点显示的回复总数（已采的 subComments 可能少于它）。 */
+  subCommentCount?: number;
   subComments?: NoteComment[];
 }
 

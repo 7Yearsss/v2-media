@@ -133,7 +133,15 @@ const heartbeatSchema = z.object({
 });
 
 // 解析器产出 userName（packages/shared/xhs-parse），兼容旧的 nickname 字段名
+const commentExtras = {
+  createdAt: z.number().optional(),
+  ipLocation: z.string().optional(),
+  pictures: z.array(z.string()).optional(),
+  isAuthor: z.boolean().optional(),
+  subCommentCount: z.number().optional(),
+};
 const commentSchema = z.object({
+  ...commentExtras,
   commentId: z.string().default(""),
   userName: z.string().default(""),
   nickname: z.string().default(""),
@@ -145,6 +153,7 @@ const commentSchema = z.object({
     commentId: z.string().default(""), userName: z.string().default(""),
     userId: z.string().optional(), avatar: z.string().default(""),
     content: z.string(), likes: z.number().default(0),
+    ...commentExtras,
   })).optional(),
 });
 
@@ -317,6 +326,11 @@ export function extModule(deps: Deps) {
           avatar: cm.avatar,
           content: cm.content,
           likes: cm.likes,
+          createdAt: cm.createdAt,
+          ipLocation: cm.ipLocation,
+          pictures: cm.pictures,
+          isAuthor: cm.isAuthor,
+          subCommentCount: cm.subCommentCount,
           subComments: cm.subComments ?? [],
         })),
         source: p.source,

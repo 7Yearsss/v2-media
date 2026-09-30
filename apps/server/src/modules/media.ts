@@ -22,14 +22,20 @@ export function mediaModule(deps: Deps) {
     if (target.protocol !== "https:" || !MEDIA_SRC_ALLOWED.test(target.hostname))
       return c.json({ error: "host not allowed" }, 403);
     // 流式透传（不整包缓冲）；fetchAllowed 内校验每次重定向目标
-    const res = await fetchAllowed(target.toString());
+    // Range 透传：未转存到 R2 的视频走代理时也能拖动进度条
+    const range = c.req.header("range");
+    const res = await fetchAllowed(target.toString(), 3, range);
     if (!res || !res.ok) return c.json({ error: "fetch failed" }, 502);
-    return new Response(res.body, {
-      headers: {
-        "Content-Type": res.headers.get("content-type") ?? "image/jpeg",
-        "Cache-Control": "public, max-age=86400",
-      },
-    });
+    const headers: Record<string, string> = {
+      "Content-Type": res.headers.get("content-type") ?? "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+      "Accept-Ranges": "bytes",
+    };
+    for (const h of ["content-range", "content-length"]) {
+      const v = res.headers.get(h);
+      if (v) headers[h] = v;
+    }
+    return new Response(res.body, { status: res.status === 206 ? 206 : 200, headers });
   });
 
   // R2 转存对象：GET /api/media/objects/(img|vid)/<64-hex>（限定前缀+哈希形态）

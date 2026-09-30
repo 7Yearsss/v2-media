@@ -22,6 +22,7 @@ import type {
 import { ApprovalCard } from "@/components/agents/approval-card";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
+import { Input } from "@/components/motion/input";
 import { Drawer } from "@/components/motion/drawer";
 import { RadioGroup, RadioGroupItem } from "@/components/motion/radio";
 import {
@@ -175,12 +176,7 @@ function NewJobDrawer({
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">
               定时发布（可选）
             </p>
-            <input
-              type="datetime-local"
-              value={schedule}
-              onChange={(e) => setSchedule(e.target.value)}
-              className="h-10 w-full rounded-xl border border-input bg-card px-3 text-sm text-foreground outline-none focus:border-ring"
-            />
+            <Input type="datetime-local" value={schedule} onChange={setSchedule} />
             <p className="mt-1 text-[11px] text-muted-foreground">
               留空则进入队列后立即执行
             </p>

@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import type { NoteRangeFilter } from "@/lib/api";
+import { FilterSelect } from "@/components/app/filter-select";
 import { formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -10,9 +11,6 @@ const TYPE_OPTIONS = [
   { value: "image", label: "图文" },
   { value: "video", label: "视频" },
 ] as const;
-
-const selectCls =
-  "h-8 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 /** 已选范围条件（传给 api.notes 的形状）；空值 = 不限。 */
 export function rangeFilterActive(f: NoteRangeFilter): boolean {
@@ -33,37 +31,24 @@ export function LibraryFilterBar({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <select
-        aria-label="笔记类型"
+      <FilterSelect
         value={value.type ?? ""}
-        onChange={(e) => onChange({ ...value, type: (e.target.value || undefined) as NoteRangeFilter["type"] })}
-        className={selectCls}
-      >
-        {TYPE_OPTIONS.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
-      <select
-        aria-label="最低点赞"
-        value={value.minLikes ?? 0}
-        onChange={(e) => onChange({ ...value, minLikes: Number(e.target.value) || undefined })}
-        className={selectCls}
-      >
-        {LIKE_OPTIONS.map((n) => (
-          <option key={n} value={n}>{n ? `点赞 ≥ ${formatCount(n)}` : "点赞不限"}</option>
-        ))}
-      </select>
-      <select
-        aria-label="发布时间"
-        value={value.withinDays ?? 0}
-        onChange={(e) => onChange({ ...value, withinDays: Number(e.target.value) || undefined })}
-        title="按原笔记发布时间；没采到发布时间的笔记不会匹配"
-        className={selectCls}
-      >
-        {DAYS_OPTIONS.map((n) => (
-          <option key={n} value={n}>{n ? `近 ${n} 天发布` : "发布时间不限"}</option>
-        ))}
-      </select>
+        onChange={(v) => onChange({ ...value, type: (v || undefined) as NoteRangeFilter["type"] })}
+        options={TYPE_OPTIONS}
+        className="w-28"
+      />
+      <FilterSelect
+        value={String(value.minLikes ?? 0)}
+        onChange={(v) => onChange({ ...value, minLikes: Number(v) || undefined })}
+        options={LIKE_OPTIONS.map((n) => ({ value: String(n), label: n ? `点赞 ≥ ${formatCount(n)}` : "点赞不限" }))}
+        className="w-32"
+      />
+      <FilterSelect
+        value={String(value.withinDays ?? 0)}
+        onChange={(v) => onChange({ ...value, withinDays: Number(v) || undefined })}
+        options={DAYS_OPTIONS.map((n) => ({ value: String(n), label: n ? `近 ${n} 天发布` : "发布时间不限" }))}
+        className="w-36"
+      />
       {chips.map((c) => (
         <button
           key={c.key}

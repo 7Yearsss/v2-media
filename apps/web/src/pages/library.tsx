@@ -6,14 +6,12 @@ import {
   FolderOpen,
   LayoutGrid,
   List,
-  Pencil,
-  Plus,
   Search,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -21,6 +19,10 @@ import {
 } from "@tanstack/react-query";
 import type { CollectedNote, NoteSortField, NoteSortDirection } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
+import { Input } from "@/components/motion/input";
+import { CollectionPicker } from "@/components/app/collection-picker";
+import { useCollectionPrefs } from "@/lib/hooks/use-collection-prefs";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { InfiniteMasonry } from "@/components/motion/infinite-masonry";
 import { Loader } from "@/components/motion/loader";
 import {
@@ -30,6 +32,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { LibraryNoteDetail } from "@/components/app/library-note-detail";
+import { FilterSelect } from "@/components/app/filter-select";
 import { LibraryBulkBar } from "@/components/app/library-bulk-bar";
 import { LibraryFilterBar, rangeFilterActive } from "@/components/app/library-filter-bar";
 import { LibrarySummary } from "@/components/app/library-summary";
@@ -40,6 +43,25 @@ import { formatCount } from "@/lib/format";
 import { hotThreshold } from "@/lib/note-insight";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
+
+const SORT_OPTIONS = [
+  { value: "id-asc", label: "默认顺序" },
+  ...(
+    [
+      { field: "likes", label: "点赞" },
+      { field: "collects", label: "收藏" },
+      { field: "comments", label: "评论" },
+      { field: "savedAt", label: "采集时间" },
+      { field: "publishedAt", label: "原笔记发布" },
+    ] as const
+  ).flatMap(({ field, label }) => {
+    const time = field === "savedAt" || field === "publishedAt";
+    return [
+      { value: `${field}-desc`, label: `${label}${time ? "从新到旧" : "从高到低"}` },
+      { value: `${field}-asc`, label: `${label}${time ? "从旧到新" : "从低到高"}` },
+    ];
+  }),
+];
 
 const SOURCE_TABS = [
   { value: "", label: "全部" },
@@ -58,13 +80,14 @@ export default function LibraryPage() {
   const [collection, setCollection] = useState(""); // "" | "none" | id 字符串
   const [selected, setSelected] = useState<number | null>(null);
   const closeDetail = useCallback(() => setSelected(null), []);
-  const [newColName, setNewColName] = useState("");
-  const [showNewCol, setShowNewCol] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [tag, setTag] = useState("");
   const [range, setRange] = useState<NoteRangeFilter>({});
   const [checked, setChecked] = useState<Set<number>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [renaming, setRenaming] = useState<{ id: number; name: string } | null>(null);
+  const [deletingCol, setDeletingCol] = useState<{ id: number; name: string; noteCount: number } | null>(null);
   const [sort, setSort] = useState<NoteSortField>("id");
   const [direction, setDirection] = useState<NoteSortDirection>("asc");
   const sortBy = (field: NoteSortField) => {
@@ -118,8 +141,6 @@ export default function LibraryPage() {
     mutationFn: (name: string) => api.createCollection(name),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["collections"] });
-      setNewColName("");
-      setShowNewCol(false);
     },
     onError: (err) =>
       toast.error("新建库失败", err instanceof Error ? err.message : undefined),
@@ -155,7 +176,24 @@ export default function LibraryPage() {
   const summaryQuery = useQuery({
     queryKey: ["notes-summary", keyword, source, collection, range, tag],
     queryFn: () => api.notesSummary({ keyword, source, tag, collectionId: collection || undefined, ...range }),
+    // 切筛选时沿用上一份数据，摘要条不闪没
+    placeholderData: keepPreviousData,
   });
+  // 选中话题后 summary 只剩该话题的共现标签；另取一份不带话题的，保证其它话题仍可切换
+  const tagsQuery = useQuery({
+    queryKey: ["notes-summary", keyword, source, collection, range, ""],
+    queryFn: () => api.notesSummary({ keyword, source, collectionId: collection || undefined, ...range }),
+    enabled: tag !== "",
+    placeholderData: keepPreviousData,
+  });
+  const summary = summaryQuery.data
+    ? { ...summaryQuery.data, topTags: (tag ? tagsQuery.data?.topTags : undefined) ?? summaryQuery.data.topTags }
+    : undefined;
+  const prefs = useCollectionPrefs();
+  const pickCollection = (id: number) => {
+    setCollection(String(id));
+    prefs.touch(id);
+  };
 
   const items = useMemo(
     () => notesQuery.data?.pages.flatMap((p) => p.items) ?? [],
@@ -208,8 +246,14 @@ export default function LibraryPage() {
       toast.success(`已${collectionId === null ? "移出库" : "移入库"}`, `${affected} 条笔记`);
       afterBulk();
     });
+  const submitRename = () => {
+    const name = renaming?.name.trim();
+    const col = collections.find((c) => c.id === renaming?.id);
+    if (renaming && name && col && name !== col.name) renameCol.mutate({ id: renaming.id, name });
+    setRenaming(null);
+  };
   const bulkDelete = () => {
-    if (!window.confirm(`删除选中的 ${checked.size} 条笔记？此操作不可恢复。`)) return;
+    setConfirmBulkDelete(false);
     return runBulk("删除", async () => {
       const list = ids();
       const { affected } = await api.batchNotes({ action: "delete", ids: list });
@@ -313,15 +357,17 @@ export default function LibraryPage() {
             </TabsList>
           </Tabs>
           <div className="flex items-center gap-2">
-          <select aria-label="笔记排序" value={`${sort}-${direction}`} onChange={event => {
-            const [field, order] = event.target.value.split("-"); setSort(field as NoteSortField); setDirection(order as NoteSortDirection);
-          }} className="h-9 max-w-40 rounded-lg border border-border bg-background px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <option value="id-asc">默认顺序</option>
-            {([{ field: "likes", label: "点赞" }, { field: "collects", label: "收藏" }, { field: "comments", label: "评论" }, { field: "savedAt", label: "采集时间" }, { field: "publishedAt", label: "原笔记发布" }] as const).flatMap(({field,label}) => [
-              <option key={`${field}-desc`} value={`${field}-desc`}>{label}{field === "savedAt" || field === "publishedAt" ? "从新到旧" : "从高到低"}</option>,
-              <option key={`${field}-asc`} value={`${field}-asc`}>{label}{field === "savedAt" || field === "publishedAt" ? "从旧到新" : "从低到高"}</option>,
-            ])}
-          </select>
+          <FilterSelect
+            value={`${sort}-${direction}`}
+            onChange={(v) => {
+              const [field, order] = v.split("-");
+              setSort(field as NoteSortField);
+              setDirection(order as NoteSortDirection);
+            }}
+            options={SORT_OPTIONS}
+            className="w-36"
+            panelClassName="right-0 left-auto w-44"
+          />
           <div role="group" aria-label="内容库视图" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5">
             {([{ value: "grid", label: "网格", icon: LayoutGrid }, { value: "list", label: "列表", icon: List }] as const).map(({ value, label, icon: Icon }) =>
               <button key={value} type="button" aria-pressed={view === value} onClick={() => changeView(value)} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Icon className="size-3.5" />{label}</button>)}
@@ -330,7 +376,7 @@ export default function LibraryPage() {
           </div>
 
           <LibraryFilterBar value={range} onChange={setRange} />
-          {summaryQuery.data ? <LibrarySummary summary={summaryQuery.data} activeTag={tag} onTag={setTag} /> : null}
+          {summary ? <LibrarySummary summary={summary} activeTag={tag} onTag={setTag} /> : null}
 
           {/* 采集库筛选：插件「当前采集库」把一批笔记归组 */}
           <div className="flex flex-wrap items-center gap-2">
@@ -345,7 +391,7 @@ export default function LibraryPage() {
                 key={t.v}
                 onClick={() => setCollection(t.v)}
                 className={cn(
-                  "rounded-full px-3 py-1 text-xs transition-colors",
+                  "h-10 rounded-xl px-4 text-sm transition-colors",
                   collection === t.v
                     ? "bg-primary text-primary-foreground"
                     : "bg-muted text-muted-foreground hover:bg-muted/70",
@@ -354,81 +400,18 @@ export default function LibraryPage() {
                 {t.label}
               </button>
             ))}
-            {collections.map((col) => (
-              <span key={col.id} className="inline-flex items-center">
-                <button
-                  onClick={() => setCollection(String(col.id))}
-                  className={cn(
-                    "rounded-full px-3 py-1 text-xs transition-colors",
-                    collection === String(col.id)
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-muted text-muted-foreground hover:bg-muted/70",
-                  )}
-                >
-                  {col.name}
-                  <span className="ml-1 tabular-nums opacity-70">{col.noteCount}</span>
-                </button>
-                {collection === String(col.id) ? (
-                  <>
-                    <button
-                      title="改名"
-                      className="ml-1 text-muted-foreground hover:text-foreground"
-                      onClick={() => {
-                        const name = window.prompt("库名", col.name)?.trim();
-                        if (name && name !== col.name)
-                          renameCol.mutate({ id: col.id, name });
-                      }}
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
-                    <button
-                      title="删除库（笔记回到未分组）"
-                      className="ml-0.5 text-muted-foreground hover:text-destructive"
-                      onClick={() => {
-                        if (window.confirm(`删除库「${col.name}」？其中 ${col.noteCount} 条笔记会回到未分组`))
-                          deleteCol.mutate(col.id);
-                      }}
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  </>
-                ) : null}
-              </span>
-            ))}
-            {showNewCol ? (
-              <span className="inline-flex items-center gap-1">
-                <input
-                  autoFocus
-                  value={newColName}
-                  onChange={(e) => setNewColName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && newColName.trim())
-                      createCol.mutate(newColName.trim());
-                    if (e.key === "Escape") setShowNewCol(false);
-                  }}
-                  placeholder="库名，如 健身"
-                  maxLength={32}
-                  className="h-7 w-28 rounded-full border border-border bg-background px-3 text-xs outline-none focus:ring-1 focus:ring-ring"
-                />
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="h-7 rounded-full px-3 text-xs"
-                  disabled={!newColName.trim() || createCol.isPending}
-                  onClick={() => createCol.mutate(newColName.trim())}
-                >
-                  新建
-                </Button>
-              </span>
-            ) : (
-              <button
-                onClick={() => setShowNewCol(true)}
-                className="inline-flex items-center gap-1 rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
-              >
-                <Plus className="size-3" />
-                新建库
-              </button>
-            )}
+            <CollectionPicker
+              collections={collections}
+              value={collection}
+              pinned={prefs.pinned}
+              recent={prefs.recent}
+              creating={createCol.isPending}
+              onPick={pickCollection}
+              onTogglePin={prefs.togglePin}
+              onRename={(c) => setRenaming({ id: c.id, name: c.name })}
+              onDelete={(c) => setDeletingCol({ id: c.id, name: c.name, noteCount: c.noteCount })}
+              onCreate={(name) => createCol.mutate(name)}
+            />
             <Button
               variant="outline"
               size="sm"
@@ -553,6 +536,47 @@ export default function LibraryPage() {
       {selected !== null ? (
         <LibraryNoteDetail key={selected} noteId={selected} onClose={closeDetail} />
       ) : null}
+      <ConfirmDialog
+        open={confirmBulkDelete}
+        onOpenChange={setConfirmBulkDelete}
+        title={`删除选中的 ${checked.size} 条笔记？`}
+        description="此操作不可恢复。"
+        confirmLabel="删除"
+        destructive
+        onConfirm={bulkDelete}
+      />
+      <ConfirmDialog
+        open={deletingCol !== null}
+        onOpenChange={(o) => !o && setDeletingCol(null)}
+        title={`删除库「${deletingCol?.name ?? ""}」？`}
+        description={`其中 ${deletingCol?.noteCount ?? 0} 条笔记会回到未分组。`}
+        confirmLabel="删除"
+        destructive
+        onConfirm={() => {
+          if (deletingCol) deleteCol.mutate(deletingCol.id);
+          setDeletingCol(null);
+        }}
+      />
+      <ConfirmDialog
+        open={renaming !== null}
+        onOpenChange={(o) => !o && setRenaming(null)}
+        title="重命名库"
+        confirmLabel="保存"
+        confirmDisabled={!renaming?.name.trim()}
+        onConfirm={submitRename}
+      >
+        <Input
+          autoFocus
+          value={renaming?.name ?? ""}
+          onChange={(name) => setRenaming((r) => (r ? { ...r, name } : r))}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && renaming?.name.trim()) submitRename();
+          }}
+          maxLength={32}
+          aria-label="库名"
+          classNames={{ field: "h-10" }}
+        />
+      </ConfirmDialog>
     </div>
   );
 }

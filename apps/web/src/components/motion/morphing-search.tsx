@@ -113,6 +113,9 @@ export function MorphingSearch({
 	const listRef = useRef<HTMLDivElement>(null);
 	const previousFocusRef = useRef<HTMLElement | null>(null);
 	const wasOpenRef = useRef(open);
+	// Bumped on every open so a quick reopen mounts a fresh overlay instead of
+	// reviving one that is mid-exit, and bumped again if an exit never finishes.
+	const [presenceKey, setPresenceKey] = useState(0);
 	const transition: Transition = reduce ? { duration: 0 } : SPRING_LAYOUT;
 	const morphTransition: Transition = reduce ? { duration: 0 } : SEARCH_MORPH;
 
@@ -170,6 +173,19 @@ export function MorphingSearch({
 	}, [setOpen, updateQuery]);
 
 	useEffect(() => setMounted(true), []);
+
+	// Closing while the open animation is still running can leave the exiting
+	// overlay stuck half-faded (AnimatePresence never gets its exit callbacks).
+	// The exit takes well under a second, so if the overlay is still around
+	// after that, drop it and release the scroll lock.
+	useEffect(() => {
+		if (open) return;
+		const timer = window.setTimeout(() => {
+			setPresenceKey((k) => k + 1);
+			setBackgroundScrollLocked(false);
+		}, 1000);
+		return () => window.clearTimeout(timer);
+	}, [open]);
 
 	useEffect(() => {
 		if (open) setBackgroundScrollLocked(true);
@@ -374,6 +390,7 @@ export function MorphingSearch({
 					className="pointer-events-none fixed left-0 top-0 z-50 size-0"
 				>
 					<AnimatePresence
+						key={presenceKey}
 						initial={false}
 						mode="popLayout"
 						onExitComplete={() => setBackgroundScrollLocked(false)}

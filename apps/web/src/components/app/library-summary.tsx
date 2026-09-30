@@ -1,5 +1,6 @@
 import { Heart, MessageCircle, NotebookText, Star } from "lucide-react";
 import type { NotesSummary } from "@v2media/shared";
+import { NumberTicker } from "@/components/motion/number-ticker";
 import { formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -18,18 +19,20 @@ export function LibrarySummary({
   const partial = summary.withDetail < summary.notes;
   const partialHint = `收藏/评论只统计已采详情的 ${summary.withDetail} / ${summary.notes} 条，实际更高`;
   const stats = [
-    { icon: NotebookText, label: "笔记", value: summary.notes.toLocaleString(), hint: "" },
-    { icon: Heart, label: "点赞", value: formatCount(summary.likes), hint: "" },
-    { icon: Star, label: "收藏", value: `${formatCount(summary.collects)}${partial ? "+" : ""}`, hint: partial ? partialHint : "" },
-    { icon: MessageCircle, label: "评论", value: `${formatCount(summary.comments)}${partial ? "+" : ""}`, hint: partial ? partialHint : "" },
+    { icon: NotebookText, label: "笔记", value: summary.notes, format: undefined, plus: false, hint: "" },
+    { icon: Heart, label: "点赞", value: summary.likes, format: formatCount, plus: false, hint: "" },
+    { icon: Star, label: "收藏", value: summary.collects, format: formatCount, plus: partial, hint: partial ? partialHint : "" },
+    { icon: MessageCircle, label: "评论", value: summary.comments, format: formatCount, plus: partial, hint: partial ? partialHint : "" },
   ];
   return (
     <div className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl border border-border bg-muted/30 px-4 py-2.5">
-      {stats.map(({ icon: Icon, label, value, hint }) => (
+      {stats.map(({ icon: Icon, label, value, format, plus, hint }) => (
         <span key={label} title={hint || undefined} className="inline-flex items-baseline gap-1.5 text-xs text-muted-foreground">
           <Icon className="size-3.5 self-center" />
           {label}
-          <b className="text-sm font-semibold tabular-nums text-foreground">{value}</b>
+          <b className="text-sm font-semibold text-foreground">
+            <NumberTicker value={value} locale={!format} format={format} suffix={plus ? "+" : undefined} startOnView={false} duration={0.7} />
+          </b>
         </span>
       ))}
       {summary.topTags.length > 0 ? (

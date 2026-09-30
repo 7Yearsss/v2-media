@@ -220,26 +220,36 @@ export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<Note
   };
 }
 
+function commentFromRaw(c: Any): NoteComment {
+  const user = c.user_info ?? c.user ?? {};
+  const pictures = Array.isArray(c.pictures)
+    ? c.pictures
+        .map((p: Any) => normalizeXhsMediaUrl(str(p?.url_default ?? p?.url_pre ?? p?.info_list?.[0]?.url ?? p?.url ?? "")))
+        .filter(Boolean)
+    : [];
+  const createdAt = num(c.create_time);
+  const subCount = num(c.sub_comment_count);
+  return {
+    commentId: str(c.id ?? c.comment_id),
+    userName: str(user.nickname ?? ""),
+    userId: str(user.user_id ?? "") || undefined,
+    avatar: normalizeXhsMediaUrl(str(user.image ?? user.avatar ?? "")),
+    content: str(c.content),
+    likes: num(c.like_count ?? c.likes),
+    ...(createdAt ? { createdAt } : {}),
+    ...(c.ip_location ? { ipLocation: str(c.ip_location) } : {}),
+    ...(pictures.length ? { pictures } : {}),
+    ...(Array.isArray(c.show_tags) && c.show_tags.includes("is_author") ? { isAuthor: true } : {}),
+    ...(subCount ? { subCommentCount: subCount } : {}),
+  };
+}
+
 /** 评论接口 data.comments[] -> NoteComment[]。 */
 export function commentsFromResponse(payload: Any): NoteComment[] {
   const list: Any[] = payload?.data?.comments ?? [];
   return list.map((c) => ({
-    commentId: str(c.id ?? c.comment_id),
-    userName: str(c.user_info?.nickname ?? c.user?.nickname ?? ""),
-    userId: str(c.user_info?.user_id ?? c.user?.user_id ?? "") || undefined,
-    avatar: normalizeXhsMediaUrl(str(c.user_info?.image ?? c.user_info?.avatar ?? c.user?.image ?? c.user?.avatar ?? "")),
-    content: str(c.content),
-    likes: num(c.like_count ?? c.likes),
-    subComments: Array.isArray(c.sub_comments)
-      ? c.sub_comments.map((s: Any) => ({
-          commentId: str(s.id ?? s.comment_id),
-          userName: str(s.user_info?.nickname ?? ""),
-          userId: str(s.user_info?.user_id ?? s.user?.user_id ?? "") || undefined,
-          avatar: normalizeXhsMediaUrl(str(s.user_info?.image ?? s.user_info?.avatar ?? s.user?.image ?? s.user?.avatar ?? "")),
-          content: str(s.content),
-          likes: num(s.like_count),
-        }))
-      : undefined,
+    ...commentFromRaw(c),
+    subComments: Array.isArray(c.sub_comments) ? c.sub_comments.map(commentFromRaw) : undefined,
   }));
 }
 

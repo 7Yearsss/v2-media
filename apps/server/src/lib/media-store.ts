@@ -147,11 +147,12 @@ async function sha256Hex(s: string): Promise<string> {
 export async function fetchAllowed(
   url: string,
   redirectsLeft = 3,
+  range?: string,
 ): Promise<Response | null> {
   let current = url;
   for (let i = 0; i <= redirectsLeft; i++) {
     const res = await fetch(current, {
-      headers: { Referer: "https://www.xiaohongshu.com/" },
+      headers: { Referer: "https://www.xiaohongshu.com/", ...(range ? { Range: range } : {}) },
       redirect: "manual",
       signal: AbortSignal.timeout(10_000),
     }).catch(() => null);

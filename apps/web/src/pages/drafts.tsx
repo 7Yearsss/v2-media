@@ -429,9 +429,9 @@ export default function DraftsPage() {
                       </button>
                     </span>
                   ))}
-                  <input
+                  <Input
                     value={tagInput}
-                    onChange={(e) => setTagInput(e.target.value)}
+                    onChange={setTagInput}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -439,7 +439,8 @@ export default function DraftsPage() {
                       }
                     }}
                     placeholder="+ 加标签"
-                    className="h-7 w-24 rounded-full border border-dashed border-border bg-transparent px-2.5 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-ring"
+                    className="w-28"
+                    classNames={{ field: "h-7 border-dashed", input: "pl-2.5 pr-2.5 text-xs" }}
                   />
                 </div>
               </div>
@@ -476,9 +477,9 @@ export default function DraftsPage() {
                 {/* TODO(契约缺口)：服务端暂无图片上传接口，先用 URL 添加；契约补
                     POST /api/media 后换成 motion/file-upload 组件 */}
                 <div className="mt-2 flex gap-2">
-                  <input
+                  <Input
                     value={imageInput}
-                    onChange={(e) => setImageInput(e.target.value)}
+                    onChange={setImageInput}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") {
                         e.preventDefault();
@@ -486,7 +487,8 @@ export default function DraftsPage() {
                       }
                     }}
                     placeholder="粘贴图片 URL 添加…"
-                    className="h-8 flex-1 rounded-lg border border-input bg-card px-2.5 text-xs outline-none placeholder:text-muted-foreground/60 focus:border-ring"
+                    className="flex-1"
+                    classNames={{ field: "h-8", input: "pl-3 pr-3 text-xs" }}
                   />
                   <Button
                     size="sm"
