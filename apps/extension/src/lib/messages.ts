@@ -37,6 +37,7 @@ export interface GalaxyEventDetail {
 export interface CommentsEventDetail {
   noteId?: string;
   comments: NoteComment[];
+  hasMore?: boolean;
 }
 
 export type MainAction =
@@ -71,6 +72,7 @@ export interface CachedNote {
   card?: NoteCard;
   detail?: NoteDetail;
   comments?: NoteComment[];
+  commentsHasMore?: boolean;
 }
 
 /** isolated world 调 MAIN world（window.CustomEvent 往返）。 */
@@ -119,7 +121,7 @@ export type BgMessage =
   | { type: "COLLECT_URL_CHALLENGE"; noteId?: string }
   | { type: "COLLECT_URL_CHALLENGE_DONE"; noteId?: string }
   // 深度采集：后台开隐藏标签页进详情，嗅探评论接口后自动关闭
-  | { type: "DEEP_COLLECT"; url: string }
+  | { type: "DEEP_COLLECT"; url: string; automatic?: boolean }
   | { type: "DEEP_COLLECT_CANCEL"; noteId: string } // 弹窗采集成功后取消队列里同笔记的兜底任务
   | { type: "GET_LOGIN_STATE" } // bg -> xhs content script
   | { type: "JOB_READY"; jobId: number } // creator-publish -> bg（拉取任务数据）

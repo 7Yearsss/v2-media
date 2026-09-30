@@ -5,6 +5,5 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 npm run build:ext:prod
 mkdir -p apps/web/dist
-rm -f apps/web/dist/extension.zip
-(cd apps/extension/dist && zip -qr ../../web/dist/extension.zip .)
+cp apps/extension/dist/extension.zip apps/web/dist/extension.zip
 echo "extension.zip -> apps/web/dist/extension.zip"

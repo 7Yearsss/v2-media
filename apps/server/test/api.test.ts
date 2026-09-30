@@ -41,6 +41,28 @@ describe("accounts heartbeat", () => {
 });
 
 describe("collect + notes", () => {
+  it("完整详情的互动数优先于列表卡片的缺省零值", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const res = await app.request("/api/ext/collect", authed(token, {
+      method: "POST",
+      body: JSON.stringify({
+        source: "detail",
+        items: [{ noteId: "detail-stats", title: "测试笔记", likes: 21 }],
+        details: [{
+          noteId: "detail-stats", title: "测试笔记", content: "完整正文",
+          likes: 23, collects: 6, comments: 4, shares: 2,
+          commentsData: [{ commentId: "c1", content: "评论内容" }],
+        }],
+      }),
+    }));
+    expect(res.status).toBe(200);
+    const { ids } = await res.json() as { ids: number[] };
+    const note = await (await app.request(`/api/notes/${ids[0]}`, authed(token))).json() as any;
+    expect({ likes: note.likes, collects: note.collects, comments: note.comments, shares: note.shares })
+      .toEqual({ likes: 23, collects: 6, comments: 4, shares: 2 });
+  });
+
   it("collect upserts by noteId; notes endpoint filters", async () => {
     const { app } = await makeApp();
     const { token } = await registerUser(app);
@@ -200,7 +222,7 @@ describe("collect + notes", () => {
     expect(new Date(n.publishedAt).getTime()).toBe(1700000000000);
   });
 
-  it("评论落库后，无评论的详情重传不清空 commentsData", async () => {
+  it("不完整详情重传保留已有评论、正文和素材", async () => {
     const { app } = await makeApp();
     const { token } = await registerUser(app);
     const collect = (details: unknown[]) =>
@@ -211,12 +233,38 @@ describe("collect + notes", () => {
     // 先落一篇带评论的详情，再重传同 noteId 的无评论详情（嗅探时机丢评论的场景）
     await collect([{
       noteId: "c1", title: "带评论", author: {}, cover: "c",
+      content: "完整正文", images: [{ url: "https://cdn/image.jpg" }],
+      tags: ["标签"], videoUrl: "https://cdn/video.mp4",
       commentsData: [{ commentId: "k1", userName: "薯友", content: "求链接", likes: 9 }],
     }]);
     await collect([{ noteId: "c1", title: "带评论", author: {}, cover: "c" }]);
     const notes = (await (await app.request("/api/notes", authed(token))).json()) as any;
     expect(notes.items).toHaveLength(1);
     expect(notes.items[0].commentsData?.[0]?.content).toBe("求链接");
+    expect(notes.items[0].content).toBe("完整正文");
+    expect(notes.items[0].images).toEqual([{ url: "https://cdn/image.jpg" }]);
+    expect(notes.items[0].tags).toEqual(["标签"]);
+    expect(notes.items[0].videoUrl).toBe("https://cdn/video.mp4");
+  });
+
+  it("多页评论分批入库与旧页重放不会丢失评论或回复", async () => {
+    const { app } = await makeApp();
+    const { token } = await registerUser(app);
+    const upload = (commentsData: unknown[]) => app.request("/api/ext/collect", authed(token, {
+      method: "POST", body: JSON.stringify({ source: "detail", items: [], details: [{
+        noteId: "paged-comments", title: "多页评论", author: {}, comments: 3, commentsData,
+      }] }),
+    }));
+    const first = { commentId: "c1", userName: "一", content: "第一页", likes: 1,
+      subComments: [{ commentId: "r1", userName: "回复一", content: "回复", likes: 2 }] };
+    await upload([first]);
+    await upload([{ commentId: "c2", userName: "二", content: "第二页", likes: 3 }]);
+    await upload([{ ...first, subComments: [{ commentId: "r2", userName: "回复二", content: "新回复", likes: 4 }] }]);
+    const notes = (await (await app.request("/api/notes", authed(token))).json()) as any;
+    expect(notes.items).toHaveLength(1);
+    expect(notes.items[0].commentsData.map((c: any) => c.commentId)).toEqual(["c1", "c2"]);
+    expect(notes.items[0].commentsData[0].subComments.map((c: any) => c.commentId)).toEqual(["r1", "r2"]);
+    expect(notes.items[0].commentsData[0].subComments[0].userName).toBe("回复一");
   });
 
   it("notes export: CSV 按库过滤 + 含 BOM + 转义逗号", async () => {

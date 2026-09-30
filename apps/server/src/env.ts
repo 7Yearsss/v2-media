@@ -1,6 +1,8 @@
 export const env = {
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: process.env.DATABASE_URL ?? "",
+  skipDbMigrations: process.env.SKIP_DB_MIGRATIONS === "1",
+  disableMediaMaintenance: process.env.DISABLE_MEDIA_MAINTENANCE === "1",
   aiBaseUrl: (process.env.AI_BASE_URL ?? "").replace(/\/$/, ""),
   aiApiKey: process.env.AI_API_KEY ?? "",
   aiModel: process.env.AI_MODEL ?? "gpt-4o-mini",

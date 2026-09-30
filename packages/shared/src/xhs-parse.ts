@@ -32,6 +32,50 @@ const num = (v: any): number => {
 
 const str = (v: any): string => (v == null ? "" : String(v));
 
+/** 平台有时返回 HTTP CDN 地址，统一升级已知小红书媒体域，供 HTTPS 代理与转存使用。 */
+export function normalizeXhsMediaUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "http:" && /(^|\.)xhscdn\.com$|(^|\.)xiaohongshu\.com$/.test(url.hostname)) {
+      url.protocol = "https:";
+      return url.href;
+    }
+  } catch { /* 非 URL 保留给调用方处理。 */ }
+  return value;
+}
+
+const imageUrl = (image: Any | string | undefined): string => normalizeXhsMediaUrl(
+  typeof image === "string" ? image : str(image?.url_default || image?.urlDefault ||
+    image?.url_pre || image?.urlPre || image?.url ||
+    image?.info_list?.find((x: Any) => x?.url)?.url || image?.infoList?.find((x: Any) => x?.url)?.url || ""),
+);
+
+/** SSR 是 JSON 加裸 undefined/空 Map、Set；仅替换字符串外的已知字面量，不执行页面脚本。 */
+export function xhsInitialStateFromHtml(html: string): Any | null {
+  const start = html.indexOf("__INITIAL_STATE__");
+  if (start < 0) return null;
+  const eq = html.indexOf("=", start), end = html.indexOf("</script>", eq);
+  if (eq < 0 || end < 0) return null;
+  const raw = html.slice(eq + 1, end).trim().replace(/;$/, "");
+  let output = "", quoted = false, escaped = false;
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i]!;
+    if (!quoted) {
+      const token = /^(undefined\b|new\s+(Map|Set)\(\s*\[\s*\]\s*\))/.exec(raw.slice(i));
+      if (token) {
+        output += token[1] === "undefined" ? "null" : token[2] === "Map" ? "{}" : "[]";
+        i += token[0].length - 1;
+        continue;
+      }
+    }
+    output += char;
+    if (quoted && escaped) escaped = false;
+    else if (quoted && char === "\\") escaped = true;
+    else if (char === '"') quoted = !quoted;
+  }
+  try { return JSON.parse(output) as Any; } catch { return null; }
+}
+
 export function noteUrl(noteId: string, xsecToken = "", xsecSource = "pc_search"): string {
   const q = xsecToken
     ? `?xsec_token=${encodeURIComponent(xsecToken)}&xsec_source=${xsecSource}`
@@ -43,24 +87,24 @@ export function noteUrl(noteId: string, xsecToken = "", xsecSource = "pc_search"
 export function noteCardFromItem(item: Any, source: CollectSource): NoteCard | null {
   const card = item?.note_card ?? item?.noteCard;
   if (!card) return null;
-  const noteId = str(item.id ?? item.note_id ?? card.note_id);
+  const noteId = str(item.id ?? item.note_id ?? item.noteId ?? card.note_id ?? card.noteId);
   if (!noteId) return null;
   const user = card.user ?? {};
   const ii = card.interact_info ?? card.interactInfo ?? {};
   const cover = card.cover ?? {};
-  const xsecToken = str(item.xsec_token ?? "");
+  const xsecToken = str(item.xsec_token || item.xsecToken || "");
   return {
     noteId,
     xsecToken,
     type: card.type === "video" ? "video" : "image",
-    title: str(card.display_title ?? card.title),
+    title: str(card.display_title || card.displayTitle || card.title),
     desc: str(card.desc),
     author: {
       userId: str(user.user_id ?? user.userId ?? ""),
-      nickname: str(user.nickname ?? user.nick_name ?? ""),
-      avatar: str(user.avatar ?? user.image ?? ""),
+      nickname: str(user.nickname ?? user.nickName ?? user.nick_name ?? ""),
+      avatar: normalizeXhsMediaUrl(str(user.avatar ?? user.image ?? "")),
     },
-    cover: str(cover.url_default ?? cover.url_pre ?? cover.url ?? ""),
+    cover: imageUrl(cover),
     likes: num(ii.liked_count ?? ii.likedCount),
     collects: num(ii.collected_count ?? ii.collectedCount),
     comments: num(ii.comment_count ?? ii.commentCount),
@@ -79,7 +123,7 @@ export function noteCardsFromResponse(
   const rawItems: Any[] = data?.items ?? data?.notes ?? [];
   const items = rawItems
     // 搜索接口混有 user/aggregate 等非笔记条目
-    .filter((it) => (it?.model_type ? it.model_type === "note" : true))
+    .filter((it) => { const model = it?.model_type ?? it?.modelType; return !model || model === "note"; })
     .map((it) => noteCardFromItem(it, source))
     .filter((x): x is NoteCard => x !== null);
   return {
@@ -114,7 +158,7 @@ export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<Note
   const ii = card.interact_info ?? {};
   const images: NoteImage[] = (Array.isArray(card.image_list) ? card.image_list : [])
     .map((img: Any) => ({
-      url: str(img?.url_default ?? img?.url_pre ?? img?.url ?? img?.info_list?.[0]?.url ?? ""),
+      url: imageUrl(img),
       width: img?.width,
       height: img?.height,
     }))
@@ -163,9 +207,9 @@ export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<Note
     author: {
       userId: str(user.user_id ?? ""),
       nickname: str(user.nickname ?? user.nick_name ?? ""),
-      avatar: str(user.avatar ?? ""),
+      avatar: normalizeXhsMediaUrl(str(user.avatar ?? user.image ?? "")),
     },
-    cover: str(card.cover?.url_default ?? card.cover?.url ?? images[0]?.url ?? ""),
+    cover: imageUrl(card.cover) || images[0]?.url || "",
     likes: num(ii.liked_count),
     collects: num(ii.collected_count),
     comments: num(ii.comment_count),
@@ -183,12 +227,15 @@ export function commentsFromResponse(payload: Any): NoteComment[] {
     commentId: str(c.id ?? c.comment_id),
     userName: str(c.user_info?.nickname ?? c.user?.nickname ?? ""),
     userId: str(c.user_info?.user_id ?? c.user?.user_id ?? "") || undefined,
+    avatar: normalizeXhsMediaUrl(str(c.user_info?.image ?? c.user_info?.avatar ?? c.user?.image ?? c.user?.avatar ?? "")),
     content: str(c.content),
     likes: num(c.like_count ?? c.likes),
     subComments: Array.isArray(c.sub_comments)
       ? c.sub_comments.map((s: Any) => ({
           commentId: str(s.id ?? s.comment_id),
           userName: str(s.user_info?.nickname ?? ""),
+          userId: str(s.user_info?.user_id ?? s.user?.user_id ?? "") || undefined,
+          avatar: normalizeXhsMediaUrl(str(s.user_info?.image ?? s.user_info?.avatar ?? s.user?.image ?? s.user?.avatar ?? "")),
           content: str(s.content),
           likes: num(s.like_count),
         }))

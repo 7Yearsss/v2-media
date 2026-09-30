@@ -2,6 +2,7 @@
  * 工作台 REST client —— fetch 封装：Bearer token、query 序列化、统一错误。
  * 契约见 docs/api-contract.md；只读 @v2media/shared 的类型。
  */
+import { normalizeXhsMediaUrl } from "@v2media/shared/xhs-parse";
 import type {
   AiRewriteRequest,
   AiRewriteResponse,
@@ -265,6 +266,8 @@ export const api = {
     /** 数字=该库；"none"=未分组；缺省=全部 */
     collectionId?: string;
     cursor?: string | null;
+    sort?: NoteSortField;
+    direction?: NoteSortDirection;
   }) =>
     request<NotesPage>("/api/notes", {
       query: {
@@ -273,6 +276,8 @@ export const api = {
         source: params.source,
         collectionId: params.collectionId || undefined,
         cursor: params.cursor ?? undefined,
+        sort: params.sort,
+        direction: params.direction,
       },
     }).then((res) =>
       // 防御：服务端若直接返回数组也兜住
@@ -368,9 +373,10 @@ export function mediaUrl(u?: string): string {
   try {
     const host = new URL(u).hostname;
     if (/(^|\.)xhscdn\.com$|(^|\.)xiaohongshu\.com$/.test(host))
-      return `/api/media/proxy?url=${encodeURIComponent(u)}`;
+      return `/api/media/proxy?url=${encodeURIComponent(normalizeXhsMediaUrl(u))}`;
   } catch {
     // 非法 URL 直出
   }
   return u;
 }
+import type { NoteSortField, NoteSortDirection } from "@v2media/shared";

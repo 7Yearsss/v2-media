@@ -5,7 +5,10 @@
  *  - deepCollect=true：采集时后台开隐藏标签页进详情页，补采评论
  */
 
+import { normalizeHotFilter, type HotFilter } from "@v2media/shared";
+
 export interface ExtSettings {
+  hotFilter?: HotFilter;
   enabled: boolean;
   autoCollect: boolean;
   /** 当前采集库 id（null/undefined = 不分组进总池）。 */
@@ -20,13 +23,14 @@ const DEFAULTS: ExtSettings = {
   autoCollect: true,
   collectionId: null,
   deepCollect: false,
+  hotFilter: normalizeHotFilter(),
 };
 
 export async function getSettings(): Promise<ExtSettings> {
   const { [KEY]: s } = (await chrome.storage.local.get(KEY)) as {
     [KEY]?: Partial<ExtSettings>;
   };
-  return { ...DEFAULTS, ...s };
+  return { ...DEFAULTS, ...s, hotFilter: normalizeHotFilter(s?.hotFilter) };
 }
 
 export async function setSettings(patch: Partial<ExtSettings>): Promise<void> {
@@ -38,6 +42,6 @@ export function onSettingsChanged(cb: (s: ExtSettings) => void): void {
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes[KEY]) return;
     const next = changes[KEY].newValue as Partial<ExtSettings> | undefined;
-    cb({ ...DEFAULTS, ...next });
+    cb({ ...DEFAULTS, ...next, hotFilter: normalizeHotFilter(next?.hotFilter) });
   });
 }

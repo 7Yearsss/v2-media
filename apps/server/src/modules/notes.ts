@@ -1,21 +1,44 @@
-import { and, eq, gt, ilike, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, lt, ilike, isNull, or, sql } from "drizzle-orm";
+import type { NoteSortField, NoteSortDirection } from "@v2media/shared";
 import { Hono } from "hono";
 
 import type { Deps } from "../context";
 import { collectedNotes } from "../db/schema";
 
 const PAGE = 30;
+const withAvatar = <T extends { rawJson: unknown }>(row: T) => ({
+  ...row, authorAvatar: (row.rawJson as { authorAvatar?: string } | null)?.authorAvatar ?? "",
+});
 
 export function notesModule(deps: Deps) {
   const app = new Hono<{ Variables: { userId: number } }>();
 
   app.get("/", async (c) => {
     const userId = c.get("userId");
-    const cursor = Number(c.req.query("cursor") ?? 0);
+    const sort = (c.req.query("sort") ?? "id") as NoteSortField;
+    const direction = (c.req.query("direction") ?? (sort === "id" ? "asc" : "desc")) as NoteSortDirection;
+    if (!["id", "likes", "collects", "comments", "savedAt", "publishedAt"].includes(sort) || !["asc", "desc"].includes(direction)) return c.json({ error: "bad sort" }, 400);
+    const isTime = sort === "savedAt" || sort === "publishedAt";
+    // Match JavaScript Date's millisecond precision for stable cursor equality.
+    const column = isTime ? sql`floor(extract(epoch from ${collectedNotes[sort]}) * 1000)` : sql`${collectedNotes[sort]}`;
+    const conds = [eq(collectedNotes.userId, userId)];
+    const rawCursor = c.req.query("cursor");
+    if (rawCursor) {
+      try {
+        const cursor = /^\d+$/.test(rawCursor) && sort === "id" && direction === "asc"
+          ? { sort, direction, id: Number(rawCursor), value: Number(rawCursor) }
+          : JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8"));
+        if (cursor.sort !== sort || cursor.direction !== direction || !Number.isSafeInteger(cursor.id) || cursor.id < 1 || !(cursor.value === null && sort === "publishedAt" || Number.isSafeInteger(cursor.value) && cursor.value >= 0)) throw new Error("bad cursor");
+        conds.push(cursor.value === null ? and(isNull(column), gt(collectedNotes.id, cursor.id))! : or(
+          direction === "asc" ? gt(column, cursor.value) : lt(column, cursor.value),
+          and(eq(column, cursor.value), gt(collectedNotes.id, cursor.id)),
+          ...(sort === "publishedAt" ? [isNull(column)] : []),
+        )!);
+      } catch { return c.json({ error: "bad cursor" }, 400); }
+    }
     const keyword = (c.req.query("keyword") ?? "").trim();
     const source = (c.req.query("source") ?? "").trim();
     const tag = (c.req.query("tag") ?? "").trim();
-    const conds = [eq(collectedNotes.userId, userId), gt(collectedNotes.id, cursor)];
     if (keyword) {
       const like = `%${keyword}%`;
       conds.push(or(ilike(collectedNotes.title, like), ilike(collectedNotes.authorName, like))!);
@@ -35,12 +58,12 @@ export function notesModule(deps: Deps) {
       .select()
       .from(collectedNotes)
       .where(and(...conds))
-      .orderBy(collectedNotes.id)
+      .orderBy(direction === "asc" ? sql`${column} asc nulls last` : sql`${column} desc nulls last`, asc(collectedNotes.id))
       .limit(PAGE + 1);
     const items = rows.slice(0, PAGE);
     return c.json({
-      items,
-      nextCursor: rows.length > PAGE ? items[items.length - 1]!.id : null,
+      items: items.map(withAvatar),
+      nextCursor: rows.length > PAGE ? Buffer.from(JSON.stringify({ sort, direction, id: items.at(-1)!.id, value: isTime ? (items.at(-1)![sort] as Date | null)?.getTime() ?? null : items.at(-1)![sort] })).toString("base64url") : null,
     });
   });
 
@@ -149,7 +172,7 @@ export function notesModule(deps: Deps) {
       .where(and(eq(collectedNotes.id, Number(c.req.param("id"))), eq(collectedNotes.userId, c.get("userId"))))
       .limit(1);
     if (!row) return c.json({ error: "not found" }, 404);
-    return c.json(row);
+    return c.json(withAvatar(row));
   });
 
   app.delete("/:id", async (c) => {

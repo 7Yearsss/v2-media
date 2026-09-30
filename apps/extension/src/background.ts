@@ -714,9 +714,13 @@ chrome.runtime.onMessage.addListener(
         // 总开关约束同样适用：停用期间不开任何隐藏标签页。
         // 失败不回传错误：深度采集是尽力而为的补充通道；进顺序队列逐篇执行
         return reply(
-          getSettings().then((s) => ({
-            queued: s.enabled ? queueDeepCollect(String(msg.url ?? "")) : false,
-          })),
+          getSettings().then((s) => {
+            if (!s.enabled || (msg.automatic && (!s.autoCollect || !s.deepCollect)))
+              return { queued: false };
+            const url = new URL(String(msg.url ?? ""));
+            if (msg.automatic) url.searchParams.set("__v2m_auto", "1");
+            return { queued: queueDeepCollect(url.href) };
+          }),
           sendResponse,
         );
       case "DEEP_COLLECT_CANCEL":
@@ -986,6 +990,14 @@ async function pumpDeepQueue() {
       }
       const url = deepQueue[0]!;
       const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
+      const settings = await getSettings();
+      if (new URL(url).searchParams.has("__v2m_auto") &&
+          (!settings.autoCollect || !settings.deepCollect)) {
+        deepQueue.shift();
+        deepQueuedIds.delete(id);
+        await persistDeepQueue();
+        continue;
+      }
       try {
         await collectByUrl(url);
         deepAttempts.delete(id);

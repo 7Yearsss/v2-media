@@ -5,6 +5,7 @@
 
 import { sendToBackground } from "./lib/messages";
 import { getSettings, setSettings, type ExtSettings } from "./lib/settings";
+import { normalizeHotFilter } from "@v2media/shared";
 
 interface Status {
   version: string;
@@ -28,16 +29,48 @@ async function render() {
   if (!statusEl || !openBtn || !enabledEl || !autoEl || !deepEl || !colSel || !newColRow || !newCol || !newColBtn) return;
 
   const settings = await getSettings();
+  const hotEnabled = document.getElementById("hotEnabled") as HTMLInputElement;
+  const minLikes = document.getElementById("minLikes") as HTMLInputElement;
+  const hotOptions = document.getElementById("hotOptions")!;
+  const hotStatus = document.getElementById("hotStatus")!;
+  const rule = normalizeHotFilter(settings.hotFilter);
+  hotEnabled.checked = rule.enabled;
+  minLikes.value = String(rule.minLikes);
+  const updateHotControls = () => {
+    hotEnabled.disabled = !enabledEl.checked || !autoEl.checked;
+    hotOptions.hidden = !hotEnabled.checked;
+    minLikes.disabled = hotEnabled.disabled;
+    for (const button of document.querySelectorAll<HTMLButtonElement>("[data-hot-preset]")) button.disabled = hotEnabled.disabled;
+  };
+  const saveHotRule = async () => {
+    const value = Number(minLikes.value);
+    if (!minLikes.value.trim() || !Number.isSafeInteger(value) || value < 0) {
+      hotStatus.textContent = "请输入大于或等于 0 的整数，设置尚未保存";
+      return;
+    }
+    try {
+      await setSettings({ hotFilter: { enabled: hotEnabled.checked, minLikes: value } });
+      hotStatus.textContent = hotEnabled.checked ? `已保存：点赞 ≥ ${value} 才自动采集` : "热度筛选已关闭";
+      updateHotControls();
+    } catch { hotStatus.textContent = "保存失败，请重试"; }
+  };
+  hotEnabled.onchange = () => { updateHotControls(); void saveHotRule(); };
+  minLikes.onchange = () => void saveHotRule();
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-hot-preset]")) {
+    button.onclick = () => { minLikes.value = button.dataset.hotPreset!; void saveHotRule(); };
+  }
   enabledEl.checked = settings.enabled;
   autoEl.checked = settings.autoCollect;
   deepEl.checked = settings.deepCollect ?? false;
   autoEl.disabled = !settings.enabled;
   deepEl.disabled = !settings.enabled;
+  updateHotControls();
 
   enabledEl.onchange = async () => {
     await setSettings({ enabled: enabledEl.checked });
     autoEl.disabled = !enabledEl.checked;
     deepEl.disabled = !enabledEl.checked;
+    updateHotControls();
     statusEl.textContent = enabledEl.checked
       ? "插件已启用"
       : "插件已停用（采集/心跳/发布都暂停）";
@@ -50,6 +83,7 @@ async function render() {
   };
   autoEl.onchange = async () => {
     await setSettings({ autoCollect: autoEl.checked });
+    updateHotControls();
     statusEl.textContent = autoEl.checked
       ? "浏览小红书时会自动采集"
       : "已关自动采集，仍可用卡片按钮手动采";

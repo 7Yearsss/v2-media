@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
+import { mergeComments } from "@v2media/shared";
 
 import type {
   AccountSnapshotTaskPayload,
@@ -21,7 +22,8 @@ import {
   publishJobs,
   topics,
 } from "../db/schema";
-import { persistCollectedMedia, publicBase } from "../lib/media-store";
+import { publicBase } from "../lib/media-store";
+import { enqueueMediaJob } from "../lib/media-jobs";
 
 // ---------- 归因任务调度（jobs 表复用为队列；插件轮询 pending） ----------
 
@@ -136,9 +138,14 @@ const commentSchema = z.object({
   userName: z.string().default(""),
   nickname: z.string().default(""),
   avatar: z.string().default(""),
+  userId: z.string().optional(),
   content: z.string().default(""),
   likes: z.number().default(0),
-  subComments: z.array(z.object({ content: z.string() })).optional(),
+  subComments: z.array(z.object({
+    commentId: z.string().default(""), userName: z.string().default(""),
+    userId: z.string().optional(), avatar: z.string().default(""),
+    content: z.string(), likes: z.number().default(0),
+  })).optional(),
 });
 
 const cardSchema = z.object({
@@ -297,14 +304,16 @@ export function extModule(deps: Deps) {
         cover: item.cover,
         images: detail?.images?.length ? detail.images : [{ url: item.cover }].filter((i) => i.url),
         videoUrl: detail?.videoUrl ?? null,
-        likes: item.likes,
-        collects: item.collects,
-        comments: item.comments,
-        shares: item.shares,
+        // 同批详情比列表卡片完整，不能让卡片缺省的 0 覆盖真实互动数。
+        likes: detail?.likes ?? item.likes,
+        collects: detail?.collects ?? item.collects,
+        comments: detail?.comments ?? item.comments,
+        shares: detail?.shares ?? item.shares,
         tags: detail?.tags ?? [],
         commentsData: (detail?.commentsData ?? []).map((cm) => ({
           commentId: cm.commentId,
           userName: cm.userName || cm.nickname,
+          userId: cm.userId,
           avatar: cm.avatar,
           content: cm.content,
           likes: cm.likes,
@@ -318,7 +327,7 @@ export function extModule(deps: Deps) {
         sourceKeyword: p.context?.keyword ?? "",
         publishedAt,
         ipLocation: detail?.ipLocation || "",
-        rawJson: null as any,
+        rawJson: { authorAvatar: detail?.author.avatar || item.author.avatar || "" },
       };
       const [existing] = await deps.db
         .select()
@@ -333,10 +342,16 @@ export function extModule(deps: Deps) {
               title: realTitle || existing.title || values.title,
               titleFallback: !realTitle && existing.titleFallback,
               hasDetail: true,
+              // SSR/补评论重传可能只有部分详情，不能清空已采到的正文与素材。
+              content: detail.content || item.desc || existing.content || values.content,
+              cover: values.cover || existing.cover,
+              images: detail.images.length || !existing.images.length ? values.images : existing.images,
+              videoUrl: values.videoUrl || existing.videoUrl,
+              tags: values.tags.length ? values.tags : existing.tags,
               // 详情重传可能不带评论（嗅探时机），空数组不覆盖已有评论
-              commentsData: values.commentsData.length
-                ? values.commentsData
-                : existing.commentsData,
+              commentsData: mergeComments(
+                existing.commentsData as typeof values.commentsData, values.commentsData,
+              ),
               publishedAt: values.publishedAt ?? existing.publishedAt,
               ipLocation: values.ipLocation || existing.ipLocation,
               sourceKeyword: values.sourceKeyword || existing.sourceKeyword,
@@ -356,6 +371,11 @@ export function extModule(deps: Deps) {
               publishedAt: existing.publishedAt,
               ipLocation: existing.ipLocation,
             };
+        merged.rawJson = {
+          ...(existing.rawJson as Record<string, unknown> ?? {}),
+          authorAvatar: values.rawJson.authorAvatar ||
+            (existing.rawJson as { authorAvatar?: string } | null)?.authorAvatar || "",
+        };
         await deps.db
           .update(collectedNotes)
           // collectionId 显式传了才改分组（含 null=移回未分组）；缺省不动原分组
@@ -372,7 +392,7 @@ export function extModule(deps: Deps) {
       }
     }
     // 后台把 xhscdn 图转存 R2 并回写（不占采集响应时间；失败降级保留原图床链接）
-    void persistCollectedMedia(deps, ids, publicBase(c.req)).catch(() => {});
+    await enqueueMediaJob(deps, userId, ids, publicBase(c.req));
     return c.json({ saved: ids.length, ids });
   });
 

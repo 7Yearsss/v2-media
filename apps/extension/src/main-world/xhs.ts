@@ -18,6 +18,8 @@ import {
   noteCardsFromResponse,
   noteDetailFromFeedResponse,
   unwrap,
+  mergeComments,
+  xhsInitialStateFromHtml,
 } from "@v2media/shared";
 import type {
   CollectSource,
@@ -39,6 +41,7 @@ interface XhsCache {
   cards: Record<string, NoteCard>;
   details: Record<string, NoteDetail>;
   comments: Record<string, NoteComment[]>;
+  commentsHasMore: Record<string, boolean>;
   order: string[]; // noteId LRU 顺序
 }
 
@@ -63,6 +66,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     cards: {},
     details: {},
     comments: {},
+    commentsHasMore: {},
     order: [],
   });
 
@@ -83,6 +87,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     if (commentIds.length > MAX_COMMENTS) {
       for (const id of commentIds.slice(0, commentIds.length - MAX_COMMENTS)) {
         delete cache.comments[id];
+        delete cache.commentsHasMore[id];
       }
     }
   }
@@ -135,12 +140,15 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     );
   }
 
-  function emitComments(noteId: string | undefined, comments: NoteComment[]) {
-    if (!comments.length) return;
-    if (noteId) cache.comments[noteId] = comments;
+  function emitComments(noteId: string | undefined, comments: NoteComment[], hasMore?: boolean) {
+    if (noteId) {
+      comments = mergeComments(cache.comments[noteId] ?? [], comments);
+      cache.comments[noteId] = comments;
+      if (hasMore !== undefined) cache.commentsHasMore[noteId] = hasMore;
+    }
     touchCache();
     document.dispatchEvent(
-      new CustomEvent(EVT_COMMENTS, { detail: { noteId, comments } }),
+      new CustomEvent(EVT_COMMENTS, { detail: { noteId, comments, hasMore } }),
     );
   }
 
@@ -193,7 +201,9 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     const cls = classifyXhsApiUrl(urlStr);
     if (!cls) return;
     if (cls.kind === "comments") {
-      emitComments(commentNoteId(u), commentsFromResponse(parsed));
+      emitComments(commentNoteId(u), commentsFromResponse(parsed),
+        u.pathname.endsWith("/comment/page") && typeof parsed?.data?.has_more === "boolean"
+          ? parsed.data.has_more : undefined);
     } else {
       const { items } = noteCardsFromResponse(parsed, cls.source);
       emitNotes(cls.source, items, detailsFromListItems(parsed));
@@ -217,7 +227,9 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
   }
 
   function sniffText(url: string, text: string) {
-    if (typeof text !== "string" || !text || text[0] !== "{") return;
+    if (typeof text !== "string") return;
+    text = text.trim();
+    if (!text || text[0] !== "{") return;
     let parsed: Any;
     try {
       parsed = JSON.parse(text) as Any;
@@ -246,7 +258,11 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
       if (this.readyState !== 4) return;
       const url = this.responseURL || (this as { __v2m_url?: string }).__v2m_url || "";
       try {
-        sniffText(url, this.responseText);
+        if (this.responseType === "json") {
+          if (this.response && typeof this.response === "object") sniffJson(url, this.response);
+        } else {
+          sniffText(url, this.responseText);
+        }
       } catch {
         /* 非 JSON / blob 响应 */
       }
@@ -263,14 +279,14 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
       const url =
         typeof first === "string"
           ? first
-          : first instanceof Request
+          : first instanceof URL ? first.href : first instanceof Request
             ? first.url
             : "";
       return origFetch.apply(this, args).then((resp) => {
         resp
           .clone()
           .text()
-          .then((t) => sniffText(url, t))
+          .then((t) => sniffText(resp.url || url, t))
           .catch(() => {});
         return resp;
       });
@@ -317,6 +333,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     const cover = pick(note, "cover");
     if (cover && typeof cover === "object") {
       out.cover = {
+        ...cover,
         url_default: pick(cover, "url_default", "urlDefault", "url"),
         url_pre: pick(cover, "url_pre", "urlPre"),
       };
@@ -427,22 +444,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
    * 不用打开 tab 就能拿到。评论仍在异步接口（需签名），这里拿不到。
    */
   function initialStateFromHtml(html: string): Any | null {
-    const i = html.indexOf("__INITIAL_STATE__");
-    if (i < 0) return null;
-    const eq = html.indexOf("=", i);
-    const end = html.indexOf("</script>", eq);
-    if (eq < 0 || end < 0) return null;
-    // XHS SSR 会写裸 undefined，不是合法 JSON
-    const raw = html
-      .slice(eq + 1, end)
-      .trim()
-      .replace(/;$/, "")
-      .replace(/:\s*undefined\s*([,}])/g, ":null$1");
-    try {
-      return JSON.parse(raw) as Any;
-    } catch {
-      return null;
-    }
+    return xhsInitialStateFromHtml(html);
   }
 
   async function fetchDetailFromHtml(url: string): Promise<NoteDetail | null> {
@@ -506,7 +508,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
           }
           reply({
             ok: true,
-            result: { card, detail, comments: cache.comments[id] },
+            result: { card, detail, comments: cache.comments[id], commentsHasMore: cache.commentsHasMore[id] },
           });
           break;
         }
@@ -516,6 +518,8 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
             result: {
               cards: Object.values(cache.cards),
               details: Object.values(cache.details),
+              comments: cache.comments,
+              commentsHasMore: cache.commentsHasMore,
             },
           });
           break;

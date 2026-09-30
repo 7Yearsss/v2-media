@@ -42,9 +42,12 @@ export interface NoteDetail extends Omit<NoteCard, "source"> {
   videoUrl?: string;
   publishedAt?: string;
   ipLocation?: string;
+  /** 已采到的评论明细；comments 是站点显示的评论数量。 */
+  commentsData?: NoteComment[];
 }
 
 export interface NoteComment {
+  avatar?: string;
   commentId: string;
   userName: string;
   userId?: string;
@@ -140,6 +143,7 @@ export interface HostedAccount {
 
 /** 服务端存的内容库条目。 */
 export interface CollectedNote {
+  authorAvatar?: string;
   id: number;
   noteId: string;
   type: NoteType;
@@ -302,3 +306,6 @@ export interface AccountSnapshot {
   notesCount?: number;
   extra?: Record<string, unknown>;
 }
+/** Content library ordering; the server applies it before cursor pagination. */
+export type NoteSortField = "id" | "likes" | "collects" | "comments" | "savedAt" | "publishedAt";
+export type NoteSortDirection = "asc" | "desc";

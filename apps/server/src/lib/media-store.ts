@@ -20,6 +20,80 @@ export const MEDIA_SRC_ALLOWED =
 const OBJECT_PREFIX = "/api/media/objects/";
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
+const avatarWork = new WeakMap<R2Storage, Map<string, Promise<string>>>();
+let activeAvatars = 0;
+const avatarWaiters: Array<() => void> = [];
+
+/** Small, deduplicated thumbnails; never buffer an unbounded source image. */
+export async function storeAvatar(r2: R2Storage, url: string, base: string): Promise<string> {
+  if (url.startsWith(`${OBJECT_PREFIX}avatar/`)) return url;
+  let source: URL;
+  try { source = new URL(url); } catch { return url; }
+  const oldObject = source.pathname.match(/^\/api\/media\/objects\/(img\/[0-9a-f]{64}-sd)$/)?.[1];
+  if (!oldObject && (source.protocol !== "https:" || !MEDIA_SRC_ALLOWED.test(source.hostname))) return url;
+  let cache = avatarWork.get(r2);
+  if (!cache) { cache = new Map(); avatarWork.set(r2, cache); }
+  const existing = cache.get(url);
+  if (existing) { const key = await existing; return key ? `${OBJECT_PREFIX}${key}` : url; }
+  const work = (async () => {
+    if (activeAvatars >= 2) await new Promise<void>(resolve => avatarWaiters.push(resolve));
+    else activeAvatars++;
+    try {
+      const key = `avatar/${oldObject ? oldObject.slice(4) : `${await sha256Hex(`avatar96:v1:${url}`)}-sd`}`;
+      if (await r2.head(key)) return key;
+      const sharp = await sharpLib();
+      if (!sharp) return "";
+      const response = oldObject ? await r2.get(oldObject) : await fetchAllowed(url);
+      if (!response?.ok || !response.body) return "";
+      const limit = 2 * 1024 * 1024;
+      if (Number(response.headers.get("content-length") ?? 0) > limit) {
+        await response.body.cancel(); return "";
+      }
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) { await reader.cancel(); return ""; }
+        chunks.push(value);
+      }
+      const out = await sharp(Buffer.concat(chunks)).resize({ width: 96, height: 96, fit: "cover", withoutEnlargement: true }).webp({ quality: 75 }).toBuffer();
+      await r2.put(key, out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer, "image/webp");
+      return key;
+    } catch { return ""; }
+    finally { const next = avatarWaiters.shift(); if (next) next(); else activeAvatars--; }
+  })();
+  cache.set(url, work);
+  const key = await work;
+  if (!key) cache.delete(url);
+  if (cache.size > 5000) cache.delete(cache.keys().next().value!);
+  return key ? `${OBJECT_PREFIX}${key}` : url;
+}
+
+async function persistAvatars(deps: Deps, row: typeof collectedNotes.$inferSelect, base: string) {
+  const metadata = (row.rawJson ?? {}) as Record<string, unknown>;
+  const authorAvatar = typeof metadata.authorAvatar === "string" ? metadata.authorAvatar : "";
+  const storedAuthor = await storeAvatar(deps.r2!, authorAvatar, base);
+  if (storedAuthor !== authorAvatar) await deps.db.update(collectedNotes).set({ rawJson: { ...metadata, authorAvatar: storedAuthor } }).where(
+    sql`${collectedNotes.id} = ${row.id} AND coalesce(${collectedNotes.rawJson}, '{}'::jsonb)::jsonb = ${JSON.stringify(metadata)}::jsonb`,
+  );
+  const mapComments = async (items: unknown[]): Promise<unknown[]> => Promise.all(items.map(async item => {
+    if (!item || typeof item !== "object") return item;
+    const comment = item as Record<string, unknown>;
+    return { ...comment,
+      ...(typeof comment.avatar === "string" ? { avatar: await storeAvatar(deps.r2!, comment.avatar, base) } : {}),
+      ...(Array.isArray(comment.subComments) ? { subComments: await mapComments(comment.subComments) } : {}),
+    };
+  }));
+  if (!Array.isArray(row.commentsData)) return;
+  const comments = await mapComments(row.commentsData);
+  if (JSON.stringify(comments) !== JSON.stringify(row.commentsData)) await deps.db.update(collectedNotes).set({ commentsData: comments }).where(
+    sql`${collectedNotes.id} = ${row.id} AND ${collectedNotes.commentsData}::jsonb = ${JSON.stringify(row.commentsData)}::jsonb`,
+  );
+}
+
 /**
  * 媒体画质分档（会员体系预留）：free=压缩够看、pro=原画质。
  * 数值走 env 可调；加新档位/新字段在这里扩。
@@ -255,6 +329,7 @@ export async function persistCollectedMedia(
   // 按用户档位取画质（同批可能混不同用户）
   const plans = new Map<number, string>();
   for (const row of rows) {
+    await persistAvatars(deps, row, base);
     if (!plans.has(row.userId)) {
       const [u] = await deps.db
         .select({ plan: users.plan })
@@ -310,6 +385,8 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
         sql`${collectedNotes.cover} ~ 'xhscdn|xiaohongshu'`,
         sql`${collectedNotes.images}::text ~ 'xhscdn|xiaohongshu'`,
         sql`${collectedNotes.videoUrl} ~ 'xhscdn|xiaohongshu'`,
+        sql`${collectedNotes.rawJson}::text ~ 'xhscdn|xiaohongshu'`,
+        sql`${collectedNotes.commentsData}::text ~ 'xhscdn|xiaohongshu'`,
       ),
     )
     .limit(500);
@@ -322,19 +399,20 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
   );
 }
 
-const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid)\/[0-9a-f]{64}(?:-(?:sd|orig))?)/g;
+const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid|avatar)\/[0-9a-f]{64}(?:-(?:sd|orig))?)/g;
 
 /** DB 里仍被引用的 R2 对象 key 集合（采集表 cover/images + 草稿表 images）。 */
 async function referencedKeys(deps: Deps): Promise<Set<string>> {
   const keys = new Set<string>();
   const notes = await deps.db
-    .select({ cover: collectedNotes.cover, images: collectedNotes.images, videoUrl: collectedNotes.videoUrl })
+    .select({ cover: collectedNotes.cover, images: collectedNotes.images, videoUrl: collectedNotes.videoUrl, rawJson: collectedNotes.rawJson, commentsData: collectedNotes.commentsData })
     .from(collectedNotes);
   const draftRows = await deps.db
     .select({ images: drafts.images })
     .from(drafts);
   const urls: string[] = [];
   for (const n of notes) {
+    urls.push(JSON.stringify(n.rawJson), JSON.stringify(n.commentsData));
     urls.push(n.cover, ...(n.images ?? []).map((i) => i.url), ...(n.videoUrl ? [n.videoUrl] : []));
   }
   for (const d of draftRows) {
@@ -355,6 +433,7 @@ export async function pruneMedia(deps: Deps): Promise<void> {
   const objects = [
     ...(await deps.r2.list("img/")),
     ...(await deps.r2.list("vid/")),
+    ...(await deps.r2.list("avatar/")),
   ];
   if (!objects.length) return;
   const referenced = await referencedKeys(deps);

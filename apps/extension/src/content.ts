@@ -9,6 +9,7 @@
  */
 
 import type { CollectBatch, NoteCard, NoteComment, NoteDetail } from "@v2media/shared";
+import { mergeComments, passesHotFilter } from "@v2media/shared";
 import {
   EVT_COMMENTS,
   EVT_NOTES,
@@ -21,17 +22,19 @@ import type {
   LoginState,
 } from "./lib/messages";
 import { el, shadowHost, toastIn } from "./lib/ui";
-import { getSettings, onSettingsChanged, type ExtSettings } from "./lib/settings";
+import { getSettings, onSettingsChanged, setSettings, type ExtSettings } from "./lib/settings";
 
 const isWww =
   location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
 
 if (isWww) {
+  const collectFlag = new URL(location.href).searchParams.get("__v2m_collect");
   // ---------- 已嗅探数据缓存 ----------
 
   const cards = new Map<string, NoteCard>();
   const details = new Map<string, NoteDetail>();
   const commentsMap = new Map<string, NoteComment[]>();
+  const commentsHasMore = new Map<string, boolean>();
   const verifiedDetailIds = new Set<string>();
   // 卡片/详情分开记：卡片已传不阻挡后续到达的详情（详情含完整正文/图集/评论）
   const uploadedCards = new Set<string>();
@@ -65,9 +68,12 @@ if (isWww) {
   const overlay = el("div", { class: "overlay" });
   const dot = el("span", { class: "dot" });
   const countEl = el("span", {}, "已嗅探 0 条");
+  const autoBtn = el("button", { class: "ghost" }, "自动采集…");
+  const deepBtn = el("button", { class: "ghost" }, "深度采集…");
+  const progressEl = el("span", { role: "status" });
   const collectAllBtn = el("button", {}, "一键全部入库");
   const collectThisBtn = el("button", { class: "ghost", style: "display:none" }, "采集本篇");
-  const bar = el("div", { class: "bar" }, dot, countEl, collectAllBtn, collectThisBtn);
+  const bar = el("div", { class: "bar" }, dot, countEl, autoBtn, deepBtn, progressEl, collectAllBtn, collectThisBtn);
   shadow.append(overlay, bar);
 
   // ---------- 启停开关（popup 写入 chrome.storage.local.v2m_settings） ----------
@@ -76,13 +82,21 @@ if (isWww) {
     // 停用：隐藏全部注入 UI，嗅探只记内存不上报
     bar.style.display = cfg.enabled ? "" : "none";
     overlay.style.display = cfg.enabled ? "" : "none";
+    autoBtn.textContent = `自动采集：${cfg.autoCollect ? "开" : "关"}`;
+    deepBtn.textContent = `深度采集：${cfg.deepCollect ? "开" : "关"}`;
+    refreshCount();
   }
-  void getSettings().then((s) => {
+  autoBtn.addEventListener("click", () => void setSettings({ autoCollect: !cfg.autoCollect }));
+  deepBtn.addEventListener("click", () => void setSettings({ deepCollect: !cfg.deepCollect }));
+  const settingsReady = getSettings().then((s) => {
     cfg = s;
     applySettings();
   });
   onSettingsChanged((s) => {
+    const ruleChanged = JSON.stringify(cfg.hotFilter) !== JSON.stringify(s.hotFilter);
+    const resumeAuto = (!cfg.enabled || !cfg.autoCollect) && s.enabled && s.autoCollect;
     const wasAuto = cfg.autoCollect;
+    const wasDeep = cfg.deepCollect;
     cfg = s;
     // 关掉自动采集：已经在排队的那批也不能再发出去
     if (wasAuto && !s.autoCollect && flushTimer) {
@@ -90,6 +104,16 @@ if (isWww) {
       flushTimer = undefined;
     }
     applySettings();
+    if (s.enabled && s.autoCollect && !collectFlag && (ruleChanged || resumeAuto)) {
+      receiveNotes({ source: "homefeed", items: [...cards.values()], details: [...details.values()], context: lastContext });
+    }
+    if (s.enabled && s.autoCollect && s.deepCollect && (!wasAuto || !wasDeep)) {
+      const id = pageNoteId();
+      if (id && (uploadedCards.has(id) || uploadedDetails.has(id))) {
+        autoDeepRequested.delete(id);
+        void backfillAutoComments([details.get(id) ?? cards.get(id)!]);
+      }
+    }
   });
 
   const toast = (msg: string, ok = true) => toastIn(shadow, msg, ok);
@@ -104,12 +128,17 @@ if (isWww) {
   }
 
   function refreshCount() {
-    countEl.textContent = `已嗅探 ${cards.size} 条`;
+    const found = new Map<string, NoteCard | NoteDetail>([...cards, ...details]);
+    const eligible = [...found.values()].filter(n => passesHotFilter(n.likes, cfg.hotFilter)).length;
+    countEl.textContent = cfg.hotFilter?.enabled
+      ? `发现 ${found.size} · 达标 ${eligible} · 赞 ≥ ${cfg.hotFilter.minLikes}`
+      : `已嗅探 ${found.size} 条`;
   }
 
   // ---------- 上报（去抖合并） ----------
 
   interface Pending<T> {
+    automatic?: boolean;
     data: T;
     /** 入队时的采集库快照：去抖期间用户换库，早入队的仍进旧库 */
     colId: number | null;
@@ -117,6 +146,37 @@ if (isWww) {
   let pendingItems = new Map<string, Pending<NoteCard>>();
   let pendingDetails = new Map<string, Pending<NoteDetail>>();
   let flushTimer: number | undefined;
+  const autoDeepRequested = new Set<string>();
+  const autoDeepActive = new Set<string>();
+
+  async function backfillAutoComments(notes: Array<NoteCard | NoteDetail>) {
+    if (!cfg.enabled || !cfg.autoCollect || !cfg.deepCollect || collectFlag) return;
+    // 只在入库成功后排队；详情补传/重复嗅探不能重复打开同一篇。
+    const unique = new Map(notes.map(n => [n.noteId, n]));
+    for (const n of unique.values()) {
+      if (!cfg.enabled || !cfg.autoCollect || !cfg.deepCollect) break;
+      if (!n?.url || autoDeepRequested.has(n.noteId) || autoDeepActive.has(n.noteId)) continue;
+      if (commentsMap.get(n.noteId)?.length && pageNoteId() !== n.noteId) continue;
+      autoDeepRequested.add(n.noteId);
+      // SSR detail may omit xsec_token; keep the signed card URL rather than
+      // opening a bare note URL that the site can reject as unavailable.
+      const candidates = [n.url, details.get(n.noteId)?.url, cards.get(n.noteId)?.url];
+      const signedUrl = candidates.find(url => url && new URL(url).searchParams.has("xsec_token"));
+      const siteLink = [...document.querySelectorAll<HTMLAnchorElement>(NOTE_LINK)]
+        .find(link => link.href.includes(`/` + n.noteId) && link.href.includes("xsec_token="));
+      const deepUrl = signedUrl ?? siteLink?.href ?? n.url;
+      if (pageNoteId() === n.noteId) {
+        // 当前详情已打开：直接用原页滚动与缓存补评论，避免重复开页。
+        autoDeepActive.add(n.noteId);
+        void collectCurrentComments(n.noteId);
+        continue;
+      }
+      const r = await sendToBackground<{ queued?: boolean }>({
+        type: "DEEP_COLLECT", url: deepUrl, automatic: true,
+      }).catch(() => null);
+      if (!r?.queued) autoDeepRequested.delete(n.noteId);
+    }
+  }
 
   async function uploadBatch(
     items: NoteCard[],
@@ -124,12 +184,13 @@ if (isWww) {
     source: CollectBatch["source"],
     context: CollectBatch["context"],
     colId: number | null,
+    automatic = false,
   ) {
     if (!items.length && !dets.length) return;
     if (!cfg.enabled) {
       // 停用中不发：塞回 pending（保留原库快照），重新启用后随下一批一起上报
-      for (const it of items) pendingItems.set(it.noteId, { data: it, colId });
-      for (const d of dets) pendingDetails.set(d.noteId, { data: d, colId });
+      for (const it of items) pendingItems.set(it.noteId, { data: it, colId, automatic });
+      for (const d of dets) pendingDetails.set(d.noteId, { data: d, colId, automatic });
       return;
     }
     const batch: CollectBatch = {
@@ -143,13 +204,15 @@ if (isWww) {
       const r = await sendToBackground<{ saved?: number }>({ type: "EXT_COLLECT", batch });
       for (const it of items) uploadedCards.add(it.noteId);
       for (const d of dets) uploadedDetails.add(d.noteId);
+      for (const n of [...items, ...dets]) colOfUpload.set(n.noteId, colId);
       if (typeof r?.saved === "number" && r.saved > 0) {
         toast(`已入库 ${r.saved} 条`);
       }
+      void backfillAutoComments([...items, ...dets]);
     } catch (e) {
       // 上报失败（含插件被停用拒绝）：塞回 pending 等重试，不标记已上传
-      for (const it of items) pendingItems.set(it.noteId, { data: it, colId });
-      for (const d of dets) pendingDetails.set(d.noteId, { data: d, colId });
+      for (const it of items) pendingItems.set(it.noteId, { data: it, colId, automatic });
+      for (const d of dets) pendingDetails.set(d.noteId, { data: d, colId, automatic });
       console.debug("[v2m] collect upload failed:", e);
     }
   }
@@ -158,10 +221,14 @@ if (isWww) {
     const colId = cfg.collectionId ?? null; // 入队时快照所选库
     for (const it of batch.items) {
       if (!uploadedCards.has(it.noteId) && !uploadedDetails.has(it.noteId))
-        pendingItems.set(it.noteId, { data: it, colId });
+        pendingItems.set(it.noteId, { data: it, colId: pendingItems.has(it.noteId) ? pendingItems.get(it.noteId)!.colId : colId, automatic: true });
     }
     for (const d of batch.details ?? []) {
-      if (!uploadedDetails.has(d.noteId)) pendingDetails.set(d.noteId, { data: d, colId });
+      if (!uploadedDetails.has(d.noteId)) pendingDetails.set(d.noteId, {
+        data: d, colId: colOfUpload.has(d.noteId) ? colOfUpload.get(d.noteId)! :
+          pendingDetails.has(d.noteId) ? pendingDetails.get(d.noteId)!.colId :
+          pendingItems.has(d.noteId) ? pendingItems.get(d.noteId)!.colId : colId, automatic: true,
+      });
     }
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = window.setTimeout(
@@ -177,14 +244,15 @@ if (isWww) {
     // 按入队时的库分组：去抖期间换过库的就拆成多批发
     const groups = new Map<
       string,
-      { colId: number | null; items: NoteCard[]; dets: NoteDetail[] }
+      { colId: number | null; automatic: boolean; items: NoteCard[]; dets: NoteDetail[] }
     >();
-    const push = <T>(
+    const push = <T extends { noteId: string; likes: number }>(
       p: Pending<T>,
       pick: (g: { items: NoteCard[]; dets: NoteDetail[] }) => T[],
     ) => {
-      const k = String(p.colId);
-      const g = groups.get(k) ?? { colId: p.colId, items: [], dets: [] };
+      if (p.automatic && (!cfg.autoCollect || !eligibleAutomatic(p.data))) return;
+      const k = `${p.colId}:${!!p.automatic}`;
+      const g = groups.get(k) ?? { colId: p.colId, automatic: !!p.automatic, items: [], dets: [] };
       pick(g).push(p.data as never);
       groups.set(k, g);
     };
@@ -193,7 +261,7 @@ if (isWww) {
     pendingItems = new Map();
     pendingDetails = new Map();
     for (const g of groups.values())
-      void uploadBatch(g.items, g.dets, source, context, g.colId);
+      void uploadBatch(g.items, g.dets, source, context, g.colId, g.automatic);
   }
 
   // ---------- 事件接入 ----------
@@ -229,9 +297,13 @@ if (isWww) {
   // 采集时用的库（按笔记记）：后续补传要跟原批次同一个库，防止换库后补传把笔记挪走
   const colOfUpload = new Map<string, number | null>();
 
-  document.addEventListener(EVT_NOTES, (ev) => {
+  function eligibleAutomatic(note: { noteId: string; likes: number }) {
+    return uploadedCards.has(note.noteId) || uploadedDetails.has(note.noteId) ||
+      passesHotFilter(note.likes, cfg.hotFilter);
+  }
+
+  function receiveNotes(batch: CollectBatch) {
     if (!cfg.enabled) return; // 总开关关：不动
-    const batch = (ev as CustomEvent<CollectBatch>).detail;
     if (!batch) return;
     if (taskMarker) {
       const taskId = Number(taskMarker);
@@ -255,9 +327,7 @@ if (isWww) {
     }
     lastContext = batch.context ?? lastContext;
     for (const it of batch.items) {
-      if (!cards.has(it.noteId)) {
-        cards.set(it.noteId, it);
-      }
+      cards.set(it.noteId, it);
     }
     for (const d of batch.details ?? []) {
       // 评论可能先于详情到（隐藏页/详情浏览）：合并进缓存，后续上传带上
@@ -299,41 +369,62 @@ if (isWww) {
       }
     }
     refreshCount();
-    if (cfg.autoCollect) {
-      backfillDetails(batch.items); // 自动采集也补齐详情（只多发一次页面 fetch，不开页）
-      queueUpload(batch); // 关自动采集：仍入库缓存供手动按钮，但不自动上报
+    if (cfg.autoCollect && !collectFlag) {
+      // 详情页只自动采当前笔记；底层推荐列表仍缓存供手动采，但不顺带入库。
+      const currentId = pageNoteId();
+      const automatic = {
+        ...batch,
+        items: batch.items.filter(n => (!currentId || n.noteId === currentId) && eligibleAutomatic(n)),
+        details: batch.details?.filter(n => (!currentId || n.noteId === currentId) && eligibleAutomatic(n))
+          .map(d => details.get(d.noteId)!),
+      };
+      backfillDetails(automatic.items);
+      if (automatic.items.length || automatic.details?.length) queueUpload(automatic);
     }
     scheduleScan();
+  }
+  document.addEventListener(EVT_NOTES, (ev) => {
+    const batch = (ev as CustomEvent<CollectBatch>).detail;
+    void settingsReady.then(() => receiveNotes(batch));
   });
 
-  document.addEventListener(EVT_COMMENTS, (ev) => {
+  function receiveComments(d: CommentsEventDetail) {
     if (!cfg.enabled) return;
-    const d = (ev as CustomEvent<CommentsEventDetail>).detail;
     if (!d?.noteId) return;
-    commentsMap.set(d.noteId, d.comments);
+    const mergedComments = mergeComments(commentsMap.get(d.noteId) ?? [], d.comments);
+    commentsMap.set(d.noteId, mergedComments);
+    if (d.hasMore !== undefined) commentsHasMore.set(d.noteId, d.hasMore);
     // 缓存里的详情同步带上评论：后续任何详情重传都不会丢评论
     const det = details.get(d.noteId);
-    if (det) details.set(d.noteId, { ...det, commentsData: d.comments } as NoteDetail);
+    if (det) details.set(d.noteId, { ...det, commentsData: mergedComments } as NoteDetail);
     // 只补「已经采过」的笔记（手动采集过 / 自动模式已入库）：关自动采集时
     // 逛详情页不应产生上传。评论仍进 commentsMap，下次手动采集会带上。
     const collected =
-      cfg.autoCollect || uploadedCards.has(d.noteId) || uploadedDetails.has(d.noteId);
+      (!collectFlag && cfg.autoCollect &&
+        (pendingItems.has(d.noteId) || pendingDetails.has(d.noteId)) &&
+        !!det && eligibleAutomatic(det) && (!pageNoteId() || pageNoteId() === d.noteId)) ||
+      uploadedCards.has(d.noteId) || uploadedDetails.has(d.noteId);
     if (!collected) return;
     // 已排队的详情要就地合并评论（不能跳过，否则 flush 出去的是无评论版本）
     const pending = pendingDetails.get(d.noteId);
     if (pending) {
-      pending.data = { ...pending.data, commentsData: d.comments } as NoteDetail;
+      pending.data = { ...pending.data, commentsData: mergedComments } as NoteDetail;
       return;
     }
     const det2 = details.get(d.noteId);
     if (det2) {
       pendingDetails.set(d.noteId, {
         data: det2,
+        automatic: !uploadedCards.has(d.noteId) && !uploadedDetails.has(d.noteId),
         colId: colOfUpload.get(d.noteId) ?? cfg.collectionId ?? null,
       });
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = window.setTimeout(() => flushQueue("detail", lastContext), 1500);
     }
+  }
+  document.addEventListener(EVT_COMMENTS, (ev) => {
+    const detail = (ev as CustomEvent<CommentsEventDetail>).detail;
+    void settingsReady.then(() => receiveComments(detail));
   });
 
   // ---------- 卡片浮层按钮（site DOM 之外，fixed 对齐） ----------
@@ -375,6 +466,15 @@ if (isWww) {
   }
 
   function reposition() {
+    // Our Shadow DOM sits above site layers; never let background-card controls
+    // bleed through the site's note detail modal.
+    const detailOpen = Boolean(pageNoteId()) || Array.from(document.querySelectorAll(".note-detail-mask, .note-detail-modal, #noteContainer")).some(node => {
+      const rect = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    });
+    overlay.style.display = detailOpen ? "none" : "";
+    if (detailOpen) return;
     const vw = innerWidth;
     const vh = innerHeight;
     for (const [section, rec] of pickBtns) {
@@ -384,6 +484,10 @@ if (isWww) {
         continue;
       }
       rec.btn.style.display = "";
+      const note = details.get(rec.noteId) ?? cards.get(rec.noteId);
+      rec.btn.title = note && cfg.hotFilter?.enabled && !eligibleAutomatic(note)
+        ? `自动跳过：点赞 ${note.likes}，低于 ${cfg.hotFilter.minLikes}；点击仍可手动采集`
+        : "手动采集本篇（不受自动热度筛选限制）";
       rec.btn.style.top = `${r.top + 8}px`;
       rec.btn.style.left = `${r.right - 76}px`;
     }
@@ -401,6 +505,8 @@ if (isWww) {
   new MutationObserver(scheduleScan).observe(document.documentElement, {
     childList: true,
     subtree: true,
+    attributes: true,
+    attributeFilter: ["class", "style", "hidden"],
   });
   window.addEventListener("scroll", scheduleScan, { capture: true, passive: true });
   window.addEventListener("resize", scheduleScan);
@@ -435,7 +541,7 @@ if (isWww) {
         const style = getComputedStyle(current);
         if (
           current.scrollHeight - current.clientHeight > 50 &&
-          current.offsetParent !== null &&
+          current.getClientRects().length > 0 && style.visibility !== "hidden" &&
           /(auto|scroll)/.test(style.overflowY)
         ) {
           candidates.add(current);
@@ -448,7 +554,7 @@ if (isWww) {
     if (
       noteScroller &&
       noteScroller.scrollHeight - noteScroller.clientHeight > 50 &&
-      noteScroller.offsetParent !== null
+      noteScroller.getClientRects().length > 0 && getComputedStyle(noteScroller).visibility !== "hidden"
     ) {
       candidates.add(noteScroller);
     }
@@ -467,6 +573,39 @@ if (isWww) {
 
   let modalCollecting = false;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  async function collectCurrentComments(noteId: string) {
+    const started = Date.now();
+    try {
+      while (cfg.enabled && cfg.autoCollect && cfg.deepCollect && pageNoteId() === noteId &&
+          Date.now() - started < 45_000) {
+        if (detectChallenge()) {
+          progressEl.textContent = "评论补采暂停：需要验证";
+          return;
+        }
+        // 补回 document_idle 监听前已到达 MAIN 缓存的评论。
+        const cached = await mainRequest<CachedNote>("getNote", { noteId }).catch(() => null);
+        if (cached?.comments) receiveComments({
+          noteId, comments: cached.comments, hasMore: cached.commentsHasMore,
+        });
+        const count = commentsMap.get(noteId)?.length ?? 0;
+        progressEl.textContent = `补评论中 · 已采 ${count} 条主评论`;
+        if (commentsHasMore.get(noteId) === false || count >= 100) {
+          progressEl.textContent = count
+            ? `已采 ${count} 条主评论${count >= 100 ? "（达到本次上限）" : "（含已加载回复）"}`
+            : "未获取到评论明细";
+          return;
+        }
+        advanceComments();
+        await sleep(1200);
+      }
+      const count = commentsMap.get(noteId)?.length ?? 0;
+      progressEl.textContent = `已采 ${count} 条主评论（本次补采结束）`;
+    } finally {
+      autoDeepActive.delete(noteId);
+      autoDeepRequested.add(noteId); // 防评论上报成功后再次启动；切换开关可重试。
+    }
+  }
 
   // 原地详情弹窗采集：点当前页的笔记卡片打开原生 modal（不新开 tab），
   // modal 自己发签名接口被嗅探；滚动评论容器翻页；验证码也在当前可见页由用户处理
@@ -623,8 +762,7 @@ if (isWww) {
       toast("未嗅探到该笔记数据，稍等页面加载完再试", false);
       return false;
     }
-    // TODO(契约): CollectBatch/NoteDetail 没有评论列表字段（NoteDetail.comments
-    // 是数量）。按服务端 schema 的 comments_data 列名附带，等契约补字段后入协议。
+    // 数量与明细分开：附上已经嗅探到的评论列表。
     const detailWithComments = detail
       ? { ...detail, commentsData: commentsMap.get(noteId) }
       : undefined;
@@ -844,17 +982,28 @@ if (isWww) {
 
   // content 脚本(document_idle)晚于 main world(document_start)：先拉一次
   // keep-alive 缓存补齐计数（页面早期嗅探到的批次在监听注册前就发了）。
-  void mainRequest<{ cards: NoteCard[]; details: NoteDetail[] }>("listCached")
-    .then((res) => {
-      for (const c of res.cards) cards.set(c.noteId, c);
-      for (const d of res.details) details.set(d.noteId, d);
-      refreshCount();
+  void Promise.all([
+    settingsReady,
+    mainRequest<{
+      cards: NoteCard[]; details: NoteDetail[];
+      comments?: Record<string, NoteComment[]>;
+      commentsHasMore?: Record<string, boolean>;
+    }>("listCached"),
+  ])
+    .then(([, res]) => {
+      for (const [noteId, comments] of Object.entries(res.comments ?? {}))
+        commentsMap.set(noteId, comments);
+      for (const [noteId, hasMore] of Object.entries(res.commentsHasMore ?? {}))
+        commentsHasMore.set(noteId, hasMore);
+      receiveNotes({
+        source: pageNoteId() ? "detail" : res.cards[0]?.source ?? "homefeed",
+        context: pageContext(), items: res.cards, details: res.details,
+      });
     })
     .catch(() => {});
 
   // ---------- __v2m_collect=1：工作台 COLLECT_URL 打开的页 ----------
 
-  const collectFlag = new URL(location.href).searchParams.get("__v2m_collect");
   if (collectFlag) sessionStorage.setItem("v2m_collect_url", location.href);
   const storedCollectUrl = sessionStorage.getItem("v2m_collect_url");
   if (collectFlag || storedCollectUrl) {
@@ -892,6 +1041,11 @@ if (isWww) {
       cfg = await getSettings(); // 同步 cfg 可能还没加载，这里每次拿最新的
       if (!cfg.enabled) {
         finish(false, "插件已停用");
+        return;
+      }
+      if (new URL(collectUrl).searchParams.has("__v2m_auto") &&
+          (!cfg.autoCollect || !cfg.deepCollect)) {
+        finish(false, "自动深度采集已停止");
         return;
       }
       if (detectChallenge()) {

@@ -6,11 +6,12 @@ import { migrate } from "./db/migrate";
 import { env } from "./env";
 import { pruneMedia, sweepMediaBacklog } from "./lib/media-store";
 import { createR2 } from "./lib/r2";
+import { startMediaWorker } from "./lib/media-jobs";
 import { createOpenAiClient } from "./modules/ai";
 
 async function main() {
   const db = await createDb();
-  await migrate(db);
+  if (!env.skipDbMigrations) await migrate(db);
   const r2 = createR2();
   const app = createApp({
     db,
@@ -19,12 +20,15 @@ async function main() {
     now: () => new Date(),
   });
   const deps = { db, ai: null as never, r2, now: () => new Date() };
+  if (r2) startMediaWorker(deps);
   // 启动兜底：上次进程退出可能把媒体转存打断，扫一遍外链残留补转存
-  void sweepMediaBacklog(deps).catch((err) =>
-    console.warn("media sweep failed:", err),
-  );
+  if (!env.disableMediaMaintenance) {
+    void sweepMediaBacklog(deps).catch((err) =>
+      console.warn("media sweep failed:", err),
+    );
+  }
   // 媒体 GC：清理无引用对象 + 桶容量上限（R2_MAX_BYTES）
-  if (r2) {
+  if (r2 && !env.disableMediaMaintenance) {
     const gc = () =>
       pruneMedia(deps).catch((err) => console.warn("media gc failed:", err));
     void gc();

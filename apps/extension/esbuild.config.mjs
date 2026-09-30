@@ -1,5 +1,10 @@
-import { cpSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { build } from "esbuild";
+import { zipSync } from "fflate";
+
+// 本机加载目录等偏好保存在被 Git 忽略的 .env。
+if (existsSync(".env")) process.loadEnvFile(".env");
 
 /**
  * Web-app origins the extension trusts (site-bridge + API calls), comma
@@ -54,4 +59,23 @@ manifest.host_permissions = [
 ];
 manifest.content_scripts.find((cs) => cs.js.includes("site-bridge.js")).matches = patterns;
 writeFileSync("dist/manifest.json", JSON.stringify(manifest, null, 2));
+// 同步生成可下载包，manifest 必须在压缩包根目录。
+const zipFiles = {};
+function addFiles(dir, prefix = "") {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const name = `${prefix}${entry.name}`;
+    if (name === "extension.zip") continue;
+    if (entry.isDirectory()) addFiles(join(dir, entry.name), `${name}/`);
+    else zipFiles[name] = new Uint8Array(readFileSync(join(dir, entry.name)));
+  }
+}
+addFiles("dist");
+writeFileSync("dist/extension.zip", zipSync(zipFiles));
+if (process.env.EXT_INSTALL_DIR) {
+  const installDir = resolve(process.env.EXT_INSTALL_DIR);
+  if (installDir !== resolve("dist")) {
+    cpSync("dist", installDir, { recursive: true });
+    console.log(`extension synced -> ${installDir}`);
+  }
+}
 console.log(`extension built -> dist/ (app origins: ${origins.join(", ")})`);

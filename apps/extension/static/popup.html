@@ -44,6 +44,19 @@ button#open{margin-top:12px;width:100%;padding:8px;border:0;border-radius:8px;ba
     </div>
     <label class="switch"><input type="checkbox" id="deepCollect"><span class="slider"></span></label>
   </div>
+  <div class="row">
+    <div><div class="label">只自动采集热门笔记</div><div class="hint">按点赞数筛选，手动采集不受限制</div></div>
+    <label class="switch"><input type="checkbox" id="hotEnabled" aria-label="只自动采集热门笔记"><span class="slider"></span></label>
+  </div>
+  <div id="hotOptions" style="padding:8px 0 12px">
+    <label for="minLikes" style="font-size:13px">最低点赞数</label>
+    <input id="minLikes" type="number" min="0" step="1" required style="width:90px;margin-left:8px;padding:5px;border:1px solid #e4e4e7;border-radius:6px">
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button type="button" data-hot-preset="500">500</button><button type="button" data-hot-preset="1000">1000</button><button type="button" data-hot-preset="3000">3000</button>
+    </div>
+    <div class="hint" style="font-size:11px;color:#78716c;margin-top:6px">点赞数达到门槛才自动入库；开启深度采集后继续补评论。</div>
+    <div id="hotStatus" role="status" style="font-size:12px;margin-top:6px;color:#78716c"></div>
+  </div>
   <div class="row" id="colRow">
     <div>
       <div class="label">当前采集库</div>
