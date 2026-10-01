@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   FileText,
   ImagePlus,
   Loader2,
@@ -10,7 +11,16 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BANNED_KIND_META, checkBannedWords, summarizeBanned, type NoteImage } from "@v2media/shared";
+import {
+  applyAllBannedFixes,
+  applyBannedFix,
+  BANNED_KIND_META,
+  checkBannedWords,
+  checkDraftLimits,
+  DRAFT_LIMITS,
+  summarizeBanned,
+  type NoteImage,
+} from "@v2media/shared";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
@@ -48,6 +58,7 @@ export default function DraftsPage() {
   const [tags, setTags] = useState<string[]>([]);
   // 发布前自查：标题 + 正文里的违禁/限流词，边写边提示
   const banned = useMemo(() => summarizeBanned(checkBannedWords(`${title}\n${content}`)), [title, content]);
+  const limits = useMemo(() => checkDraftLimits({ title, content, tags }), [title, content, tags]);
   const [images, setImages] = useState<NoteImage[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [imageInput, setImageInput] = useState("");
@@ -408,15 +419,68 @@ export default function DraftsPage() {
                 )}
               />
 
-              {banned.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-500/10 px-3 py-2.5 text-xs">
-                  <span className="font-medium text-amber-600">可能被限流</span>
-                  {banned.map((b) => (
-                    <span key={b.word} title={BANNED_KIND_META[b.kind].hint} className="rounded-full bg-card px-2.5 py-1 text-foreground/80 ring-1 ring-amber-500/30">
-                      {b.word}
-                      <span className="ml-1 text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
-                    </span>
+              <div className="-mt-3 flex justify-between text-[11px] text-muted-foreground">
+                <span className={cn([...title].length > DRAFT_LIMITS.title && "font-medium text-rose-500")}>
+                  标题 {[...title].length}/{DRAFT_LIMITS.title}
+                </span>
+                <span className={cn([...content].length > DRAFT_LIMITS.content && "font-medium text-rose-500")}>
+                  正文 {[...content].length}/{DRAFT_LIMITS.content}
+                </span>
+              </div>
+
+              {(banned.length > 0 || limits.length > 0) && (
+                <div className="flex flex-col gap-2 rounded-xl bg-amber-500/10 px-3.5 py-3 text-xs">
+                  {limits.map((l) => (
+                    <div key={l.field} className="flex items-center gap-1.5 font-medium text-rose-500">
+                      <AlertTriangle className="size-3.5 shrink-0" />
+                      {l.message}（{l.used}/{l.max}）
+                    </div>
                   ))}
+                  {banned.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-amber-600">可能被限流</span>
+                      {banned.map((b) => {
+                        const fixable = b.suggest !== undefined;
+                        return (
+                          <button
+                            key={b.word}
+                            type="button"
+                            disabled={!fixable}
+                            title={BANNED_KIND_META[b.kind].hint}
+                            onClick={() =>
+                              update({
+                                title: applyBannedFix(title, b.word, b.suggest),
+                                content: applyBannedFix(content, b.word, b.suggest),
+                              })
+                            }
+                            className={cn(
+                              "flex items-center gap-1 rounded-full bg-card px-2.5 py-1 ring-1 transition-colors",
+                              b.severity === "high" ? "text-rose-600 ring-rose-500/40" : "text-foreground/80 ring-amber-500/30",
+                              fixable && "hover:bg-primary/10 hover:text-primary",
+                            )}
+                          >
+                            {b.word}
+                            {b.count > 1 && <span className="text-muted-foreground">×{b.count}</span>}
+                            <span className="text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
+                            {fixable ? (
+                              <span className="font-medium text-primary">→ {b.suggest || "删除"}</span>
+                            ) : (
+                              <span className="font-medium text-rose-500">需改写</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                      {banned.some((b) => b.suggest !== undefined) && (
+                        <button
+                          type="button"
+                          onClick={() => update({ title: applyAllBannedFixes(title), content: applyAllBannedFixes(content) })}
+                          className="ml-auto rounded-full bg-primary px-3 py-1 font-medium text-primary-foreground"
+                        >
+                          一键处理
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
