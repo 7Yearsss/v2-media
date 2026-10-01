@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, gte, inArray, lt, ilike, isNull, or, sql } from "drizzle-orm";
-import type { NoteSortField, NoteSortDirection } from "@v2media/shared";
+import type { NoteSortField, NoteSortDirection, VideoInfo } from "@v2media/shared";
 import { Hono } from "hono";
 
 import type { Deps } from "../context";
@@ -9,11 +9,12 @@ const PAGE = 30;
 const MAX_BATCH = 200;
 const withAvatar = <T extends { rawJson: unknown }>(row: T) => ({
   ...row, authorAvatar: (row.rawJson as { authorAvatar?: string } | null)?.authorAvatar ?? "",
+  video: (row.rawJson as { video?: VideoInfo } | null)?.video,
 });
 
 type Query = (name: string) => string | undefined;
 
-/** 列表与导出共用的筛选：keyword / source / tag / collectionId / type / minLikes / withinDays / ids。 */
+/** 列表、摘要与导出共用的筛选：keyword / source / tag / authorId / collectionId / type / minLikes / withinDays / ids。 */
 function filterConds(userId: number, q: Query, now: Date) {
   const conds = [eq(collectedNotes.userId, userId)];
   const keyword = (q("keyword") ?? "").trim();
@@ -34,6 +35,9 @@ function filterConds(userId: number, q: Query, now: Date) {
     conds.push(eq(collectedNotes.collectionId, n));
   }
   if (tag) conds.push(sql`${collectedNotes.tags} @> ${JSON.stringify([tag])}::jsonb`);
+  // 只看某个作者的笔记（按站点作者 id 精确匹配）
+  const authorId = (q("authorId") ?? "").trim();
+  if (authorId) conds.push(eq(collectedNotes.authorId, authorId));
   const type = (q("type") ?? "").trim();
   if (type) {
     if (type !== "image" && type !== "video") return { error: "bad type" } as const;

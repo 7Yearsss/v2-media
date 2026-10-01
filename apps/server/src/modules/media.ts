@@ -24,7 +24,7 @@ export function mediaModule(deps: Deps) {
     // 流式透传（不整包缓冲）；fetchAllowed 内校验每次重定向目标
     // Range 透传：未转存到 R2 的视频走代理时也能拖动进度条
     const range = c.req.header("range");
-    const res = await fetchAllowed(target.toString(), 3, range);
+    const res = await fetchAllowed(target.toString(), 3, range, 120_000);
     if (!res || !res.ok) return c.json({ error: "fetch failed" }, 502);
     const headers: Record<string, string> = {
       "Content-Type": res.headers.get("content-type") ?? "image/jpeg",

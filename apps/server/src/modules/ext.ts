@@ -179,6 +179,21 @@ const detailSchema = cardSchema.extend({
   tags: z.array(z.string()).default([]),
   images: z.array(z.object({ url: z.string() })).default([]),
   videoUrl: z.string().optional(),
+  video: z
+    .object({
+      durationMs: z.number().optional(),
+      width: z.number().optional(),
+      height: z.number().optional(),
+      fps: z.number().optional(),
+      size: z.number().optional(),
+      format: z.string().optional(),
+      videoCodec: z.string().optional(),
+      bitrate: z.number().optional(),
+      quality: z.string().optional(),
+      videoId: z.string().optional(),
+      fallbackUrls: z.array(z.string()).max(3).optional(),
+    })
+    .optional(),
   commentsData: z.array(commentSchema).optional(),
   // 发布时间戳（毫秒）/ IP 属地 —— 详情页才有，分析时效判断靠它
   publishedAt: z.string().optional(),
@@ -341,7 +356,11 @@ export function extModule(deps: Deps) {
         sourceKeyword: p.context?.keyword ?? "",
         publishedAt,
         ipLocation: detail?.ipLocation || "",
-        rawJson: { authorAvatar: detail?.author.avatar || item.author.avatar || "" },
+        // 视频时长/分辨率/大小等不单开列，放 raw_json.video（免迁移）
+        rawJson: {
+          authorAvatar: detail?.author.avatar || item.author.avatar || "",
+          ...(detail?.video ? { video: detail.video } : {}),
+        },
       };
       const [existing] = await deps.db
         .select()
@@ -389,6 +408,8 @@ export function extModule(deps: Deps) {
           ...(existing.rawJson as Record<string, unknown> ?? {}),
           authorAvatar: values.rawJson.authorAvatar ||
             (existing.rawJson as { authorAvatar?: string } | null)?.authorAvatar || "",
+          // 卡片批次不带 video，不能把已采到的元信息抹掉
+          ...(values.rawJson.video ? { video: values.rawJson.video } : {}),
         };
         await deps.db
           .update(collectedNotes)

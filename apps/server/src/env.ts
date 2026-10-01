@@ -24,6 +24,6 @@ export const env = {
   // 媒体画质档位：free 档压缩省空间（以后会员/pro 档存原画质）
   mediaImageMaxWidth: Number(process.env.MEDIA_IMAGE_MAX_WIDTH ?? 1080),
   mediaImageQuality: Number(process.env.MEDIA_IMAGE_QUALITY ?? 70),
-  mediaVideoMaxBytes: Number(process.env.MEDIA_VIDEO_MAX_BYTES ?? 300_000_000),
-  mediaVideoMaxBytesPro: Number(process.env.MEDIA_VIDEO_MAX_BYTES_PRO ?? 1_000_000_000),
+  mediaVideoMaxBytes: Number(process.env.MEDIA_VIDEO_MAX_BYTES ?? 80_000_000),
+  mediaVideoMaxBytesPro: Number(process.env.MEDIA_VIDEO_MAX_BYTES_PRO ?? 200_000_000),
 };

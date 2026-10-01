@@ -343,6 +343,7 @@ if (isWww) {
               images:
                 incoming.images.length >= prev.images.length ? incoming.images : prev.images,
               videoUrl: incoming.videoUrl ?? prev.videoUrl,
+              video: incoming.video ?? prev.video,
               tags: incoming.tags.length ? incoming.tags : prev.tags,
               content: incoming.content || prev.content,
               desc: incoming.desc || prev.desc,
@@ -750,6 +751,7 @@ if (isWww) {
                     ? res.detail.images
                     : detail.images,
                 videoUrl: res.detail.videoUrl || detail.videoUrl,
+                video: res.detail.video ?? detail.video,
               }
             : res.detail;
           details.set(noteId, detail);

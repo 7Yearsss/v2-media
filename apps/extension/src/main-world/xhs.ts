@@ -123,6 +123,7 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
             ...d,
             images: d.images.length >= prev.images.length ? d.images : prev.images,
             videoUrl: d.videoUrl ?? prev.videoUrl,
+            video: d.video ?? prev.video,
             tags: d.tags.length ? d.tags : prev.tags,
             content: d.content || prev.content,
             desc: d.desc || prev.desc,
