@@ -93,7 +93,7 @@ export function CollectionPicker({
   }, [collections, pinned, recent, q]);
 
   const iconBtn =
-    "grid size-7 place-items-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
+    "grid size-7 place-items-center rounded-lg text-muted-foreground outline-none transition-colors hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring";
 
   const row = (c: Collection): ReactNode => {
     const isPinned = pinned.includes(c.id);
@@ -101,7 +101,7 @@ export function CollectionPicker({
     return (
       <div
         key={c.id}
-        className={cn("group flex items-center gap-1 rounded-lg pr-1 transition-colors hover:bg-muted", selected && "bg-muted")}
+        className={cn("group flex items-center gap-1 rounded-xl pr-1 transition-colors hover:bg-muted", selected && "bg-muted")}
       >
         <button
           type="button"
@@ -111,7 +111,7 @@ export function CollectionPicker({
             onPick(c.id);
             close();
           }}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           {isPinned ? <Pin className="size-3 shrink-0 text-primary" /> : null}
           <span className={cn("truncate", selected && "font-medium")}>{c.name}</span>
@@ -199,7 +199,7 @@ export function CollectionPicker({
         <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
       </button>
       {open ? (
-        <div className="absolute left-0 top-full z-30 mt-2 w-80 overflow-hidden rounded-xl border border-border bg-background shadow-lg">
+        <div className="absolute left-0 top-full z-30 mt-2 w-80 overflow-hidden rounded-2xl border border-border bg-background shadow-lg">
           <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
             <Search className="size-4 text-muted-foreground" />
             <input
@@ -227,7 +227,7 @@ export function CollectionPicker({
               ))
             )}
           </div>
-          <div className="border-t border-border p-1">
+          <div className="border-t border-border p-1.5">
             {adding ? (
               <div className="flex items-center gap-1.5 p-1">
                 <input
@@ -244,13 +244,13 @@ export function CollectionPicker({
                   placeholder="库名，如 健身"
                   maxLength={32}
                   aria-label="新库名"
-                  className="h-9 min-w-0 flex-1 rounded-lg border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="h-9 min-w-0 flex-1 rounded-xl border border-border bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
                 <button
                   type="button"
                   disabled={!newName.trim() || creating}
                   onClick={submitNew}
-                  className="h-9 rounded-lg bg-primary px-3.5 text-sm text-primary-foreground outline-none disabled:opacity-50"
+                  className="h-9 rounded-xl bg-primary px-3.5 text-sm text-primary-foreground outline-none disabled:opacity-50"
                 >
                   新建
                 </button>
@@ -259,7 +259,7 @@ export function CollectionPicker({
               <button
                 type="button"
                 onClick={() => setAdding(true)}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <Plus className="size-4" />
                 新建库

@@ -77,3 +77,19 @@ export const VISIBILITY_LABEL: Record<string, string> = {
   friends: "仅好友可见",
   private: "仅自己可见",
 };
+
+/** 视频时长（毫秒）→ m:ss / h:mm:ss。 */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), sec = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+/** 字节数 → 人类可读（1.2 MB）。 */
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}

@@ -75,9 +75,9 @@ export function LibraryTopics({
         {activeTag ? <span className="max-w-24 truncate">{activeTag}</span> : "话题"}
       </button>
       {open ? (
-        <div role="listbox" className="absolute right-0 top-full z-30 mt-1.5 max-h-80 w-64 overflow-y-auto rounded-xl border border-border bg-background p-1.5 shadow-lg">
+        <div role="listbox" className="absolute right-0 top-full z-30 mt-1.5 max-h-80 w-64 overflow-y-auto rounded-2xl border border-border bg-background p-1.5 shadow-lg">
           {activeTag ? (
-            <button type="button" onClick={() => { onTag(""); setOpen(false); }} className="mb-1 w-full rounded-lg px-3 py-2 text-left text-xs text-primary hover:bg-muted">
+            <button type="button" onClick={() => { onTag(""); setOpen(false); }} className="mb-1 w-full rounded-xl px-3 py-2 text-left text-xs text-primary hover:bg-muted">
               清除话题筛选
             </button>
           ) : null}
@@ -88,7 +88,7 @@ export function LibraryTopics({
               role="option"
               aria-selected={activeTag === t.tag}
               onClick={() => { onTag(activeTag === t.tag ? "" : t.tag); setOpen(false); }}
-              className={cn("flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", activeTag === t.tag && "bg-muted font-medium")}
+              className={cn("flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring", activeTag === t.tag && "bg-muted font-medium")}
             >
               <span className="truncate">#{t.tag}</span>
               <span className="ml-auto shrink-0 tabular-nums text-xs text-muted-foreground">{t.notes}</span>

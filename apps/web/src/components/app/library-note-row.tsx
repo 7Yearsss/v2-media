@@ -4,6 +4,7 @@ import { mediaUrl } from "@/lib/api";
 import { formatCount, timeAgo } from "@/lib/format";
 import { noteBadges, statLabel } from "@/lib/note-insight";
 import { cn } from "@/lib/utils";
+import { noteKeyHandler } from "@/lib/focus-nav";
 import { NoteAvatar } from "./note-avatar";
 import { NoteSelectBox } from "./note-select-box";
 
@@ -13,16 +14,20 @@ function dateLabel(value?: string | null) {
   return value ? new Date(value).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "未采到";
 }
 
-export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, drafted, viewed, checked, selecting, onToggle, hotAt }: {
+export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, drafted, viewed, checked, selecting, onToggle, onHover, index, dragIds, hotAt }: {
   note: CollectedNote; selected: boolean; onOpen: () => void; onEnqueue: () => void; enqueuing: boolean; drafted?: boolean; viewed?: boolean;
-  checked: boolean; selecting: boolean; onToggle: () => void; hotAt: number | null;
+  checked: boolean; selecting: boolean; onToggle: (range?: boolean) => void; onHover?: () => void; index?: number; dragIds?: () => number[]; hotAt: number | null;
 }) {
   const cover = mediaUrl(note.cover || note.images[0]?.url);
   const badges = noteBadges(note, hotAt);
-  const act = selecting ? onToggle : onOpen;
+  const act = selecting ? () => onToggle() : onOpen;
   return <div role="button" tabIndex={0} aria-label={`查看笔记：${note.title || "（无标题）"}`} aria-pressed={selecting ? checked : selected}
-    onClick={act} onKeyDown={event => {
-      if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); act(); }
+    data-note-index={index} onPointerEnter={onHover}
+    onClick={event => (selecting ? onToggle(event.shiftKey) : onOpen())} onKeyDown={noteKeyHandler(act)}
+    draggable={Boolean(dragIds)} onDragStart={event => {
+      if (!dragIds) return;
+      event.dataTransfer.setData("application/x-v2m-notes", JSON.stringify(dragIds()));
+      event.dataTransfer.effectAllowed = "move";
     }}
     className={cn(NOTE_ROW_COLUMNS, "group/row h-20 cursor-pointer border-b border-border/60 px-3 outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring", (selected || checked) && "bg-primary/8 shadow-[inset_3px_0_0_var(--color-primary)]")}>
     <div className="flex min-w-0 items-center gap-3">

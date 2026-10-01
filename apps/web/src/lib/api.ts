@@ -147,6 +147,10 @@ export interface NoteRangeFilter {
   type?: "image" | "video";
   minLikes?: number;
   withinDays?: number;
+  /** 只看某个作者（站点作者 id）。 */
+  authorId?: string;
+  /** 仅界面展示用（筛选条上的「作者：xxx」），不会发给服务端。 */
+  authorName?: string;
 }
 
 /** GET /api/notes 分页载荷（契约：{items,nextCursor}）。 */
@@ -289,6 +293,7 @@ export const api = {
         type: params.type,
         minLikes: params.minLikes,
         withinDays: params.withinDays,
+        authorId: params.authorId,
       },
     }).then((res) =>
       // 防御：服务端若直接返回数组也兜住
@@ -299,7 +304,7 @@ export const api = {
   /** 当前筛选范围的摘要（与 notes 同一套筛选，不含分页/排序）。 */
   notesSummary: (params: { keyword?: string; source?: string; collectionId?: string; tag?: string } & NoteRangeFilter) =>
     request<NotesSummary>("/api/notes/summary", {
-      query: { ...params, collectionId: params.collectionId || undefined },
+      query: { ...params, authorName: undefined, collectionId: params.collectionId || undefined },
     }),
   collections: () => request<{ items: Collection[] }>("/api/collections"),
   createCollection: (name: string) =>
@@ -328,6 +333,7 @@ export const api = {
     if (f?.type) p.set("type", f.type);
     if (f?.minLikes) p.set("minLikes", String(f.minLikes));
     if (f?.withinDays) p.set("withinDays", String(f.withinDays));
+    if (f?.authorId) p.set("authorId", f.authorId);
     if (f?.ids?.length) p.set("ids", f.ids.join(","));
     const qs = p.size ? `?${p}` : "";
     const token = getToken();

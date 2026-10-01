@@ -3,9 +3,10 @@ import type { CollectedNote } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
 import { TiltCard } from "@/components/motion/tilt-card";
 import { mediaUrl } from "@/lib/api";
-import { formatCount } from "@/lib/format";
+import { formatCount, formatDuration } from "@/lib/format";
 import { noteBadges, statLabel } from "@/lib/note-insight";
 import { cn } from "@/lib/utils";
+import { noteKeyHandler } from "@/lib/focus-nav";
 import { NoteAvatar } from "./note-avatar";
 import { NoteSelectBox } from "./note-select-box";
 
@@ -20,6 +21,9 @@ export function LibraryNoteCard({
   checked,
   selecting,
   onToggle,
+  onHover,
+  index,
+  dragIds,
   hotAt,
 }: {
   note: CollectedNote;
@@ -36,27 +40,37 @@ export function LibraryNoteCard({
   checked: boolean;
   /** 已有勾选项：此时点卡片是勾选而不是打开详情，复选框常显。 */
   selecting: boolean;
-  onToggle: () => void;
+  onToggle: (range?: boolean) => void;
+  /** 鼠标移上来：预取详情。 */
+  onHover?: () => void;
+  /** 在列表里的位置，方向键导航用。 */
+  index?: number;
+  /** 开始拖拽时返回要移动的笔记 id（已勾选就是全部勾选项）。 */
+  dragIds?: () => number[];
   hotAt: number | null;
 }) {
   const cover = mediaUrl(note.cover || note.images[0]?.url);
   const badges = noteBadges(note, hotAt);
   const tags = note.tags.slice(0, 2);
   const incomplete = !note.title && !cover && note.images.length === 0;
-  const act = selecting ? onToggle : onOpen;
+  const act = selecting ? () => onToggle() : onOpen;
   return (
     <TiltCard max={6} glare={false} className="h-full">
       <div
         role="button"
         tabIndex={0}
         aria-pressed={selecting ? checked : selected}
-        onClick={act}
-        onKeyDown={(e) => {
-          if (e.target !== e.currentTarget) return;
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            act();
-          }
+        data-note-index={index}
+        onClick={(e) => (selecting ? onToggle(e.shiftKey) : onOpen())}
+        onKeyDown={noteKeyHandler(act)}
+        onPointerEnter={onHover}
+        draggable={Boolean(dragIds)}
+        onDragStart={(e) => {
+          if (!dragIds) return;
+          const ids = dragIds();
+          e.dataTransfer.setData("application/x-v2m-notes", JSON.stringify(ids));
+          e.dataTransfer.effectAllowed = "move";
+          if (ids.length > 1) e.dataTransfer.setData("text/plain", `${ids.length} 条笔记`);
         }}
         className={cn(
           "group relative flex h-full cursor-pointer flex-col overflow-hidden rounded-2xl border bg-card text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
@@ -87,7 +101,9 @@ export function LibraryNoteCard({
           />
           <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
             {note.type === "video" ? (
-              <span className="rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white">视频</span>
+              <span className="rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium tabular-nums text-white">
+                视频{note.video?.durationMs ? ` ${formatDuration(note.video.durationMs)}` : ""}
+              </span>
             ) : note.images.length > 1 ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-[10px] font-medium text-white">
                 <Images className="size-3" />

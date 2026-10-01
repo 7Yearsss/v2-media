@@ -88,13 +88,17 @@ export default function LibraryPage() {
   const typeParam = params.get("type");
   const likesParam = Number(params.get("likes")) || undefined;
   const daysParam = Number(params.get("days")) || undefined;
+  const authorParam = params.get("author") || undefined;
+  const authorNameParam = params.get("authorName") || undefined;
   const range = useMemo<NoteRangeFilter>(
     () => ({
       type: typeParam === "video" || typeParam === "image" ? typeParam : undefined,
       minLikes: likesParam,
       withinDays: daysParam,
+      authorId: authorParam,
+      authorName: authorParam ? authorNameParam : undefined,
     }),
-    [typeParam, likesParam, daysParam],
+    [typeParam, likesParam, daysParam, authorParam, authorNameParam],
   );
   const selected = Number(params.get("note")) || null;
   const patch = useCallback(
@@ -116,7 +120,16 @@ export default function LibraryPage() {
   const setCollection = (v: string) => patch({ col: v || undefined });
   const setTag = (v: string) => patch({ tag: v || undefined });
   const setRange = (r: NoteRangeFilter) =>
-    patch({ type: r.type || undefined, likes: r.minLikes ? String(r.minLikes) : undefined, days: r.withinDays ? String(r.withinDays) : undefined });
+    patch({
+      type: r.type || undefined,
+      likes: r.minLikes ? String(r.minLikes) : undefined,
+      days: r.withinDays ? String(r.withinDays) : undefined,
+      author: r.authorId || undefined,
+      authorName: r.authorId ? r.authorName || undefined : undefined,
+    });
+  // 详情里点话题 / 作者：回到列表并按它筛选（关闭详情，不入历史栈）
+  const filterByTag = (t: string) => patch({ tag: t, note: undefined });
+  const filterByAuthor = (id: string, name: string) => patch({ author: id, authorName: name || undefined, note: undefined });
   const setSortBy = (field: NoteSortField, dir: NoteSortDirection) =>
     patch({ sort: field === "id" ? undefined : field, dir: field === "id" ? undefined : dir });
   const openNote = useCallback((id: number) => patch({ note: String(id) }, { push: true }), [patch]);
@@ -319,13 +332,47 @@ export default function LibraryPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [checked.size]);
-  const toggleChecked = useCallback((id: number) => {
+  const lastChecked = useRef<number | null>(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  // range=true（按住 Shift）：从上次勾选的那条到这条之间整段选中
+  const toggleChecked = useCallback((id: number, range?: boolean) => {
+    const anchor = lastChecked.current;
+    lastChecked.current = id;
     setChecked((prev) => {
       const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
+      const list = itemsRef.current;
+      const from = anchor === null ? -1 : list.findIndex((n) => n.id === anchor);
+      const to = list.findIndex((n) => n.id === id);
+      if (range && from >= 0 && to >= 0) {
+        const [a, b] = from < to ? [from, to] : [to, from];
+        for (let i = a; i <= b; i++) next.add(list[i]!.id);
+      } else if (!next.delete(id)) next.add(id);
       return next;
     });
   }, []);
+  // 悬停卡片就提前取详情，点开几乎秒开
+  const prefetchNote = useCallback(
+    (id: number) => void queryClient.prefetchQuery({ queryKey: ["note", id], queryFn: () => api.note(id), staleTime: 60_000 }),
+    [queryClient],
+  );
+  useEffect(() => {
+    // 开着详情时顺带预取上一条 / 下一条
+    if (selectedIndex < 0) return;
+    for (const n of [items[selectedIndex - 1], items[selectedIndex + 1]]) if (n) prefetchNote(n.id);
+  }, [selectedIndex, items, prefetchNote]);
+  // 拖拽到采集库标签：被拖的是已勾选的就带上全部勾选项，否则只移这一条
+  const dragIds = (id: number) => (checked.has(id) ? [...checked] : [id]);
+  const moveNotes = async (noteIds: number[], collectionId: number | null) => {
+    try {
+      const { affected } = await api.batchNotes({ action: "move", ids: noteIds, collectionId });
+      const name = collectionId === null ? "未分组" : collections.find((c) => c.id === collectionId)?.name ?? "目标库";
+      toast.success(`已移入「${name}」`, `${affected} 条笔记`);
+      afterBulk();
+    } catch (e) {
+      toast.error("移入库失败", e instanceof Error ? e.message : undefined);
+    }
+  };
 
   const ids = () => [...checked];
   const afterBulk = () => {
@@ -501,6 +548,7 @@ export default function LibraryPage() {
           {/* 采集库标签栏 + 当前范围统计，合并成一行 */}
           <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
             <CollectionTabs
+              onDropNotes={(noteIds, collectionId) => void moveNotes(noteIds, collectionId)}
               collections={collections}
               value={collection}
               onChange={setCollection}
@@ -563,14 +611,17 @@ export default function LibraryPage() {
               key={`${view}-${sort}-${direction}`}
               items={items}
               getItemKey={(n) => n.id}
-              renderItem={(n) => {
+              renderItem={(n, i) => {
                 const props = {
                   note: n,
                   selected: selected === n.id,
                   checked: checked.has(n.id),
                   selecting: checked.size > 0,
-                  onToggle: () => toggleChecked(n.id),
+                  onToggle: (range?: boolean) => toggleChecked(n.id, range),
                   onOpen: () => openNote(n.id),
+                  onHover: () => prefetchNote(n.id),
+                  index: i,
+                  dragIds: () => dragIds(n.id),
                   onEnqueue: () => enqueue.mutate(n.id),
                   enqueuing: enqueue.isPending,
                   drafted: drafted.has(n.id),
@@ -642,9 +693,10 @@ export default function LibraryPage() {
       </div>
       {selected !== null ? (
         <LibraryNoteDetail
-          key={selected}
           noteId={selected}
           onClose={closeDetail}
+          onTag={filterByTag}
+          onAuthor={filterByAuthor}
           onPrev={selectedIndex > 0 ? () => goNeighbor(-1) : undefined}
           onNext={selectedIndex >= 0 && selectedIndex < items.length - 1 ? () => goNeighbor(1) : undefined}
           onDelete={deleteWithUndo}
