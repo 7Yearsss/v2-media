@@ -298,7 +298,7 @@ export function LibraryNoteDetail({
               </p>
             ) : null}
             {note.type === "video" && !note.videoUrl ? (
-              <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">这条视频的播放地址没采到，重新采集这一篇可以补上。</p>
+              <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">未采到播放地址</p>
             ) : null}
             <div className="space-y-6 px-4 pb-8 pt-4">
               <section aria-label="笔记正文" className="space-y-3">

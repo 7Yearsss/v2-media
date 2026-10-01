@@ -42,9 +42,6 @@ export function LibraryBulkBar({
           全选已加载的 {totalShown} 条
         </button>
       ) : null}
-      {total !== undefined && total > totalShown ? (
-        <span className="text-xs text-muted-foreground">（共 {total} 条，滚动加载后可继续全选）</span>
-      ) : null}
       <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
       <div className="inline-flex items-center gap-1 text-xs text-muted-foreground">
         <FolderInput className="size-3.5" />

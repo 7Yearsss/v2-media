@@ -339,7 +339,6 @@ export function NoteVideoPlayer({
           <div className="flex flex-col items-center gap-3">
             <AlertCircle className="size-8 text-amber-400" />
             <p className="text-sm">视频加载失败</p>
-            <p className="max-w-60 text-xs text-white/60">原视频链接可能已过期，或网络不稳定。</p>
             <button type="button" onClick={retry} className="inline-flex h-9 items-center gap-1.5 rounded-full bg-white/15 px-4 text-sm outline-none hover:bg-white/25 focus-visible:ring-2 focus-visible:ring-white">
               <RotateCcw className="size-4" />重试
             </button>

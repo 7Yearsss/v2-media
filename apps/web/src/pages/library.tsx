@@ -483,15 +483,7 @@ export default function LibraryPage() {
       <div className={cn("relative min-h-0 min-w-0 flex-1 flex-col", selected !== null ? "hidden lg:flex" : "flex")}>
         <div className="shrink-0 space-y-4 px-6 pt-6">
           <div className="flex flex-wrap items-center gap-3">
-            <div>
-              <h2 className="text-xl font-semibold tracking-tight text-foreground">
-                内容库
-              </h2>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                插件采集的笔记素材，共 {summary?.notes ?? items.length} 条
-                {notesQuery.hasNextPage ? `（已加载 ${items.length}，滚动加载更多）` : ""}
-              </p>
-            </div>
+            {summary ? <LibraryStats summary={summary} /> : null}
             <div className="ml-auto">
               <MorphingSearch
                 items={searchItems}
@@ -561,7 +553,6 @@ export default function LibraryPage() {
               onDelete={(c) => setDeletingCol({ id: c.id, name: c.name, noteCount: c.noteCount })}
               onCreate={(name) => createCol.mutate(name)}
             />
-            {summary ? <LibraryStats summary={summary} /> : null}
           </div>
         </div>
 
