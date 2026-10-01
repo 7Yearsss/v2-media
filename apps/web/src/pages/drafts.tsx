@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   FileText,
   ImagePlus,
   Loader2,
@@ -10,7 +11,16 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NoteImage } from "@v2media/shared";
+import {
+  applyAllBannedFixes,
+  applyBannedFix,
+  BANNED_KIND_META,
+  checkBannedWords,
+  checkDraftLimits,
+  DRAFT_LIMITS,
+  summarizeBanned,
+  type NoteImage,
+} from "@v2media/shared";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
@@ -20,8 +30,10 @@ import {
 } from "@/components/motion/swipeable-list";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { AiPanel } from "@/components/app/ai-panel";
+import { RiskTextarea } from "@/components/app/risk-textarea";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
 import { api, mediaUrl } from "@/lib/api";
+import { useBannedWords } from "@/lib/hooks/use-banned-words";
 import { timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -46,6 +58,30 @@ export default function DraftsPage() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState<string[]>([]);
+  // 发布前自查：标题 + 正文里的违禁/限流词，边写边提示
+  const { words: customWords, add: addWord, remove: removeWord } = useBannedWords();
+  const bannedOpts = useMemo(() => ({ extraWords: customWords }), [customWords]);
+  const banned = useMemo(() => summarizeBanned(checkBannedWords(`${title}\n${content}`, bannedOpts)), [title, content, bannedOpts]);
+  const [showWords, setShowWords] = useState(false);
+  const [riskOpen, setRiskOpen] = useState(false);
+  // 正文里的命中（内联高亮用，位置相对正文）
+  const contentHits = useMemo(() => checkBannedWords(content, bannedOpts), [content, bannedOpts]);
+  // 只改这一处：弹层里点“改成…”
+  const fixHit = (h: { index: number; word: string; suggest?: string }) => {
+    if (h.suggest === undefined) return;
+    update({ content: content.slice(0, h.index) + h.suggest + content.slice(h.index + h.word.length) });
+  };
+  const [wordInput, setWordInput] = useState("");
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+  // 点词：在正文里选中第一处（标题里的看颜色就能找到）
+  const locate = (word: string) => {
+    const el = contentRef.current;
+    const i = content.indexOf(word);
+    if (!el || i < 0) return;
+    el.focus();
+    el.setSelectionRange(i, i + word.length);
+  };
+  const limits = useMemo(() => checkDraftLimits({ title, content, tags }), [title, content, tags]);
   const [images, setImages] = useState<NoteImage[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [imageInput, setImageInput] = useState("");
@@ -243,20 +279,21 @@ export default function DraftsPage() {
           type="button"
           onClick={() => navigate(`/drafts/${d.id}`)}
           className={cn(
-            "flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none",
-            "transition-colors",
-            active ? "bg-muted" : "hover:bg-muted/60",
+            "relative flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none",
+            "transition-colors hover:bg-muted/40",
+            // 外层已经是卡片，选中只用左侧竖条标记，别再套一层底色方块
+            active && "before:absolute before:inset-y-2.5 before:left-0 before:w-[3px] before:rounded-full before:bg-primary",
           )}
         >
-          <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl border border-border bg-background text-muted-foreground">
-            {d.images[0]?.url ? (
+          <span className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl bg-muted text-muted-foreground">
+            <FileText className="size-4" />
+            {d.images[0]?.url && (
               <img
                 src={mediaUrl(d.images[0].url)}
                 alt=""
-                className="h-full w-full object-cover"
+                onError={(e) => (e.currentTarget.style.display = "none")}
+                className="absolute inset-0 h-full w-full object-cover"
               />
-            ) : (
-              <FileText className="size-4" />
             )}
           </span>
           <span className="min-w-0 flex-1">
@@ -384,27 +421,127 @@ export default function DraftsPage() {
               ) : null}
             </div>
 
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
-              <Input
-                placeholder="笔记标题…"
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-8 py-6">
+              <input
                 value={title}
-                onChange={(v) => update({ title: v })}
+                onChange={(e) => update({ title: e.target.value })}
+                placeholder="填写标题，最多 20 字"
                 aria-label="标题"
-                classNames={{ input: "text-base font-semibold" }}
+                className="w-full bg-transparent px-1 text-2xl font-semibold leading-9 outline-none placeholder:text-muted-foreground/40"
               />
 
-              <textarea
+              <RiskTextarea
                 value={content}
-                onChange={(e) => update({ content: e.target.value })}
-                placeholder="正文内容…"
-                aria-label="正文"
-                rows={14}
-                className={cn(
-                  "w-full resize-y rounded-xl border border-input bg-card px-3.5 py-3",
-                  "text-sm leading-6 text-foreground outline-none transition-colors",
-                  "placeholder:text-muted-foreground/70 focus:border-ring",
-                )}
+                onChange={(v) => update({ content: v })}
+                hits={contentHits}
+                onFix={fixHit}
+                placeholder="写点什么…"
+                ariaLabel="正文"
+                textareaRef={contentRef}
               />
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/60 pt-3 text-[11px] text-muted-foreground">
+                <span className={cn([...title].length > DRAFT_LIMITS.title && "font-medium text-rose-500")}>
+                  标题 {[...title].length}/{DRAFT_LIMITS.title}
+                </span>
+                <span className={cn([...content].length > DRAFT_LIMITS.content && "font-medium text-rose-500")}>
+                  正文 {[...content].length}/{DRAFT_LIMITS.content}
+                </span>
+                <button type="button" onClick={() => setShowWords((v) => !v)} className="transition-colors hover:text-primary">
+                  我的屏蔽词{customWords.length ? ` · ${customWords.length}` : ""}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRiskOpen((v) => !v)}
+                  className={cn(
+                    "ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 font-medium transition-colors",
+                    banned.length || limits.length
+                      ? "bg-rose-500/10 text-rose-600 hover:bg-rose-500/15"
+                      : "bg-emerald-500/10 text-emerald-600",
+                  )}
+                >
+                  <i className={cn("size-1.5 rounded-full", banned.length || limits.length ? "bg-rose-500" : "bg-emerald-500")} />
+                  {banned.length || limits.length ? `${banned.length + limits.length} 处需要看看` : "自查通过"}
+                </button>
+              </div>
+
+              {showWords && (
+                <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-muted/50 px-3.5 py-3 text-xs">
+                  {customWords.map((w) => (
+                    <span key={w} className="flex items-center gap-1 rounded-full bg-card px-2.5 py-1 ring-1 ring-border">
+                      {w}
+                      <button type="button" aria-label={`移除 ${w}`} onClick={() => removeWord(w)} className="text-muted-foreground hover:text-rose-500">
+                        <X className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    value={wordInput}
+                    onChange={(e) => setWordInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && wordInput.trim()) {
+                        e.preventDefault();
+                        addWord(wordInput);
+                        setWordInput("");
+                      }
+                    }}
+                    maxLength={20}
+                    placeholder="加一个要避开的词，回车"
+                    className="min-w-32 flex-1 bg-transparent outline-none placeholder:text-muted-foreground/60"
+                  />
+                </div>
+              )}
+
+              {riskOpen && (banned.length > 0 || limits.length > 0) && (
+                <div className="divide-y divide-border/60 overflow-hidden rounded-2xl border border-border text-xs">
+                  {limits.map((l) => (
+                    <div key={l.field} className="flex items-center gap-2 px-3.5 py-2.5 font-medium text-rose-500">
+                      <AlertTriangle className="size-3.5 shrink-0" />
+                      {l.message}（{l.used}/{l.max}）
+                    </div>
+                  ))}
+                  {banned.map((b) => (
+                    <div key={b.word} className="flex items-center gap-2.5 px-3.5 py-2.5">
+                      <i className={cn("size-2 shrink-0 rounded-full", b.severity === "high" ? "bg-rose-500" : "bg-amber-500")} />
+                      <button type="button" onClick={() => locate(b.word)} title="在正文里选中" className="font-medium hover:text-primary">
+                        {b.word}
+                        {b.count > 1 && <span className="ml-1 font-normal text-muted-foreground">×{b.count}</span>}
+                      </button>
+                      <span className="text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
+                      {b.suggest !== undefined ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            update({
+                              title: applyBannedFix(title, b.word, b.suggest),
+                              content: applyBannedFix(content, b.word, b.suggest),
+                            })
+                          }
+                          className="ml-auto rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary transition-colors hover:bg-primary/20"
+                        >
+                          {b.suggest ? `改成「${b.suggest}」` : "删除"}
+                        </button>
+                      ) : (
+                        <span className="ml-auto text-muted-foreground">需要换个说法</span>
+                      )}
+                    </div>
+                  ))}
+                  {banned.some((b) => b.suggest !== undefined) && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        update({
+                          title: applyAllBannedFixes(title, bannedOpts),
+                          content: applyAllBannedFixes(content, bannedOpts),
+                        })
+                      }
+                      className="w-full bg-muted/40 px-3.5 py-2.5 text-center font-medium text-primary transition-colors hover:bg-muted"
+                    >
+                      一键处理能自动改的
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div>
                 <p className="mb-2 text-xs font-medium text-muted-foreground">

@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS collection_analyses (
   created_at timestamp DEFAULT now() NOT NULL
 );
 ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS data jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS status varchar(16) NOT NULL DEFAULT 'done';
+ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS error text;
 CREATE INDEX IF NOT EXISTS collection_analyses_col ON collection_analyses(user_id, collection_id);
 CREATE TABLE IF NOT EXISTS drafts (
   id serial PRIMARY KEY,

@@ -118,20 +118,132 @@ export interface CollectionAnalysisStats {
   topTags: Array<{ tag: string; count: number }>;
   /** 数据覆盖：多少篇进过详情页（藏/评/转/正文只有详情页才采得到）。 */
   coverage?: { withDetail: number; total: number };
+  /** v2：代码算出的信号层。 */
+  signals?: AnalysisSignals;
+}
+
+/** 对库内笔记的引用（可跳回内容库 / 作为选题来源）。 */
+export interface InsightRef {
+  id: number;
+  title: string;
+}
+
+/** 一条论证过的结论：判断 + 证据 + 边界 + 怎么做。 */
+export interface InsightFinding {
+  claim: string;
+  evidence: string[];
+  /** 反例或不成立的条件。 */
+  boundary: string;
+  /** 所以该怎么做。 */
+  todo: string;
+  confidence: "high" | "mid" | "low";
+  refs?: InsightRef[];
+}
+
+/** 评论里没被满足的需求。 */
+export interface InsightNeed {
+  need: string;
+  quote: string;
+  refs?: InsightRef[];
+}
+
+/** 可直接进选题池的选题。 */
+export interface InsightIdea {
+  title: string;
+  hook: string;
+  angle: string;
+  refs?: InsightRef[];
+}
+
+/** 看着火但不可复制的内容。 */
+export interface InsightTrap {
+  title: string;
+  reason: string;
 }
 
 /** AI 对库内内容产出的结构化洞察（JSON 解析失败时为 null，看 report）。 */
 export interface CollectionInsight {
-  /** 一句话结论。 */
+  /** 一句话判断。 */
   summary: string;
-  /** AI 挑出的爆款及原因。 */
-  topNotes: Array<{ title: string; why: string }>;
-  /** 共性规律。 */
-  patterns: string[];
-  /** 机会点。 */
-  opportunities: string[];
-  /** 行动建议。 */
-  actions: string[];
+  findings?: InsightFinding[];
+  needs?: InsightNeed[];
+  traps?: InsightTrap[];
+  ideas?: InsightIdea[];
+  /** 旧版（v1）报告字段。 */
+  topNotes?: Array<{ title: string; why: string }>;
+  patterns?: string[];
+  opportunities?: string[];
+  actions?: string[];
+}
+
+/** 服务端用代码算出的信号（不经 AI）：AI 只负责解读这些差异。 */
+export interface AnalysisSignals {
+  sample: { total: number; hit: number; withDetail: number; withComments: number; videos: number };
+  /** 爆款（互动 top 25%）vs 其余的特征对比。 */
+  traits: Array<{ key: string; label: string; hit: number; rest: number; unit: string }>;
+  /** 标题钩子：爆款里占比 + 带钩子笔记的中位互动 / 不带的（lift）。 */
+  hooks: Array<{ key: string; label: string; count: number; hitShare: number; lift: number | null; example: string }>;
+  formats: Array<{ type: "image" | "video"; count: number; medianEngagement: number }>;
+  /** 爆款发布时间分布。 */
+  timing: { byWeekday: number[]; byHour: number[]; samples: number } | null;
+  /** 笔记类型散点：藏赞比 × 评赞比。 */
+  points: Array<{
+    ref: number;
+    /** 笔记 id（可跳内容库）。 */
+    id: number;
+    title: string;
+    engagement: number;
+    saveRate: number;
+    talkRate: number;
+    kind: "tool" | "talk" | "like";
+  }>;
+  comments: {
+    total: number;
+    categories: Array<{ key: string; label: string; count: number; sample: string }>;
+  } | null;
+  /** 不可复制的信号（老帖余热 / 作者扎堆 / 单点爆款）。 */
+  traps: Array<{ ref: number; title: string; reason: "old" | "author" | "outlier"; detail: string }>;
+}
+
+/** 分析流水线的阶段：信号由代码先算好，其余是 AI 步骤。 */
+export type AnalysisStage = "signals" | "covers" | "videos" | "hypotheses" | "report";
+
+export interface AnalysisProgress {
+  /** 当前阶段。 */
+  stage: AnalysisStage;
+  /** 本次会经过的全部阶段（视频拆解默认不在其中）。 */
+  steps: AnalysisStage[];
+  /** 进入当前阶段的时间（ms 时间戳）。 */
+  at: number;
+}
+
+/** AI 看过的封面：爆款 + 对照组，页面做成封面画廊。 */
+export interface AnalysisVisualItem {
+  ref: number;
+  id: number;
+  title?: string;
+  cover: string;
+  /** 封面类型：真人照/文字海报/对比图…。 */
+  kind: string;
+  /** 图上的文字。 */
+  text: string;
+  /** 让人想点的画面。 */
+  hook: string;
+  /** 是爆款还是对照组。 */
+  hit: boolean;
+  engagement: number;
+  /** 视频拆解（只有爆款视频才有）。 */
+  video?: AnalysisVideoBreakdown;
+}
+
+/** 一条视频的拆解：开头 / 分段 / 口播 / 结尾。 */
+export interface AnalysisVideoBreakdown {
+  opening: { visual: string; line: string };
+  segments: Array<{ from: number; to: number; what: string }>;
+  voiceover: string;
+  onscreen: string[];
+  ending: string;
+  durationSec?: number;
 }
 
 /** AI 分析结果：对一个采集库跑出的一轮分析快照。 */
@@ -140,7 +252,18 @@ export interface CollectionAnalysis {
   collectionId: number;
   /** 本轮分析覆盖的笔记数。 */
   noteCount: number;
-  data: { stats: CollectionAnalysisStats; insight: CollectionInsight | null };
+  data: {
+    stats: CollectionAnalysisStats;
+    insight: CollectionInsight | null;
+    /** 分析时填的目标账号定位（空=通用）。 */
+    positioning?: string;
+    visual?: AnalysisVisualItem[];
+    /** 生成中的进度（done 后移除）。 */
+    progress?: AnalysisProgress;
+  };
+  /** running=后台生成中（页面轮询）/ done / failed。 */
+  status: "running" | "done" | "failed";
+  error?: string | null;
   /** AI 原文（结构化失败时的兜底）。 */
   report: string;
   createdAt: string;

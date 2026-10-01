@@ -6,8 +6,12 @@ export const env = {
   aiBaseUrl: (process.env.AI_BASE_URL ?? "").replace(/\/$/, ""),
   aiApiKey: process.env.AI_API_KEY ?? "",
   aiModel: process.env.AI_MODEL ?? "gpt-4o-mini",
+  /** 分析（两次长上下文调用）专用模型；空 = 用 AI_MODEL。网关单次请求超 ~100s 会 524，选响应快的。 */
+  aiAnalysisModel: process.env.AI_ANALYSIS_MODEL ?? "",
+  /** 看封面用的多模态模型；空 = 用分析模型。 */
+  aiVisionModel: process.env.AI_VISION_MODEL ?? "",
   /** AI 网关单次请求超时（毫秒），网关不响应时防挂死。 */
-  aiTimeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 120_000),
+  aiTimeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 300_000),
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
   authSecret: process.env.AUTH_SECRET ?? "dev-only-secret",
   dataDir: process.env.DATA_DIR ?? new URL("../data", import.meta.url).pathname,

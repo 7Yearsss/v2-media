@@ -7,15 +7,19 @@ import { env } from "../env";
 import { collectedNotes, collections, drafts, hostedAccounts, topics } from "../db/schema";
 
 /** OpenAI 兼容 chat 客户端 —— fetch 可注入（测试里 mock）。 */
+/** 多模态消息片段（OpenAI 兼容格式；图片用 data URL 内嵌，网关不会替我们去取外链）。 */
+export type AiPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+
 export interface AiClient {
-  complete(system: string, user: string): Promise<string>;
+  /** opts.model：本次调用覆盖默认模型（分析要用响应快的，网关 100s 会切断长请求）。 */
+  complete(system: string, user: string | AiPart[], opts?: { model?: string; temperature?: number; json?: boolean }): Promise<string>;
 }
 
 export function createOpenAiClient(
   fetchFn: typeof fetch = fetch,
 ): AiClient {
   return {
-    async complete(system, user) {
+    async complete(system, user, opts) {
       if (!env.aiBaseUrl || !env.aiApiKey) throw new Error("AI not configured (AI_BASE_URL/AI_API_KEY)");
       const res = await fetchFn(`${env.aiBaseUrl}/chat/completions`, {
         method: "POST",
@@ -26,19 +30,47 @@ export function createOpenAiClient(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: env.aiModel,
+          model: opts?.model || env.aiModel,
           messages: [
             { role: "system", content: system },
             { role: "user", content: user },
           ],
-          temperature: 0.7,
+          temperature: opts?.temperature ?? 0.7,
+          ...(opts?.json ? { response_format: { type: "json_object" } } : {}),
+          // 流式：网关前面有 Cloudflare，非流式的长请求 ~100s 无响应会被切成 524
+          stream: true,
         }),
       });
-      if (!res.ok) throw new Error(`AI request failed: ${res.status}`);
-      const payload = (await res.json()) as any;
-      const content = payload?.choices?.[0]?.message?.content;
-      if (typeof content !== "string" || !content.trim()) throw new Error("empty AI response");
-      return content.trim();
+      if (!res.ok || !res.body) throw new Error(`AI request failed: ${res.status}`);
+      // 兼容不支持流式、直接回整包 JSON 的网关
+      if (!(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
+        const payload = (await res.json()) as any;
+        const content = payload?.choices?.[0]?.message?.content;
+        if (typeof content !== "string" || !content.trim()) throw new Error("empty AI response");
+        return content.trim();
+      }
+      const decoder = new TextDecoder();
+      let buf = "";
+      let out = "";
+      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+        buf += decoder.decode(chunk, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (!data || data === "[DONE]") continue;
+          try {
+            const delta = JSON.parse(data)?.choices?.[0]?.delta?.content;
+            if (typeof delta === "string") out += delta;
+          } catch {
+            /* 心跳/非 JSON 行忽略 */
+          }
+        }
+      }
+      if (!out.trim()) throw new Error("empty AI response");
+      return out.trim();
     },
   };
 }

@@ -478,15 +478,23 @@ export default function TopicsPage() {
   if (topicsQuery.isError) return <PageError error={topicsQuery.error} />;
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6 p-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold text-foreground">选题池</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            从采集库长出内容方向，评分、排期、转草稿
-          </p>
-        </div>
-        <div className="flex gap-2">
+    <div className="w-full space-y-4 px-6 pb-8 pt-6">
+      <div className="flex flex-wrap items-center gap-2">
+        {STATUS_TABS.map((t) => (
+          <button
+            key={t.value}
+            onClick={() => setStatus(t.value)}
+            className={cn(
+              "rounded-full px-3.5 py-1.5 text-sm transition-colors",
+              status === t.value
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted text-muted-foreground hover:bg-muted/70",
+            )}
+          >
+            {t.label}
+          </button>
+        ))}
+        <div className="ml-auto flex gap-2">
           <Button variant="ghost" onClick={() => setAiOpen(true)} disabled={!collections.length}>
             <Sparkles className="size-4" />
             AI 生成选题
@@ -496,23 +504,6 @@ export default function TopicsPage() {
             新建选题
           </Button>
         </div>
-      </div>
-
-      <div className="flex flex-wrap gap-1.5">
-        {STATUS_TABS.map((t) => (
-          <button
-            key={t.value}
-            onClick={() => setStatus(t.value)}
-            className={cn(
-              "rounded-full px-3 py-1 text-xs transition-colors",
-              status === t.value
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-muted-foreground hover:bg-muted/70",
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
       </div>
 
       {!items.length ? (
@@ -528,7 +519,7 @@ export default function TopicsPage() {
           }
         />
       ) : (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
           {items.map((t) => (
             <button
               key={t.id}
@@ -543,7 +534,7 @@ export default function TopicsPage() {
                   </p>
                 </div>
                 {t.score != null && (
-                  <span className={cn("shrink-0 text-lg font-semibold tabular-nums", scoreTone(t.score))}>
+                  <span className={cn("grid size-9 shrink-0 place-items-center rounded-full text-sm font-semibold tabular-nums ring-2 ring-current/25", scoreTone(t.score))}>
                     {t.score}
                   </span>
                 )}

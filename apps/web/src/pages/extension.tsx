@@ -41,16 +41,8 @@ const STEPS = [
 export default function ExtensionPage() {
   const { online } = useExtensionStatus();
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight text-foreground">
-            采集插件
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Chrome 扩展：采集笔记 / 账号托管心跳 / 一键发布
-          </p>
-        </div>
+    <div className="w-full px-6 pb-8 pt-6">
+      <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <AnimatedBadge
           size="sm"
           status={online === true ? "success" : online === false ? "warning" : "info"}

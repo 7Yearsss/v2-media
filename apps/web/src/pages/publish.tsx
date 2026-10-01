@@ -8,6 +8,8 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { BANNED_KIND_META, checkBannedWords, checkDraftLimits, summarizeBanned } from "@v2media/shared";
+import { useBannedWords } from "@/lib/hooks/use-banned-words";
 import {
   useMutation,
   useQuery,
@@ -70,6 +72,16 @@ function NewJobDrawer({
   const draft = drafts.find((d) => String(d.id) === draftId);
   const account = accounts.find((a) => String(a.id) === accountId);
   const ready = Boolean(draftId && accountId);
+  // 发布前自查：不经过草稿页的人也能看到风险（命中只提醒，不拦截）
+  const { words: customWords } = useBannedWords();
+  const risks = useMemo(() => {
+    if (!draft) return { banned: [], limits: [] };
+    return {
+      banned: summarizeBanned(checkBannedWords(`${draft.title}\n${draft.content}`, { extraWords: customWords })),
+      limits: checkDraftLimits({ title: draft.title, content: draft.content, tags: draft.tags }),
+    };
+  }, [draft, customWords]);
+  const highRisk = risks.limits.length > 0 || risks.banned.some((b) => b.severity === "high");
 
   const submit = async () => {
     if (!ready || submitting) return;
@@ -131,6 +143,25 @@ function NewJobDrawer({
               </SelectContent>
             </Select>
           </div>
+
+          {draft && (risks.banned.length > 0 || risks.limits.length > 0) && (
+            <div className="flex flex-col gap-1.5 rounded-xl bg-amber-500/10 px-3.5 py-3 text-xs">
+              <span className="font-medium text-amber-600">发布前自查</span>
+              {risks.limits.map((l) => (
+                <span key={l.field} className="font-medium text-rose-500">{l.message}（{l.used}/{l.max}）</span>
+              ))}
+              {risks.banned.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {risks.banned.map((b) => (
+                    <span key={b.word} title={BANNED_KIND_META[b.kind].hint} className={`rounded-full bg-card px-2.5 py-1 ring-1 ${b.severity === "high" ? "text-rose-600 ring-rose-500/40" : "text-foreground/80 ring-amber-500/30"}`}>
+                      {b.word}<span className="ml-1 text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <a href={`/drafts/${draft.id}`} className="text-primary underline-offset-2 hover:underline">去草稿里改</a>
+            </div>
+          )}
 
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">
@@ -196,7 +227,7 @@ function NewJobDrawer({
                 : "请先选择草稿和账号"
             }
             status={submitting ? "submitting" : "pending"}
-            approveLabel="确认发布"
+            approveLabel={highRisk ? "仍要发布" : "确认发布"}
             onApprove={() => void submit()}
             onDismiss={() => onOpenChange(false)}
           />
@@ -447,16 +478,8 @@ export default function PublishPage() {
   const errored = jobsQuery.isError;
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-6 py-8">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight text-foreground">
-            发布中心
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            发布任务由已授权的浏览器插件执行
-          </p>
-        </div>
+    <div className="flex h-full w-full flex-col px-6 pb-8 pt-6">
+      <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <Button size="sm" onClick={openCreate}>
           <Plus className="size-3.5" />
           新建发布
