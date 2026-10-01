@@ -20,6 +20,7 @@ export function CollectionPicker({
   onRename,
   onDelete,
   onCreate,
+  compact,
 }: {
   collections: Collection[];
   /** "" | "none" | 库 id 字符串；仅当是库 id 时按钮显示该库 */
@@ -32,6 +33,8 @@ export function CollectionPicker({
   onRename: (c: Collection) => void;
   onDelete: (c: Collection) => void;
   onCreate: (name: string) => void;
+  /** 紧凑按钮「全部库 N」：标签栏放不下的库从这里选，不高亮当前库。 */
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -39,7 +42,7 @@ export function CollectionPicker({
   const [newName, setNewName] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
 
-  const current = collections.find((c) => String(c.id) === value);
+  const current = compact ? undefined : collections.find((c) => String(c.id) === value);
 
   const close = () => {
     setOpen(false);
@@ -172,7 +175,8 @@ export function CollectionPicker({
           else setOpen(true);
         }}
         className={cn(
-          "inline-flex h-10 min-w-56 max-w-80 items-center gap-2.5 rounded-xl border bg-background px-3.5 text-sm shadow-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+          "inline-flex items-center gap-2.5 rounded-xl border bg-background text-sm shadow-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+          compact ? "h-9 px-3" : "h-10 min-w-56 max-w-80 px-3.5",
           current
             ? "border-primary/60 text-foreground"
             : "border-border text-muted-foreground hover:border-(--color-border-strong) hover:text-foreground",
@@ -186,7 +190,7 @@ export function CollectionPicker({
           </>
         ) : (
           <>
-            <span>选择采集库</span>
+            <span>{compact ? "全部库" : "选择采集库"}</span>
             {collections.length ? (
               <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">{collections.length}</span>
             ) : null}

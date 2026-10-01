@@ -1,9 +1,8 @@
-import { Check, ChevronLeft, ExternalLink, Heart, MessageCircle, MoreHorizontal, Pencil, SendToBack, Star, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronLeft, ChevronUp, Copy, ExternalLink, FileText, Heart, MessageCircle, MoreHorizontal, Pencil, SendToBack, Star, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/motion/button";
-import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { PageError, PageLoading } from "@/components/app/states";
 import { api, mediaUrl, noteComments } from "@/lib/api";
 import { formatCount, timeAgo } from "@/lib/format";
@@ -66,8 +65,8 @@ function CommentReplies({ replies, total, authorId }: { replies: NoteComment[]; 
   );
 }
 
-/** 顶栏右侧「⋯」：原笔记 / 删除。 */
-function NoteMenu({ sourceUrl, onDelete }: { sourceUrl?: string; onDelete: () => void }) {
+/** 顶栏右侧「⋯」：复制文案 / 复制链接 / 原笔记 / 删除。 */
+function NoteMenu({ sourceUrl, onCopyText, onDelete }: { sourceUrl?: string; onCopyText: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -85,7 +84,11 @@ function NoteMenu({ sourceUrl, onDelete }: { sourceUrl?: string; onDelete: () =>
         <MoreHorizontal className="size-5" />
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 top-full z-30 mt-1 w-40 rounded-xl border border-border bg-background p-1 shadow-lg">
+        <div role="menu" className="absolute right-0 top-full z-30 mt-1 w-48 rounded-xl border border-border bg-background p-1 shadow-lg">
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); onCopyText(); }} className={item}><FileText className="size-4" />复制文案</button>
+          {sourceUrl ? (
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); void navigator.clipboard?.writeText(sourceUrl); }} className={item}><Copy className="size-4" />复制原笔记链接</button>
+          ) : null}
           {sourceUrl ? (
             <a role="menuitem" href={sourceUrl} target="_blank" rel="noreferrer" onClick={() => setOpen(false)} className={item}><ExternalLink className="size-4" />原笔记</a>
           ) : null}
@@ -97,7 +100,21 @@ function NoteMenu({ sourceUrl, onDelete }: { sourceUrl?: string; onDelete: () =>
 }
 
 /** A sibling of the library, so browsing and filters remain available. */
-export function LibraryNoteDetail({ noteId, onClose }: { noteId: number; onClose: () => void }) {
+export function LibraryNoteDetail({
+  noteId,
+  onClose,
+  onPrev,
+  onNext,
+  onDelete,
+}: {
+  noteId: number;
+  onClose: () => void;
+  /** 列表里的上一条 / 下一条；没有就不传。 */
+  onPrev?: () => void;
+  onNext?: () => void;
+  /** 删除交给列表页处理（带 5 秒撤销）。 */
+  onDelete: (id: number, title: string) => void;
+}) {
   const toast = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -105,8 +122,9 @@ export function LibraryNoteDetail({ noteId, onClose }: { noteId: number; onClose
   const closeRef = useRef<HTMLButtonElement>(null);
   const commentsRef = useRef<HTMLElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [showAllComments, setShowAllComments] = useState(false);
+  const navRef = useRef({ prev: onPrev, next: onNext });
+  navRef.current = { prev: onPrev, next: onNext };
   const detail = useQuery({ queryKey: ["note", noteId], queryFn: () => api.note(noteId) });
 
   useEffect(() => {
@@ -115,6 +133,10 @@ export function LibraryNoteDetail({ noteId, onClose }: { noteId: number; onClose
     closeRef.current?.focus({ preventScroll: true });
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) onClose();
+      const typing = (event.target as HTMLElement | null)?.closest("input, textarea, select, [contenteditable]");
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key === "j") navRef.current.next?.();
+      if (event.key === "k") navRef.current.prev?.();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -136,17 +158,17 @@ export function LibraryNoteDetail({ noteId, onClose }: { noteId: number; onClose
     },
     onError: (err) => toast.error("送入草稿失败", err instanceof Error ? err.message : undefined),
   });
-  const remove = useMutation({
-    mutationFn: () => api.deleteNote(noteId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["notes"] });
-      void queryClient.invalidateQueries({ queryKey: ["collections"] });
-      toast.success("已从内容库删除");
-      onClose();
-    },
-    onError: (err) => toast.error("删除失败", err instanceof Error ? err.message : undefined),
-  });
   const note = detail.data;
+  const copyText = async () => {
+    if (!note) return;
+    const text = [note.title, note.content, note.tags.map((t) => `#${t}`).join(" ")].filter(Boolean).join("\n\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("已复制文案", `${text.length} 字`);
+    } catch {
+      toast.error("复制失败", "浏览器未授权剪贴板");
+    }
+  };
   const images = note?.images.length ? note.images : note?.cover ? [{ url: note.cover }] : [];
   const isVideo = note?.type === "video" && Boolean(note.videoUrl);
   const comments = noteComments(note);
@@ -170,8 +192,12 @@ export function LibraryNoteDetail({ noteId, onClose }: { noteId: number; onClose
         </div>
         {note ? (
           <>
+            <span className="hidden items-center sm:inline-flex">
+              <button type="button" aria-label="上一条" title="上一条（K）" disabled={!onPrev} onClick={onPrev} className="grid size-8 place-items-center rounded-lg text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"><ChevronUp className="size-4" /></button>
+              <button type="button" aria-label="下一条" title="下一条（J）" disabled={!onNext} onClick={onNext} className="grid size-8 place-items-center rounded-lg text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"><ChevronDown className="size-4" /></button>
+            </span>
             <Button size="sm" disabled={enqueue.isPending} onClick={() => enqueue.mutate()}><SendToBack className="size-3.5" />送入草稿</Button>
-            <NoteMenu sourceUrl={note.sourceUrl} onDelete={() => setConfirmDelete(true)} />
+            <NoteMenu sourceUrl={note.sourceUrl} onCopyText={() => void copyText()} onDelete={() => onDelete(noteId, note.title)} />
           </>
         ) : null}
       </header>
@@ -233,16 +259,6 @@ export function LibraryNoteDetail({ noteId, onClose }: { noteId: number; onClose
         </>
       )}
       </div>
-      <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
-        title="从内容库删除这条笔记？"
-        description="此操作不可恢复。"
-        confirmLabel="删除"
-        destructive
-        busy={remove.isPending}
-        onConfirm={() => { setConfirmDelete(false); remove.mutate(); }}
-      />
     </aside>
   );
 }

@@ -1,4 +1,4 @@
-import { Heart, ImageOff, MessageCircle, SendToBack, Star } from "lucide-react";
+import { Check, Heart, ImageOff, MessageCircle, SendToBack, Star } from "lucide-react";
 import type { CollectedNote } from "@v2media/shared";
 import { mediaUrl } from "@/lib/api";
 import { formatCount, timeAgo } from "@/lib/format";
@@ -13,8 +13,8 @@ function dateLabel(value?: string | null) {
   return value ? new Date(value).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" }) : "未采到";
 }
 
-export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, checked, selecting, onToggle, hotAt }: {
-  note: CollectedNote; selected: boolean; onOpen: () => void; onEnqueue: () => void; enqueuing: boolean;
+export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, drafted, viewed, checked, selecting, onToggle, hotAt }: {
+  note: CollectedNote; selected: boolean; onOpen: () => void; onEnqueue: () => void; enqueuing: boolean; drafted?: boolean; viewed?: boolean;
   checked: boolean; selecting: boolean; onToggle: () => void; hotAt: number | null;
 }) {
   const cover = mediaUrl(note.cover || note.images[0]?.url);
@@ -32,7 +32,7 @@ export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, c
         <NoteSelectBox checked={checked} label={`选择笔记：${note.title || "（无标题）"}`} onToggle={onToggle} className={cn("absolute left-1 top-1 size-4", !checked && !selecting && "opacity-0 group-hover/row:opacity-100")} />
       </div>
       <div className="min-w-0">
-        <p className="line-clamp-2 text-sm font-medium leading-5 text-foreground" title={note.title}>{badges.map(b => <span key={b.key} title={b.hint} className={cn("mr-1.5 rounded px-1 py-px align-[1px] text-[10px] font-semibold", b.key === "hot" ? "bg-primary text-primary-foreground" : "bg-amber-400 text-amber-950")}>{b.label}</span>)}{note.title || "（无标题）"}</p>
+        <p className={cn("line-clamp-2 text-sm font-medium leading-5", viewed && !selected ? "text-muted-foreground" : "text-foreground")} title={note.title}>{badges.map(b => <span key={b.key} title={b.hint} className={cn("mr-1.5 rounded px-1 py-px align-[1px] text-[10px] font-semibold", b.key === "hot" ? "bg-primary text-primary-foreground" : "bg-amber-400 text-amber-950")}>{b.label}</span>)}{note.title || "（无标题）"}</p>
         <p className="mt-1 truncate text-[11px] text-muted-foreground @[900px]:hidden" title={`作者：${note.authorName || "未知作者"}；最近采集：${new Date(note.savedAt).toLocaleString("zh-CN")}；原笔记发布：${note.publishedAt ? new Date(note.publishedAt).toLocaleString("zh-CN") : "未采到"}`}>{note.authorName || "未知作者"} · 采集 {dateLabel(note.savedAt)} · 发布 {dateLabel(note.publishedAt)}</p>
       </div>
     </div>
@@ -46,8 +46,8 @@ export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, c
     </div>
     <span className="hidden text-right text-[11px] text-muted-foreground @[900px]:block" title={new Date(note.savedAt).toLocaleString("zh-CN")}>{timeAgo(note.savedAt)}</span>
     <span className="hidden text-right text-[11px] tabular-nums text-muted-foreground @[900px]:block" title={note.publishedAt ? new Date(note.publishedAt).toLocaleString("zh-CN") : "未采到原笔记发布时间；再次采集详情可补充"}>{note.publishedAt ? new Date(note.publishedAt).toLocaleDateString("zh-CN") : "未采到"}</span>
-    <button type="button" aria-label={`送入草稿：${note.title || "（无标题）"}`} title="送入草稿" disabled={enqueuing}
+    <button type="button" aria-label={`送入草稿：${note.title || "（无标题）"}`} title={drafted ? "已送入草稿" : "送入草稿"} disabled={enqueuing || drafted}
       onClick={event => { event.stopPropagation(); onEnqueue(); }}
-      className="hidden size-8 place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 @[900px]:grid"><SendToBack className="size-4" /></button>
+      className="hidden size-8 place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 @[900px]:grid">{drafted ? <Check className="size-4 text-emerald-500" /> : <SendToBack className="size-4" />}</button>
   </div>;
 }

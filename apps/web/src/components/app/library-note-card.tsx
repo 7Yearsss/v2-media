@@ -1,4 +1,4 @@
-import { Heart, ImageOff, Images, MessageCircle, SendToBack, Star } from "lucide-react";
+import { Check, Heart, ImageOff, Images, MessageCircle, SendToBack, Star } from "lucide-react";
 import type { CollectedNote } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
 import { TiltCard } from "@/components/motion/tilt-card";
@@ -14,6 +14,8 @@ export function LibraryNoteCard({
   onOpen,
   onEnqueue,
   enqueuing,
+  drafted,
+  viewed,
   selected,
   checked,
   selecting,
@@ -24,6 +26,10 @@ export function LibraryNoteCard({
   onOpen: () => void;
   onEnqueue: () => void;
   enqueuing: boolean;
+  /** 本次已送入草稿。 */
+  drafted?: boolean;
+  /** 本机打开过。 */
+  viewed?: boolean;
   /** 详情面板正在看这一条。 */
   selected: boolean;
   /** 被勾选做批量操作。 */
@@ -36,6 +42,7 @@ export function LibraryNoteCard({
   const cover = mediaUrl(note.cover || note.images[0]?.url);
   const badges = noteBadges(note, hotAt);
   const tags = note.tags.slice(0, 2);
+  const incomplete = !note.title && !cover && note.images.length === 0;
   const act = selecting ? onToggle : onOpen;
   return (
     <TiltCard max={6} glare={false} className="h-full">
@@ -66,7 +73,10 @@ export function LibraryNoteCard({
             />
           ) : (
             <div className="grid h-full w-full place-items-center text-muted-foreground">
-              <ImageOff className="size-6" />
+              <div className="flex flex-col items-center gap-1.5">
+                <ImageOff className="size-6" />
+                {incomplete ? <span className="rounded-full bg-amber-400/90 px-2 py-0.5 text-[10px] font-medium text-amber-950">采集不完整</span> : null}
+              </div>
             </div>
           )}
           <NoteSelectBox
@@ -106,21 +116,21 @@ export function LibraryNoteCard({
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={enqueuing}
+                disabled={enqueuing || drafted}
                 onClick={(e) => {
                   e.stopPropagation();
                   onEnqueue();
                 }}
                 className="pointer-events-auto bg-white/90 text-neutral-900 hover:bg-white"
               >
-                <SendToBack className="size-3.5" />
-                送入草稿
+                {drafted ? <Check className="size-3.5" /> : <SendToBack className="size-3.5" />}
+                {drafted ? "已送入草稿" : "送入草稿"}
               </Button>
             </div>
           ) : null}
         </div>
         <div className="flex flex-1 flex-col gap-2 p-3">
-          <p className="line-clamp-2 text-sm font-medium leading-5 text-foreground">
+          <p className={cn("line-clamp-2 text-sm font-medium leading-5", viewed && !selected ? "text-muted-foreground" : "text-foreground")} title={viewed ? "已看过" : undefined}>
             {note.title || "（无标题）"}
           </p>
           {tags.length > 0 || note.sourceKeyword ? (

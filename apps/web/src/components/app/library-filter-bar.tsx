@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import type { ReactNode } from "react";
 import type { NoteRangeFilter } from "@/lib/api";
 import { FilterSelect } from "@/components/app/filter-select";
 import { formatCount } from "@/lib/format";
@@ -20,9 +21,15 @@ export function rangeFilterActive(f: NoteRangeFilter): boolean {
 export function LibraryFilterBar({
   value,
   onChange,
+  lead,
+  trail,
 }: {
   value: NoteRangeFilter;
   onChange: (next: NoteRangeFilter) => void;
+  /** 放在范围筛选之前（来源）。 */
+  lead?: ReactNode;
+  /** 靠右（排序 / 视图）。 */
+  trail?: ReactNode;
 }) {
   const chips: Array<{ key: keyof NoteRangeFilter; label: string }> = [];
   if (value.type) chips.push({ key: "type", label: value.type === "video" ? "视频" : "图文" });
@@ -31,6 +38,7 @@ export function LibraryFilterBar({
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {lead}
       <FilterSelect
         value={value.type ?? ""}
         onChange={(v) => onChange({ ...value, type: (v || undefined) as NoteRangeFilter["type"] })}
@@ -73,6 +81,7 @@ export function LibraryFilterBar({
           清除全部
         </button>
       ) : null}
+      {trail ? <div className="ml-auto flex items-center gap-2">{trail}</div> : null}
     </div>
   );
 }

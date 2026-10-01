@@ -6,6 +6,7 @@ import { Button } from "@/components/motion/button";
 export function LibraryBulkBar({
   count,
   totalShown,
+  total,
   collections,
   busy,
   onSelectAll,
@@ -17,6 +18,8 @@ export function LibraryBulkBar({
 }: {
   count: number;
   totalShown: number;
+  /** 当前筛选下的总条数（含尚未加载的）。 */
+  total?: number;
   collections: Collection[];
   busy: boolean;
   onSelectAll: () => void;
@@ -38,6 +41,9 @@ export function LibraryBulkBar({
         <button type="button" onClick={onSelectAll} className="text-xs text-primary hover:underline">
           全选已加载的 {totalShown} 条
         </button>
+      ) : null}
+      {total !== undefined && total > totalShown ? (
+        <span className="text-xs text-muted-foreground">（共 {total} 条，滚动加载后可继续全选）</span>
       ) : null}
       <span className="mx-1 hidden h-5 w-px bg-border sm:block" />
       <div className="inline-flex items-center gap-1 text-xs text-muted-foreground">
