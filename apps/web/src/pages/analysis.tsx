@@ -272,6 +272,58 @@ function LegacyView({ a }: { a: CollectionAnalysis }) {
   );
 }
 
+/** 历史报告：一个小下拉，代替占了四分之一宽度的列表。 */
+function HistoryMenu({
+  items,
+  activeId,
+  onPick,
+}: {
+  items: AnalysisMeta[];
+  activeId?: number;
+  onPick: (id: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex h-9 items-center gap-1.5 rounded-full border border-border px-3.5 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+      >
+        <FileText className="size-3.5" />
+        历史 {items.length}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-0 top-full z-20 mt-2 max-h-80 w-60 overflow-y-auto rounded-2xl border border-border bg-card p-1.5 shadow-xl">
+            {items.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => {
+                  onPick(a.id);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-sm transition-colors hover:bg-muted",
+                  activeId === a.id && "bg-primary/10 text-primary",
+                )}
+              >
+                <span>{timeAgo(a.createdAt)}</span>
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  {a.status === "running" && <Loader2 className="size-3 animate-spin text-primary" />}
+                  {a.status === "failed" ? <span className="text-rose-500">失败</span> : `${a.noteCount} 篇`}
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function AnalysisPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -303,6 +355,13 @@ export default function AnalysisPage() {
     queryFn: () => api.collectionAnalyses(colId!),
     enabled: colId != null,
   });
+  // 选中库后，没有正在看的报告就自动打开最近一份已完成的
+  useEffect(() => {
+    if (active || !colId || loadAnalysis.isPending) return;
+    const latest = analyses.data?.items.find((a) => a.status === "done");
+    if (latest) loadAnalysis.mutate({ cid: colId, aid: latest.id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyses.data, colId, active]);
   const loadAnalysis = useMutation({
     mutationFn: ({ cid, aid }: { cid: number; aid: number }) =>
       api.collectionAnalysis(cid, aid),
@@ -398,6 +457,13 @@ export default function AnalysisPage() {
             {analyze.isPending || running ? "分析中…" : "开始分析"}
           </Button>
         )}
+        {colId != null && (analyses.data?.items.length ?? 0) > 0 && (
+          <HistoryMenu
+            items={analyses.data!.items}
+            activeId={active?.id}
+            onPick={(aid) => loadAnalysis.mutate({ cid: colId, aid })}
+          />
+        )}
         {colId != null && (
           <input
             value={positioning}
@@ -410,39 +476,7 @@ export default function AnalysisPage() {
       </div>
 
       {colId != null && (
-        <div className="grid gap-6 lg:grid-cols-[220px_1fr]">
-          {/* 历史报告 */}
-          <div className="flex flex-col gap-2">
-            <div className="text-xs font-medium text-muted-foreground">历史报告</div>
-            {analyses.isLoading && <PageLoading />}
-            {analyses.isError && (
-              <PageError error={analyses.error} onRetry={() => void analyses.refetch()} />
-            )}
-            {(analyses.data?.items ?? []).map((a: AnalysisMeta) => (
-              <button
-                key={a.id}
-                onClick={() => loadAnalysis.mutate({ cid: colId, aid: a.id })}
-                className={cn(
-                  "flex flex-col gap-0.5 rounded-xl border p-3 text-left transition-colors",
-                  active?.id === a.id
-                    ? "border-primary bg-primary/5"
-                    : "border-border hover:border-foreground/20",
-                )}
-              >
-                <span className="flex items-center gap-1.5 text-sm">
-                  <FileText className="size-3.5" />
-                  {a.noteCount} 篇笔记
-                  {a.status === "running" && <Loader2 className="size-3 animate-spin text-primary" />}
-                  {a.status === "failed" && <span className="text-[10px] text-rose-500">失败</span>}
-                </span>
-                <span className="text-xs text-muted-foreground">{timeAgo(a.createdAt)}</span>
-              </button>
-            ))}
-            {analyses.data && !analyses.data.items.length && (
-              <div className="text-xs text-muted-foreground">还没有报告，点「开始分析」生成</div>
-            )}
-          </div>
-
+        <div>
           {/* 报告区 */}
           <div className="min-w-0">
             {analyze.isPending && (

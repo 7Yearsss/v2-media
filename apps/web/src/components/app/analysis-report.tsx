@@ -292,7 +292,7 @@ function CoverStrip({ items, colId }: { items: AnalysisVisualItem[]; colId: numb
             </span>
           ))}
       </div>
-      <div className="-mx-1 flex gap-3 overflow-x-auto px-1 pb-2">
+      <div className="-mx-1 flex gap-3 overflow-x-auto overflow-y-hidden px-1 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {items.map((it, i) => (
           <motion.div
             key={it.id}
