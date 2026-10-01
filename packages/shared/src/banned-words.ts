@@ -4,7 +4,7 @@
  * 原则：宁可少报也别乱报——常见正常说法（“第一次”“第一步”）不能被误伤，否则用户会学会无视提示。
  */
 
-export type BannedKind = "extreme" | "medical" | "contact" | "promise" | "bait";
+export type BannedKind = "extreme" | "medical" | "efficacy" | "contact" | "promise" | "bait" | "custom";
 /** high：容易被限流/下架（导流、功效、承诺、诱导）；low：广告法极限用语，个人分享里风险较小。 */
 export type BannedSeverity = "high" | "low";
 
@@ -24,6 +24,8 @@ export const BANNED_KIND_META: Record<BannedKind, { label: string; hint: string;
   contact: { label: "站外导流", hint: "留联系方式/外链会被限流，建议删除", severity: "high" },
   promise: { label: "夸大承诺", hint: "保证/暴富类承诺会被判营销", severity: "high" },
   bait: { label: "诱导互动", hint: "求赞求关注类会被降权，建议删除", severity: "high" },
+  efficacy: { label: "功效宣称", hint: "美妆/保健类功效宣称受限，改成个人使用感受", severity: "low" },
+  custom: { label: "我的屏蔽词", hint: "你自己加的词", severity: "high" },
 };
 
 /** 极限词 → 更稳妥的说法。 */
@@ -82,6 +84,13 @@ const PROMISE_SUGGEST: Record<string, string> = {
   无副作用: "我用着没不适",
 };
 
+const EFFICACY_SUGGEST: Record<string, string> = {
+  美白: "提亮",
+  淡斑: "",
+  嫩肤: "",
+  紧致: "",
+};
+
 // 拆字/谐音/夹符号的变体：微 信、薇.信、v x、w-x
 const SEP = "[\\s\\-_.·•|*~❤♥️]*";
 
@@ -123,24 +132,48 @@ const RULES: Rule[] = [
   },
   {
     kind: "promise",
-    re: /保证|稳赚|日入|月入(?:过)?[万千]|躺赚|暴富|包过|零风险|无副作用/g,
+    // 含金融（保本/年化）、教育（保就业）类的收益/结果承诺
+    re: /保证|稳赚|日入|月入(?:过)?[万千]|躺赚|暴富|包过|零风险|无副作用|保本|保息|高收益|无风险|年化\d+(?:\.\d+)?%|包就业|保就业/g,
     suggest: (w) => PROMISE_SUGGEST[w],
   },
   {
+    kind: "efficacy",
+    // 化妆品/保健类功效宣称；“减肥”“瘦腿”等健身圈常用词不碰，避免噪声
+    re: /美白|祛痘|祛斑|淡斑|抗皱|去皱|除皱|生发|增高|丰胸|紧致|嫩肤|抗衰/g,
+    suggest: (w) => EFFICACY_SUGGEST[w],
+  },
+  {
+    kind: "extreme",
+    re: /100%|百分之百|百分百/g,
+    suggest: () => "",
+  },
+  {
     kind: "bait",
-    re: /求赞|求关注|互关|互赞|互粉|点赞收藏必看|不转不是/g,
+    re: /求赞|求关注|互关|互赞|互粉|点赞收藏必看|不转不是|评论区扣|扣1|主页(?:领|看|有)|看主页|私我|私信我/g,
     suggest: () => "",
   },
 ];
 
+export interface BannedOptions {
+  /** 用户自己加的屏蔽词（命中算高风险，建议删除）。 */
+  extraWords?: string[];
+}
+
 /** 返回所有命中（按出现位置排序，同一位置只算一次）。 */
-export function checkBannedWords(text: string): BannedHit[] {
+export function checkBannedWords(text: string, opts: BannedOptions = {}): BannedHit[] {
   const hits = new Map<number, BannedHit>();
   for (const { kind, re, suggest } of RULES) {
     for (const m of text.matchAll(new RegExp(re.source, re.flags))) {
       if (m.index == null || hits.has(m.index)) continue;
       const word = m[0];
       hits.set(m.index, { word, kind, severity: BANNED_KIND_META[kind].severity, index: m.index, suggest: suggest?.(word) });
+    }
+  }
+  for (const raw of opts.extraWords ?? []) {
+    const w = raw.trim();
+    if (!w) continue;
+    for (let i = text.indexOf(w); i >= 0; i = text.indexOf(w, i + w.length)) {
+      if (!hits.has(i)) hits.set(i, { word: w, kind: "custom", severity: "high", index: i, suggest: "" });
     }
   }
   return [...hits.values()].sort((a, b) => a.index - b.index);
@@ -172,9 +205,9 @@ export function applyBannedFix(text: string, word: string, suggest: string | und
 }
 
 /** 一键处理：只处理有机械替换建议的词，其余留给用户自己改。 */
-export function applyAllBannedFixes(text: string): string {
+export function applyAllBannedFixes(text: string, opts: BannedOptions = {}): string {
   let out = text;
-  for (const h of summarizeBanned(checkBannedWords(text))) out = applyBannedFix(out, h.word, h.suggest);
+  for (const h of summarizeBanned(checkBannedWords(text, opts))) out = applyBannedFix(out, h.word, h.suggest);
   return out;
 }
 

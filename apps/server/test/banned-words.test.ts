@@ -76,3 +76,33 @@ describe("平台硬限制", () => {
     expect(checkDraftLimits({ title: "😀".repeat(20), content: "", tags: [] })).toEqual([]);
   });
 });
+
+describe("行业词库与自定义屏蔽词", () => {
+  it("金融/教育承诺、功效宣称、100%、导流话术", () => {
+    expect(words("保本理财，年化8%")).toEqual(expect.arrayContaining(["保本", "年化8%"]));
+    expect(words("包就业，保过")).toEqual(expect.arrayContaining(["包就业"]));
+    expect(words("美白祛痘抗皱")).toEqual(expect.arrayContaining(["美白", "祛痘", "抗皱"]));
+    expect(words("100%有效")).toContain("100%");
+    expect(words("想要的评论区扣1，或者私信我")).toEqual(expect.arrayContaining(["评论区扣", "私信我"]));
+  });
+
+  it("健身圈常用词不碰：减肥、瘦腿、增肌", () => {
+    expect(words("减肥期怎么吃，瘦腿运动，增肌训练")).toEqual([]);
+  });
+
+  it("功效宣称是低风险；美白有替换建议", () => {
+    const h = checkBannedWords("美白")[0]!;
+    expect(h.kind).toBe("efficacy");
+    expect(h.severity).toBe("low");
+    expect(h.suggest).toBe("提亮");
+  });
+
+  it("自定义屏蔽词：高风险、可多次命中、建议删除；空词忽略", () => {
+    const hits = checkBannedWords("我家猫叫团团，团团很乖", { extraWords: ["团团", " ", ""] });
+    expect(hits.map((h) => [h.word, h.kind, h.severity, h.suggest])).toEqual([
+      ["团团", "custom", "high", ""],
+      ["团团", "custom", "high", ""],
+    ]);
+    expect(applyAllBannedFixes("团团很乖", { extraWords: ["团团"] })).toBe("很乖");
+  });
+});

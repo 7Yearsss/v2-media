@@ -32,6 +32,7 @@ import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { AiPanel } from "@/components/app/ai-panel";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
 import { api, mediaUrl } from "@/lib/api";
+import { useBannedWords } from "@/lib/hooks/use-banned-words";
 import { timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -57,7 +58,20 @@ export default function DraftsPage() {
   const [content, setContent] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   // 发布前自查：标题 + 正文里的违禁/限流词，边写边提示
-  const banned = useMemo(() => summarizeBanned(checkBannedWords(`${title}\n${content}`)), [title, content]);
+  const { words: customWords, add: addWord, remove: removeWord } = useBannedWords();
+  const bannedOpts = useMemo(() => ({ extraWords: customWords }), [customWords]);
+  const banned = useMemo(() => summarizeBanned(checkBannedWords(`${title}\n${content}`, bannedOpts)), [title, content, bannedOpts]);
+  const [showWords, setShowWords] = useState(false);
+  const [wordInput, setWordInput] = useState("");
+  const contentRef = useRef<HTMLTextAreaElement>(null);
+  // 点词：在正文里选中第一处（标题里的看颜色就能找到）
+  const locate = (word: string) => {
+    const el = contentRef.current;
+    const i = content.indexOf(word);
+    if (!el || i < 0) return;
+    el.focus();
+    el.setSelectionRange(i, i + word.length);
+  };
   const limits = useMemo(() => checkDraftLimits({ title, content, tags }), [title, content, tags]);
   const [images, setImages] = useState<NoteImage[]>([]);
   const [tagInput, setTagInput] = useState("");
@@ -407,6 +421,7 @@ export default function DraftsPage() {
               />
 
               <textarea
+                ref={contentRef}
                 value={content}
                 onChange={(e) => update({ content: e.target.value })}
                 placeholder="正文内容…"
@@ -419,14 +434,46 @@ export default function DraftsPage() {
                 )}
               />
 
-              <div className="-mt-3 flex justify-between text-[11px] text-muted-foreground">
+              <div className="-mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
                 <span className={cn([...title].length > DRAFT_LIMITS.title && "font-medium text-rose-500")}>
                   标题 {[...title].length}/{DRAFT_LIMITS.title}
                 </span>
-                <span className={cn([...content].length > DRAFT_LIMITS.content && "font-medium text-rose-500")}>
-                  正文 {[...content].length}/{DRAFT_LIMITS.content}
+                <span className="flex items-center gap-3">
+                  <button type="button" onClick={() => setShowWords((v) => !v)} className="transition-colors hover:text-primary">
+                    我的屏蔽词{customWords.length ? ` (${customWords.length})` : ""}
+                  </button>
+                  <span className={cn([...content].length > DRAFT_LIMITS.content && "font-medium text-rose-500")}>
+                    正文 {[...content].length}/{DRAFT_LIMITS.content}
+                  </span>
                 </span>
               </div>
+
+              {showWords && (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border px-3 py-2.5 text-xs">
+                  {customWords.map((w) => (
+                    <span key={w} className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1">
+                      {w}
+                      <button type="button" aria-label={`移除 ${w}`} onClick={() => removeWord(w)} className="text-muted-foreground hover:text-rose-500">
+                        <X className="size-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    value={wordInput}
+                    onChange={(e) => setWordInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && wordInput.trim()) {
+                        e.preventDefault();
+                        addWord(wordInput);
+                        setWordInput("");
+                      }
+                    }}
+                    maxLength={20}
+                    placeholder="加一个要避开的词，回车"
+                    className="min-w-32 flex-1 bg-transparent outline-none placeholder:text-muted-foreground/60"
+                  />
+                </div>
+              )}
 
               {(banned.length > 0 || limits.length > 0) && (
                 <div className="flex flex-col gap-2 rounded-xl bg-amber-500/10 px-3.5 py-3 text-xs">
@@ -442,38 +489,51 @@ export default function DraftsPage() {
                       {banned.map((b) => {
                         const fixable = b.suggest !== undefined;
                         return (
-                          <button
+                          <span
                             key={b.word}
-                            type="button"
-                            disabled={!fixable}
                             title={BANNED_KIND_META[b.kind].hint}
-                            onClick={() =>
-                              update({
-                                title: applyBannedFix(title, b.word, b.suggest),
-                                content: applyBannedFix(content, b.word, b.suggest),
-                              })
-                            }
                             className={cn(
-                              "flex items-center gap-1 rounded-full bg-card px-2.5 py-1 ring-1 transition-colors",
-                              b.severity === "high" ? "text-rose-600 ring-rose-500/40" : "text-foreground/80 ring-amber-500/30",
-                              fixable && "hover:bg-primary/10 hover:text-primary",
+                              "flex items-center overflow-hidden rounded-full bg-card ring-1",
+                              b.severity === "high" ? "ring-rose-500/40" : "ring-amber-500/30",
                             )}
                           >
-                            {b.word}
-                            {b.count > 1 && <span className="text-muted-foreground">×{b.count}</span>}
-                            <span className="text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
+                            <button
+                              type="button"
+                              onClick={() => locate(b.word)}
+                              className={cn("px-2.5 py-1 transition-colors hover:bg-muted", b.severity === "high" ? "text-rose-600" : "text-foreground/80")}
+                            >
+                              {b.word}
+                              {b.count > 1 && <span className="ml-1 text-muted-foreground">×{b.count}</span>}
+                              <span className="ml-1 text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
+                            </button>
                             {fixable ? (
-                              <span className="font-medium text-primary">→ {b.suggest || "删除"}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  update({
+                                    title: applyBannedFix(title, b.word, b.suggest),
+                                    content: applyBannedFix(content, b.word, b.suggest),
+                                  })
+                                }
+                                className="border-l border-border px-2.5 py-1 font-medium text-primary transition-colors hover:bg-primary/10"
+                              >
+                                → {b.suggest || "删除"}
+                              </button>
                             ) : (
-                              <span className="font-medium text-rose-500">需改写</span>
+                              <span className="border-l border-border px-2.5 py-1 font-medium text-rose-500">需改写</span>
                             )}
-                          </button>
+                          </span>
                         );
                       })}
                       {banned.some((b) => b.suggest !== undefined) && (
                         <button
                           type="button"
-                          onClick={() => update({ title: applyAllBannedFixes(title), content: applyAllBannedFixes(content) })}
+                          onClick={() =>
+                            update({
+                              title: applyAllBannedFixes(title, bannedOpts),
+                              content: applyAllBannedFixes(content, bannedOpts),
+                            })
+                          }
                           className="ml-auto rounded-full bg-primary px-3 py-1 font-medium text-primary-foreground"
                         >
                           一键处理
