@@ -23,18 +23,33 @@ window.addEventListener("message", (ev) => {
   if (!msg || msg.source !== WEB_SOURCE || typeof msg.requestId !== "string") return;
   const bgType = HANDLERS[msg.type];
   if (!bgType) return;
-  void chrome.runtime.sendMessage(
-    { type: bgType, ...(msg.payload as Record<string, unknown> | undefined) },
-    (resp?: { ok?: boolean; data?: unknown; error?: string }) => {
-      const err = chrome.runtime.lastError;
-      const body: BridgeResponse = {
-        source: EXT_SOURCE,
-        requestId: msg.requestId,
-        ok: err ? false : Boolean(resp?.ok),
-        result: resp?.data,
-        error: err?.message ?? resp?.error,
-      };
-      window.postMessage(body, window.location.origin);
-    },
-  );
+  const reply = (body: Omit<BridgeResponse, "source" | "requestId">) =>
+    window.postMessage(
+      { source: EXT_SOURCE, requestId: msg.requestId, ...body },
+      window.location.origin,
+    );
+  // 插件被刷新/更新后，已打开页面里的旧脚本与插件断开，调 chrome.runtime 会抛
+  // "Extension context invalidated"——回一个可读错误，让页面提示刷新
+  if (!chrome.runtime?.id) {
+    reply({ ok: false, error: "插件已更新，请刷新本页" });
+    return;
+  }
+  try {
+    chrome.runtime.sendMessage(
+      { type: bgType, ...(msg.payload as Record<string, unknown> | undefined) },
+      (resp?: { ok?: boolean; data?: unknown; error?: string }) => {
+        const err = chrome.runtime.lastError;
+        const body: BridgeResponse = {
+          source: EXT_SOURCE,
+          requestId: msg.requestId,
+          ok: err ? false : Boolean(resp?.ok),
+          result: resp?.data,
+          error: err?.message ?? resp?.error,
+        };
+        window.postMessage(body, window.location.origin);
+      },
+    );
+  } catch {
+    reply({ ok: false, error: "插件已更新，请刷新本页" });
+  }
 });

@@ -141,7 +141,7 @@ export type BgMessage =
   | { type: "SITE_SET_AUTH"; apiBase: string; token: string }
   | { type: "SITE_SYNC_ACCOUNTS" }
   | { type: "SITE_COLLECT_URL"; url: string }
-  | { type: "TRUSTED_CLICK"; x: number; y: number } // content -> bg：debugger 真实点击开详情弹窗
+  | { type: "TRUSTED_CLICK"; x: number; y: number; selectors?: string[] } // content -> bg：debugger 真实点击开详情弹窗
   | { type: "SITE_RUN_PUBLISH_JOB"; jobId: number }
   // --- popup 采集库下拉 ---
   | { type: "LIST_COLLECTIONS" }

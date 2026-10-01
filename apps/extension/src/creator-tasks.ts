@@ -10,7 +10,12 @@ import type { GalaxyEventDetail } from "./lib/messages";
 if (location.hostname === "creator.xiaohongshu.com") {
   document.addEventListener(EVT_GALAXY, (ev) => {
     const detail = (ev as CustomEvent<GalaxyEventDetail>).detail;
-    if (!detail?.path) return;
-    void chrome.runtime.sendMessage({ type: "GALAXY_DATA", detail }).catch(() => {});
+    // 插件刷新后旧页面里的脚本已与插件断开：sendMessage 会同步抛 "Extension context invalidated"，.catch 接不住
+    if (!detail?.path || !chrome.runtime?.id) return;
+    try {
+      void chrome.runtime.sendMessage({ type: "GALAXY_DATA", detail }).catch(() => {});
+    } catch {
+      /* 插件已更新，本页需刷新 */
+    }
   });
 }

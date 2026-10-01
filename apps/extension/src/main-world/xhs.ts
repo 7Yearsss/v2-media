@@ -476,7 +476,8 @@ if (onXhsSite && !window.__v2m_xhs_main_ready) {
     const loggedIn = Boolean(unwrap(user.loggedIn ?? user.logged_in));
     return {
       loggedIn,
-      userId: String(info.userId ?? info.user_id ?? info.red_id ?? ""),
+      // 不退到 red_id（小红书号）：托管账号、任务过滤都按 userId 匹配，混进小红书号会对不上
+      userId: String(info.userId ?? info.user_id ?? ""),
       nickname: String(info.nickname ?? info.nickName ?? info.nick_name ?? ""),
       avatar: String(info.avatar ?? info.image ?? info.images ?? ""),
     };

@@ -233,7 +233,8 @@ async function resolveXhsUserId(): Promise<string> {
     const res = await fetch("https://www.xiaohongshu.com/", { credentials: "include" });
     if (res.ok) {
       const html = await res.text();
-      const m = html.match(/"user(?:I|_i)nfo"\s*:\s*\{[^}]*?"(?:userId|user_id|red_id)"\s*:\s*"([^"]+)"/i);
+      // 只认 userId（24 位 hex）；red_id 是「小红书号」，拿它过滤任务一条都匹配不上（任务被晾好几分钟）
+      const m = html.match(/"user(?:I|_i)nfo"\s*:\s*\{[^}]*?"(?:userId|user_id)"\s*:\s*"([0-9a-f]{24})"/i);
       if (m?.[1]) return m[1];
     }
   } catch {
@@ -706,7 +707,17 @@ chrome.runtime.onMessage.addListener(
           Promise.resolve(sender?.tab?.id).then(async (tid) =>
             tid == null
               ? { ok: false }
-              : { ok: await trustedClick(tid, Number(msg.x), Number(msg.y)) },
+              : await (async () => {
+                  const diag: string[] = [];
+                  const ok = await trustedClick(
+                    tid,
+                    Number(msg.x),
+                    Number(msg.y),
+                    Array.isArray(msg.selectors) ? msg.selectors.map(String) : undefined,
+                    diag,
+                  );
+                  return { ok, diag: diag.join("；") };
+                })(),
           ),
           sendResponse,
         );
@@ -748,18 +759,94 @@ chrome.runtime.onMessage.addListener(
 
 // chrome.debugger 真实点击：dispatchMouseEvent 产生 isTrusted 事件，
 // 是 XHS 弹窗 handler 唯一认的触发方式（合成 .click() 会被忽略走默认跳转）
-async function trustedClick(tabId: number, x: number, y: number): Promise<boolean> {
+// 传 selectors 时按顺序依次点，全程只 attach 一次：
+//  - attach 会弹出「正在调试」提示条把页面往下推，坐标必须 attach 后现场量；
+//  - detach 时提示条收起、视口变化，下拉浮层会随之关闭——所以「展开下拉 + 选选项」要在同一次 attach 里做完。
+async function trustedClick(
+  tabId: number,
+  x: number,
+  y: number,
+  selectors?: string[],
+  diag: string[] = [],
+): Promise<boolean> {
   const target = { tabId };
-  try {
-    await chrome.debugger.attach(target, "1.3");
-    for (const type of ["mousePressed", "mouseReleased"] as const) {
+  const press = async (px: number, py: number) => {
+    // 先 mouseMoved：真实点击都有悬停，部分下拉组件靠它建立 hover 状态
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"] as const) {
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
         type,
-        x,
-        y,
-        button: "left",
-        clickCount: 1,
+        x: px,
+        y: py,
+        button: type === "mouseMoved" ? "none" : "left",
+        clickCount: type === "mouseMoved" ? 0 : 1,
       });
+    }
+  };
+  try {
+    await chrome.debugger.attach(target, "1.3");
+    if (!selectors?.length) {
+      await press(x, y);
+      return true;
+    }
+    // 后台标签页不渲染下拉浮层——先切到前台
+    await chrome.tabs.update(tabId, { active: true });
+    await new Promise((r) => setTimeout(r, 500));
+    // 找第一个可见匹配元素，滚到视口中间（底部有吸底发布栏，nearest 会把它滚到栏下面），
+    // 并用 elementFromPoint 看该点实际是谁——被浮层盖住时点到的是浮层
+    // "选择器 @text=甲|乙"：再按文字精确筛（下拉展开时选项会重新渲染，事先打的标记会落在旧节点上）
+    const locate = async (step: string) => {
+      // 可选 " @dx=N"：点击点相对元素中心的横向偏移（closed shadow 里的按钮只能按版式算位置）
+      const dxm = / @dx=(-?\d+)$/.exec(step);
+      const dx = dxm ? Number(dxm[1]) : 0;
+      const [sel, textPart] = (dxm ? step.slice(0, dxm.index) : step).split(" @text=");
+      const texts = textPart ? textPart.split("|") : null;
+      const res = (await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+        expression: `(() => { const texts = ${JSON.stringify(texts)}; for (const e of document.querySelectorAll(${JSON.stringify(sel)})) { if (texts && !texts.includes((e.textContent || "").trim())) continue; let r = e.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) continue; e.scrollIntoView({ block: "center" }); r = e.getBoundingClientRect(); const x = r.left + r.width / 2 + ${dx}, y = r.top + r.height / 2; const hit = document.elementFromPoint(x, y); const cover = !hit || e === hit || e.contains(hit) ? "" : hit.tagName + "." + String(hit.className).split(" ")[0] + "<" + String(hit.parentElement?.className ?? "").split(" ")[0] + "<" + String(hit.parentElement?.parentElement?.className ?? "").split(" ")[0]; return [x, y, cover]; } return null; })()`,
+        returnByValue: true,
+      })) as { result?: { value?: [number, number, string] | null } };
+      return res.result?.value ?? null;
+    };
+    const waitVisible = async (sel: string, ms: number) => {
+      for (let t = 0; t < ms; t += 200) {
+        const pt = await locate(sel);
+        if (pt) return pt;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      return null;
+    };
+    for (let i = 0; i < selectors.length; i++) {
+      let pt = await waitVisible(selectors[i]!, 3000);
+      if (!pt) {
+        diag.push(`第${i + 1}步元素不可见`);
+        return false;
+      }
+      const next = selectors[i + 1];
+      // 点完要等下一步元素出现（如下拉展开）：没出现就 Esc 关掉干扰浮层再点，最多 3 次
+      for (let attempt = 1; ; attempt++) {
+        if (pt[2]) diag.push(`第${i + 1}步被 ${pt[2]} 遮挡`);
+        await press(Math.round(pt[0]), Math.round(pt[1]));
+        if (!next || (await waitVisible(next, 1500))) break;
+        if (attempt >= 3) {
+          // 现场快照：展开的浮层里实际有哪些选项，便于一次对准选择器/文字
+          const snap = (await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+            expression: `(() => { const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; }; const dd = [...document.querySelectorAll(".d-dropdown-content,[class*=dropdown],[class*=popover]")].filter(vis).map((e) => String(e.className).split(" ")[0]); const opts = [...document.querySelectorAll(".custom-option,.d-option,[class*=option]")].filter(vis).map((e) => (e.textContent || "").trim().slice(0, 8)); return "可见浮层[" + dd.slice(0, 4).join(",") + "] 可见选项[" + opts.slice(0, 8).join(",") + "]"; })()`,
+            returnByValue: true,
+          })) as { result?: { value?: string } };
+          diag.push(`第${i + 1}步点了 ${attempt} 次，下一步元素仍未出现；${snap.result?.value ?? ""}`);
+          return false;
+        }
+        for (const type of ["keyDown", "keyUp"] as const) {
+          await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+            type,
+            key: "Escape",
+            code: "Escape",
+            windowsVirtualKeyCode: 27,
+          });
+        }
+        await new Promise((r) => setTimeout(r, 300));
+        pt = (await locate(selectors[i]!)) ?? pt;
+      }
+      await new Promise((r) => setTimeout(r, 300));
     }
     return true;
   } catch {
@@ -1105,11 +1192,26 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-function ensureAlarms() {
-  void chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_MIN });
-  void chrome.alarms.create(PUBLISH_ALARM, { periodInMinutes: PUBLISH_MIN });
+// 只补缺失的 alarm：同名 create 会把计时清零重排。SW 每次被唤醒都会重跑顶层代码，
+// 若无条件 create，唤醒它的那次 alarm 被替换掉，之后周期永远到不了——刷新插件后
+// 不开工作台页面（PING 保活）时心跳和领任务就全停了。
+async function ensureAlarms() {
+  for (const [name, periodInMinutes] of [
+    [HEARTBEAT_ALARM, HEARTBEAT_MIN],
+    [PUBLISH_ALARM, PUBLISH_MIN],
+  ] as const) {
+    if (!(await chrome.alarms.get(name))) await chrome.alarms.create(name, { periodInMinutes });
+  }
 }
 
-chrome.runtime.onInstalled.addListener(ensureAlarms);
-chrome.runtime.onStartup.addListener(ensureAlarms);
-ensureAlarms(); // SW 冷启动兜底（alarms 持久存在，重复 create 是幂等重置）
+/** 安装/刷新/浏览器启动后立刻上报一次，不等第一个 alarm 周期。 */
+function kick() {
+  void ensureAlarms();
+  void heartbeat();
+  void pollPendingJobs();
+  void pollTasks();
+}
+
+chrome.runtime.onInstalled.addListener(kick);
+chrome.runtime.onStartup.addListener(kick);
+void ensureAlarms(); // SW 冷启动兜底
