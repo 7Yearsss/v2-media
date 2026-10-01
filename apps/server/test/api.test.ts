@@ -198,7 +198,17 @@ describe("collect + notes", () => {
         ],
       }),
     }));
-    const ana = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    const started = await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }));
+    // 异步：立刻 202 + running，后台跑完后详情变 done
+    expect(started.status).toBe(202);
+    const run = (await started.json()) as any;
+    expect(run.status).toBe("running");
+    let ana: any = run;
+    for (let i = 0; i < 100 && ana.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      ana = (await (await app.request(`/api/collections/${col.id}/analyses/${run.id}`, authed(token))).json()) as any;
+    }
+    expect(ana.status).toBe("done");
     expect(ana.noteCount).toBe(2);
     expect(ana.report.length).toBeGreaterThan(0);
     // 结构化统计：topNotes 按互动排序、total 正确

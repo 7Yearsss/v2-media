@@ -313,8 +313,8 @@ export const api = {
     request<Collection>(`/api/collections/${id}`, { method: "PATCH", body: { name } }),
   deleteCollection: (id: number) =>
     request<void>(`/api/collections/${id}`, { method: "DELETE" }),
-  analyzeCollection: (id: number) =>
-    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST" }),
+  analyzeCollection: (id: number, positioning?: string) =>
+    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST", body: { positioning } }),
   collectionAnalyses: (id: number) =>
     request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`),
   collectionAnalysis: (id: number, aid: number) =>
@@ -379,8 +379,8 @@ export const api = {
     request<Topic>(`/api/topics/${id}`, { method: "PATCH", body }),
   deleteTopic: (id: number) =>
     request<void>(`/api/topics/${id}`, { method: "DELETE" }),
-  topicToDraft: (id: number) =>
-    request<TopicToDraftResponse>(`/api/topics/${id}/to-draft`, { method: "POST" }),
+  topicToDraft: (id: number, opts?: { ai?: boolean; positioning?: string }) =>
+    request<TopicToDraftResponse>(`/api/topics/${id}/to-draft`, { method: "POST", body: opts }),
   aiTopics: (body: AiTopicsRequest) =>
     request<AiTopicsResponse>("/api/ai/topics", { method: "POST", body }),
   aiTopicScore: (body: AiTopicScoreRequest) =>

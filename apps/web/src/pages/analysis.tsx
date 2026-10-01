@@ -17,6 +17,7 @@ import { NumberTicker } from "@/components/motion/number-ticker";
 import { TextReveal } from "@/components/motion/text-reveal";
 import { TextShimmer } from "@/components/motion/text-shimmer";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
+import { AnalysisReport } from "@/components/app/analysis-report";
 import { api } from "@/lib/api";
 import { formatCount, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -156,7 +157,8 @@ function InsightCard({
   );
 }
 
-function AnalysisView({ a }: { a: CollectionAnalysis }) {
+/** 旧版（v1）报告的回看视图。 */
+function LegacyView({ a }: { a: CollectionAnalysis }) {
   const { stats, insight } = a.data ?? {};
   if (!stats) {
     // 旧格式/兜底：原文展示
@@ -236,9 +238,9 @@ function AnalysisView({ a }: { a: CollectionAnalysis }) {
       {/* AI 洞察三卡 */}
       {insight ? (
         <div className="grid gap-4 lg:grid-cols-3">
-          <InsightCard icon={Flame} title="爆款共性" items={insight.patterns} accent="text-orange-500" />
-          <InsightCard icon={Lightbulb} title="机会点" items={insight.opportunities} accent="text-amber-500" />
-          <InsightCard icon={Target} title="行动建议" items={insight.actions} accent="text-primary" />
+          <InsightCard icon={Flame} title="爆款共性" items={insight.patterns ?? []} accent="text-orange-500" />
+          <InsightCard icon={Lightbulb} title="机会点" items={insight.opportunities ?? []} accent="text-amber-500" />
+          <InsightCard icon={Target} title="行动建议" items={insight.actions ?? []} accent="text-primary" />
         </div>
       ) : null}
 
@@ -275,6 +277,22 @@ export default function AnalysisPage() {
   const queryClient = useQueryClient();
   const [colId, setColId] = useState<number | null>(null);
   const [active, setActive] = useState<CollectionAnalysis | null>(null);
+  // 目标账号定位：可选，填了建议和选题会贴合它；记在本机
+  const [positioning, setPositioning] = useState(() => {
+    try {
+      return localStorage.getItem("v2m.analysis.positioning") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const updatePositioning = (v: string) => {
+    setPositioning(v);
+    try {
+      localStorage.setItem("v2m.analysis.positioning", v);
+    } catch {
+      /* 隐私模式等：不记就不记 */
+    }
+  };
   // 当前选中库的快照：异步返回时用它丢弃过期结果（换库后旧库报告不顶上来）
   const colIdRef = useRef<number | null>(null);
   colIdRef.current = colId;
@@ -294,19 +312,35 @@ export default function AnalysisPage() {
     onError: (e) => toast.error("读取报告失败", e instanceof Error ? e.message : undefined),
   });
   const analyze = useMutation({
-    mutationFn: (id: number) => api.analyzeCollection(id),
+    mutationFn: ({ id, positioning }: { id: number; positioning: string }) =>
+      api.analyzeCollection(id, positioning || undefined),
     onSuccess: (row) => {
-      // 期间用户可能已切库：报告只对「当时的库」显示/刷新历史
+      // 后台异步跑：先拿到 running 行（已含代码算好的信号图），再轮询到完成
       void queryClient.invalidateQueries({ queryKey: ["analyses", row.collectionId] });
-      if (row.collectionId === colIdRef.current) {
-        setActive(row);
-        toast.success("分析完成");
-      } else {
-        toast.success("分析完成（在对应库的历史里查看）");
-      }
+      if (row.collectionId === colIdRef.current) setActive(row);
     },
     onError: (e) => toast.error("分析失败", e instanceof Error ? e.message : undefined),
   });
+
+  // 生成中：每 2.5s 拉一次，直到 done/failed
+  const running = active?.status === "running" ? active : null;
+  const poll = useQuery({
+    queryKey: ["analysis-run", running?.collectionId, running?.id],
+    queryFn: () => api.collectionAnalysis(running!.collectionId, running!.id),
+    enabled: !!running,
+    refetchInterval: 2500,
+    gcTime: 0,
+  });
+  const polled = poll.data;
+  useEffect(() => {
+    if (!polled || polled.status === "running") return;
+    void queryClient.invalidateQueries({ queryKey: ["analyses", polled.collectionId] });
+    if (polled.collectionId !== colIdRef.current) return;
+    setActive((cur) => (cur?.id === polled.id ? polled : cur));
+    if (polled.status === "done") toast.success("分析完成");
+    else toast.error("分析失败", polled.error ?? undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polled]);
 
   const colName = useMemo(
     () => cols.data?.items.find((x) => x.id === colId)?.name ?? "",
@@ -321,9 +355,6 @@ export default function AnalysisPage() {
       <div className="flex flex-wrap items-center gap-3">
         <BrainCircuit className="size-5 text-primary" />
         <h1 className="text-lg font-semibold">AI 分析</h1>
-        <span className="text-sm text-muted-foreground">
-          选一个采集库，让 AI 分析哪些内容火、为什么火
-        </span>
       </div>
 
       {/* 采集库选择 */}
@@ -355,17 +386,26 @@ export default function AnalysisPage() {
         {colId != null && (
           <Button
             size="sm"
-            disabled={analyze.isPending}
-            onClick={() => analyze.mutate(colId)}
+            disabled={analyze.isPending || !!running}
+            onClick={() => analyze.mutate({ id: colId, positioning })}
             className="ml-1"
           >
-            {analyze.isPending ? (
+            {analyze.isPending || running ? (
               <Loader2 className="mr-1.5 size-4 animate-spin" />
             ) : (
               <Sparkles className="mr-1.5 size-4" />
             )}
-            {analyze.isPending ? "分析中…" : "开始分析"}
+            {analyze.isPending || running ? "分析中…" : "开始分析"}
           </Button>
+        )}
+        {colId != null && (
+          <input
+            value={positioning}
+            onChange={(e) => updatePositioning(e.target.value)}
+            maxLength={60}
+            placeholder="我的账号定位（选填，如：职场效率/平价护肤）"
+            className="h-9 w-72 rounded-full border border-border bg-card px-4 text-sm outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-primary"
+          />
         )}
       </div>
 
@@ -392,6 +432,8 @@ export default function AnalysisPage() {
                 <span className="flex items-center gap-1.5 text-sm">
                   <FileText className="size-3.5" />
                   {a.noteCount} 篇笔记
+                  {a.status === "running" && <Loader2 className="size-3 animate-spin text-primary" />}
+                  {a.status === "failed" && <span className="text-[10px] text-rose-500">失败</span>}
                 </span>
                 <span className="text-xs text-muted-foreground">{timeAgo(a.createdAt)}</span>
               </button>
@@ -407,17 +449,25 @@ export default function AnalysisPage() {
               <div className="flex flex-col items-center gap-3 py-16">
                 <Loader2 className="size-8 animate-spin text-muted-foreground" />
                 <TextShimmer className="text-sm text-muted-foreground">
-                  正在让 AI 阅读「{colName}」里的笔记…
+                  正在读取「{colName}」…
                 </TextShimmer>
               </div>
             )}
-            {active ? (
-              <AnalysisView key={active.id} a={active} />
+            {active?.status === "failed" ? (
+              <div className="flex flex-col items-start gap-2 rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6">
+                <div className="font-semibold text-rose-600">分析没跑完</div>
+                <div className="text-xs text-muted-foreground">{active.error || "AI 调用失败"}</div>
+              </div>
+            ) : active ? (
+              active.data?.stats?.signals ? (
+                <AnalysisReport key={active.id} a={active} onTopicAdded={() => void queryClient.invalidateQueries({ queryKey: ["topics"] })} />
+              ) : (
+                <LegacyView key={active.id} a={active} />
+              )
             ) : (
               !analyze.isPending && (
                 <EmptyState
                   title="选择库后点「开始分析」"
-                  description="产出：一句话结论、指标卡、爆款榜、标签热度、共性/机会/建议"
                 />
               )
             )}

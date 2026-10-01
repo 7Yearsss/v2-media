@@ -23,6 +23,12 @@ npm workspaces，TypeScript 全栈：
 - `npm run typecheck`（全仓）· `npm test`（server）· `npm run build:ext`
 - dev：`npm run dev:server`（:3000）+ `npm run dev:web`（:5173）+ `npm run build:ext` 后 chrome://extensions 加载 `apps/extension/dist`
 
+## AI 分析
+
+- `POST /api/collections/:id/analyze` 是异步的：立刻 202 + `status=running` 行（已含代码算好的信号），后台跑 AI，页面轮询详情到 done/failed；running 超 12 分钟读取时回收为 failed。Cloudflare 对 >100s 无响应的请求返回 524，所以不能同步等，AI 客户端也用流式。
+- 提示词在 `src/lib/analysis-prompts.ts`，原则：最短 + 说明原因，只为评测失败加内容；评分器 `src/lib/analysis-grader.ts`，真模型评测 `npx tsx apps/server/scripts/eval-analysis.ts`。
+- `AI_ANALYSIS_MODEL` 可单独指定分析用模型（空=`AI_MODEL`）；慢的推理模型会很久，选响应快的。
+
 ## 生产部署
 
 - 线上： https://xhs.v2api.top → nginx → 127.0.0.1:3000（systemd `v2-media`，目录 `~/apps/v2-media`，Postgres 走 `v2media-postgres` docker on 127.0.0.1:5433）

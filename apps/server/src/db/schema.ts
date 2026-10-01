@@ -1,3 +1,4 @@
+import type { AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -38,33 +39,17 @@ export const collectionAnalyses = pgTable("collection_analyses", {
   collectionId: integer("collection_id").notNull().references(() => collections.id, { onDelete: "cascade" }),
   noteCount: integer("note_count").notNull().default(0),
   /** 结构化分析：{stats: 服务端算的确定性统计, insight: AI 产出的 JSON 洞察}。 */
-  data: jsonb("data").$type<{
-    stats: {
-      totalNotes: number;
-      totalLikes: number;
-      totalCollects: number;
-      totalComments: number;
-      totalShares: number;
-      avgEngagement: number;
-      topNotes: Array<{
-        noteId: string;
-        title: string;
-        likes: number;
-        collects: number;
-        comments: number;
-        shares: number;
-        engagement: number;
-      }>;
-      topTags: Array<{ tag: string; count: number }>;
-    };
-    insight: {
-      summary: string;
-      topNotes: Array<{ title: string; why: string }>;
-      patterns: string[];
-      opportunities: string[];
-      actions: string[];
-    } | null;
-  }>().notNull(),
+  data: jsonb("data")
+    .$type<{
+      stats: CollectionAnalysisStats;
+      insight: CollectionInsight | null;
+      positioning?: string;
+      visual?: AnalysisVisualItem[];
+    }>()
+    .notNull(),
+  /** running=后台还在跑 / done / failed。老数据默认 done。 */
+  status: varchar("status", { length: 16 }).notNull().default("done"),
+  error: text("error"),
   /** AI 原始文本（JSON 解析失败时的兜底展示）。 */
   report: text("report").notNull().default(""),
   createdAt: timestamp("created_at").defaultNow().notNull(),

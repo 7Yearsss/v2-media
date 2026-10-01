@@ -2,50 +2,61 @@ import { and, count, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
+import type { CollectionInsight } from "@v2media/shared";
+
+import { env } from "../env";
+import { jsonObjectsIn } from "../lib/json-extract";
 import type { Deps } from "../context";
+import { runAnalysisAI, type RunNote } from "../lib/analysis-run";
+import { computeSignals, engagementOf, type SignalNote } from "../lib/analysis-signals";
 import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
 
 /** 一次分析喂给模型的笔记上限（按互动量取 top）。 */
 const ANALYZE_LIMIT = 40;
+/** 分析 running 超过这么久视为中断（AI 单次最长 ~5min，两步加起来留足余量）。 */
+const ANALYZE_STALE_MS = 12 * 60_000;
 
-const ANALYSIS_SYSTEM =
-  "你是资深小红书运营分析师。输入是一个采集库里的笔记列表，每篇含标题/互动数据/标签/正文节选，" +
-  "可能还带：发布时间、上线天数、日均互动（互动量/上线天数）、搜索来源词、IP属地、热门评论。" +
-  "要求：每条结论必须引用库里的具体笔记标题或数字，禁止空话套话；" +
-  "优先用「日均互动」区分新爆款和老帖余热（新帖日均互动高=真趋势，老帖总量高不代表还在火）；" +
-  "有热门评论的笔记要在 patterns/opportunities 里引用评论原话（评论反映观众真实关注点）；" +
-  "有搜索来源词的笔记要在结论里点出哪些词在带量；" +
-  "如果收藏/评论/分享字段都是 0，要在 summary 里点明该库只有曝光数据、无法判断转化。" +
-  "只输出一个 JSON 对象（不要 markdown 围栏、不要多余文字），结构：" +
-  '{"summary":"一句话结论（必须含具体数据）","topNotes":[{"title":"笔记标题","why":"它火的原因（引用其具体数据/标题特征）"}],' +
-  '"patterns":["爆款共性规律 2-4 条，每条点名对应哪几篇"],"opportunities":["还没吃透的机会点 1-3 条"],' +
-  '"actions":["可执行建议 3 条，各给出一个可直接用的完整标题"]}';
+type RawRef = unknown;
+const asStr = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+const asArr = (v: unknown) => (Array.isArray(v) ? v : []);
 
-/** 从模型输出里抠出 JSON 洞察；失败返回 null（原文进 report 兜底）。 */
-function parseInsight(text: string) {
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
+/** 从模型输出里抠出 JSON 洞察：有多个对象时取最后一个能用的（终稿在后）；失败返回 null（原文进 report 兜底）。refs 由 resolve 映射成笔记。 */
+export function parseInsight(text: string, resolve: (r: RawRef) => { id: number; title: string } | null = () => null): CollectionInsight | null {
+  for (const raw of jsonObjectsIn(text).reverse()) {
+    const out = parseOne(raw, resolve);
+    if (out) return out;
+  }
+  return null;
+}
+
+function parseOne(raw: string, resolve: (r: RawRef) => { id: number; title: string } | null): CollectionInsight | null {
   try {
-    const j = JSON.parse(m[0]);
-    const arr = (v: unknown) => (Array.isArray(v) ? v.map(String).filter(Boolean) : []);
-    const insight = {
-      summary: typeof j.summary === "string" ? j.summary : "",
-      topNotes: Array.isArray(j.topNotes)
-        ? j.topNotes
-            .map((n: any) => ({ title: String(n?.title ?? ""), why: String(n?.why ?? "") }))
-            .filter((n: { title: string }) => n.title)
-        : [],
-      patterns: arr(j.patterns),
-      opportunities: arr(j.opportunities),
-      actions: arr(j.actions),
+    const j = JSON.parse(raw);
+    const refs = (v: unknown) => asArr(v).map(resolve).filter((x): x is { id: number; title: string } => !!x).slice(0, 4);
+    const insight: CollectionInsight = {
+      summary: asStr(j.summary, 120),
+      findings: asArr(j.findings)
+        .map((f: any) => ({
+          claim: asStr(f?.claim, 80),
+          evidence: asArr(f?.evidence).map((e) => asStr(e, 80)).filter(Boolean).slice(0, 3),
+          boundary: asStr(f?.boundary, 80),
+          todo: asStr(f?.todo, 80),
+          confidence: (["high", "mid", "low"].includes(f?.confidence) ? f.confidence : "mid") as "high" | "mid" | "low",
+          refs: refs(f?.refs),
+        }))
+        .filter((f) => f.claim),
+      needs: asArr(j.needs)
+        .map((n: any) => ({ need: asStr(n?.need, 60), quote: asStr(n?.quote, 100), refs: refs(n?.refs) }))
+        .filter((n) => n.need),
+      traps: asArr(j.traps)
+        .map((t: any) => ({ title: asStr(t?.title, 120), reason: asStr(t?.reason, 80) }))
+        .filter((t) => t.title),
+      ideas: asArr(j.ideas)
+        .map((i: any) => ({ title: asStr(i?.title, 120), hook: asStr(i?.hook, 100), angle: asStr(i?.angle, 100), refs: refs(i?.refs) }))
+        .filter((i) => i.title),
     };
     // 模型返回了无关 JSON（如 {"error":...}）时视为解析失败，走原文兜底
-    const usable =
-      insight.summary ||
-      insight.topNotes.length ||
-      insight.patterns.length ||
-      insight.opportunities.length ||
-      insight.actions.length;
+    const usable = insight.summary || insight.findings?.length || insight.needs?.length || insight.ideas?.length;
     return usable ? insight : null;
   } catch {
     return null;
@@ -142,15 +153,23 @@ export function collectionsModule(deps: Deps) {
     return col ?? null;
   };
 
-  // AI 分析：确定性统计（服务端算）+ 结构化洞察（AI 出 JSON），报告落库可回看
+  // AI 分析：代码先算信号（差异/钩子/评论分类/不可复制），AI 两步（假设 → 挑错出终稿），报告落库可回看
   app.post("/:id/analyze", async (c) => {
     const col = await ownCollection(c);
     if (!col) return c.json({ error: "not found" }, 404);
     const userId = c.get("userId");
+    const body = (await c.req.json().catch(() => null)) as { positioning?: unknown; withVideo?: unknown } | null;
+    const positioning = typeof body?.positioning === "string" ? body.positioning.trim().slice(0, 200) : "";
     const notes = await deps.db
       .select({
+        id: collectedNotes.id,
         noteId: collectedNotes.noteId,
+        type: collectedNotes.type,
+        authorName: collectedNotes.authorName,
         title: collectedNotes.title,
+        cover: collectedNotes.cover,
+        videoUrl: collectedNotes.videoUrl,
+        rawJson: collectedNotes.rawJson,
         likes: collectedNotes.likes,
         collects: collectedNotes.collects,
         comments: collectedNotes.comments,
@@ -172,27 +191,32 @@ export function collectionsModule(deps: Deps) {
       .limit(ANALYZE_LIMIT * 3);
     if (!notes.length) return c.json({ error: "库里还没有笔记" }, 400);
 
-    const engagement = (n: (typeof notes)[number]) => n.likes + n.collects + n.comments + n.shares;
+    const engagement = engagementOf;
     const dayAge = (n: (typeof notes)[number]) =>
       n.publishedAt
         ? Math.max(1, Math.ceil((deps.now().getTime() - n.publishedAt.getTime()) / 86_400_000))
         : null;
+    // 笔记 #编号 = 在候选池里的互动排名（1 起）；AI 只引用编号，服务端映射回笔记
+    const refOf = new Map(notes.map((n, i) => [n.id, i + 1]));
+    const byRef = new Map(notes.map((n, i) => [i + 1, { id: n.id, title: n.title }]));
     // 分析样本 = 总互动 top40 ∪ 日均互动 top10（后进来的新爆款）
-    const pool = new Map(notes.map((n) => [n.noteId, n]));
-    const analysisNotes = new Map<string, (typeof notes)[number]>();
-    for (const n of notes.slice(0, ANALYZE_LIMIT)) analysisNotes.set(n.noteId, n);
-    const byDailyRate = [...pool.values()]
+    const analysisNotes = new Map<number, (typeof notes)[number]>();
+    for (const n of notes.slice(0, ANALYZE_LIMIT)) analysisNotes.set(n.id, n);
+    const byDailyRate = notes
       .filter((n) => dayAge(n) != null)
       .sort((a, b) => engagement(b) / dayAge(b)! - engagement(a) / dayAge(a)!)
       .slice(0, 10);
-    for (const n of byDailyRate) analysisNotes.set(n.noteId, n);
+    for (const n of byDailyRate) analysisNotes.set(n.id, n);
     const analysisList = [...analysisNotes.values()];
 
     // 确定性统计：爆款榜 + 标签热度 + 总量/均值（前端画图用，不走 AI）
-    // 口径与原来一致：只算总互动 top40；候选池里的新爆款只进 AI 输入不进统计
     const statNotes = notes.slice(0, ANALYZE_LIMIT);
     const tagFreq = new Map<string, number>();
     for (const n of statNotes) for (const t of n.tags) tagFreq.set(t, (tagFreq.get(t) ?? 0) + 1);
+    const signals = computeSignals(
+      notes.map<SignalNote>((n) => ({ ...n, ref: refOf.get(n.id)!, commentsData: n.commentsData })),
+      deps.now(),
+    );
     const stats = {
       totalNotes: statNotes.length,
       totalLikes: statNotes.reduce((s, n) => s + n.likes, 0),
@@ -218,65 +242,88 @@ export function collectionsModule(deps: Deps) {
         withDetail: statNotes.filter((n) => n.hasDetail).length,
         total: statNotes.length,
       },
+      signals,
     };
 
-    // 热门评论 top3 喂给 AI：评论是观众真实需求的一手信号
-    const COMMENT_MAX = 120; // 截断超长评论，控制 AI 请求体量
-    type Cmt = { content?: string; likes?: number };
-    const topComments = (raw: unknown[]): Cmt[] =>
-      (Array.isArray(raw) ? raw : [])
-        .map((cm) => ({ content: String((cm as Cmt)?.content ?? "").slice(0, COMMENT_MAX), likes: Number((cm as Cmt)?.likes ?? 0) }))
-        .filter((cm) => cm.content)
-        .sort((a, b) => b.likes - a.likes)
-        .slice(0, 3);
-    const payload = analysisList
-      .map((n) => {
-        const eng = engagement(n);
-        const days = dayAge(n);
-        return {
-          标题: n.title,
-          赞: n.likes,
-          收藏: n.collects,
-          评论: n.comments,
-          分享: n.shares,
-          ...(n.publishedAt ? { 发布时间: n.publishedAt.toISOString().slice(0, 10), 上线天数: days } : {}),
-          ...(days ? { 日均互动: Math.round(eng / days) } : {}),
-          ...(n.sourceKeyword ? { 搜索来源词: n.sourceKeyword } : {}),
-          ...(n.ipLocation ? { IP属地: n.ipLocation } : {}),
-          标签: n.tags.slice(0, 8),
-          正文节选: n.content.slice(0, 300),
-          ...(topComments(n.commentsData).length ? { 热门评论: topComments(n.commentsData).map((cm) => cm.content) } : {}),
-        };
-      })
-      .map((n) => JSON.stringify(n))
-      .join("\n");
-    let report: string;
-    try {
-      report = await deps.ai.complete(ANALYSIS_SYSTEM, `采集库「${col.name}」共 ${notes.length} 篇：\n${payload}`);
-    } catch (e) {
-      return c.json({ error: e instanceof Error ? e.message : "AI failed" }, 502);
-    }
+    const resolve = (r: unknown) => {
+      const n = Number(String(r).replace(/\D/g, ""));
+      return Number.isInteger(n) ? (byRef.get(n) ?? null) : null;
+    };
+    // 先落一行 running 立刻返回（慢的 AI 调用在后台跑，页面轮询）——请求不能在 Cloudflare 后面同步等 2 分钟
     const [row] = await deps.db
       .insert(collectionAnalyses)
       .values({
         userId,
         collectionId: col.id,
         noteCount: notes.length,
-        data: { stats, insight: parseInsight(report) },
-        report,
+        status: "running",
+        data: { stats, insight: null, ...(positioning ? { positioning } : {}) },
       })
       .returning();
-    return c.json(row, 201);
+    const runId = row!.id;
+    const runNotes: RunNote[] = notes.map((n) => {
+      const v = (n.rawJson as { video?: { size?: number; durationMs?: number } } | null)?.video;
+      return { ...n, ref: refOf.get(n.id)!, videoSize: v?.size ?? null, videoDurationMs: v?.durationMs ?? null };
+    });
+    const sampleSet = new Set(analysisList.map((n) => n.id));
+    void (async () => {
+      const t0 = Date.now();
+      try {
+        const { report, visual } = await runAnalysisAI(deps, {
+          colName: col.name,
+          positioning,
+          pool: runNotes,
+          sample: runNotes.filter((n) => sampleSet.has(n.id)),
+          signals,
+          now: deps.now(),
+          withVideo: body?.withVideo === true,
+        });
+        await deps.db
+          .update(collectionAnalyses)
+          .set({
+            status: "done",
+            report,
+            data: { stats, insight: parseInsight(report, resolve), ...(positioning ? { positioning } : {}), ...(visual.length ? { visual } : {}) },
+          })
+          .where(eq(collectionAnalyses.id, runId));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "AI failed";
+        console.warn(`analyze AI failed after ${Date.now() - t0}ms:`, msg);
+        await deps.db
+          .update(collectionAnalyses)
+          .set({ status: "failed", error: msg })
+          .where(eq(collectionAnalyses.id, runId))
+          .catch(() => {});
+      }
+    })();
+    return c.json(row, 202);
   });
+
+  /** running 太久（进程重启/AI 挂死）的行标记失败，避免页面永远转圈。 */
+  const reapStale = (colId: number) =>
+    deps.db
+      .update(collectionAnalyses)
+      .set({ status: "failed", error: "分析中断（服务重启或超时），请重试" })
+      .where(
+        and(
+          eq(collectionAnalyses.collectionId, colId),
+          eq(collectionAnalyses.status, "running"),
+          // 用库的时钟比较：created_at 是无时区 timestamp，传 JS Date 会按本机时区序列化而错位
+          sql`${collectionAnalyses.createdAt} < now() - make_interval(secs => ${ANALYZE_STALE_MS / 1000})`,
+        ),
+      );
 
   app.get("/:id/analyses", async (c) => {
     const col = await ownCollection(c);
     if (!col) return c.json({ error: "not found" }, 404);
+    await reapStale(col.id);
     const rows = await deps.db
       .select({
         id: collectionAnalyses.id,
         collectionId: collectionAnalyses.collectionId,
         noteCount: collectionAnalyses.noteCount,
+        status: collectionAnalyses.status,
+        error: collectionAnalyses.error,
         createdAt: collectionAnalyses.createdAt,
       })
       .from(collectionAnalyses)
@@ -289,6 +336,7 @@ export function collectionsModule(deps: Deps) {
     const col = await ownCollection(c);
     if (!col) return c.json({ error: "not found" }, 404);
     const aid = Number(c.req.param("aid"));
+    await reapStale(col.id);
     const [row] = await deps.db
       .select()
       .from(collectionAnalyses)

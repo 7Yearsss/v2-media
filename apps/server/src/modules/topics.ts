@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
+import { generateDraft } from "../lib/draft-gen";
 import {
   collectedNotes,
   collections,
@@ -192,6 +193,43 @@ export function topicsModule(deps: Deps) {
         .where(and(eq(drafts.id, topic.draftId), eq(drafts.userId, userId)))
         .limit(1);
       if (d) return c.json({ draft: d, topic });
+    }
+    const body = (await c.req.json().catch(() => null)) as { ai?: unknown; positioning?: unknown } | null;
+    // AI 成稿：借来源爆款的结构写一篇新的；不拷贝对方的图（搬运会被判原创度），图由用户自己补
+    if (body?.ai === true) {
+      let note: { title: string; content: string; tags: string[] } | undefined;
+      if (topic.sourceNoteId) {
+        const [n] = await deps.db
+          .select({ title: collectedNotes.title, content: collectedNotes.content, tags: collectedNotes.tags })
+          .from(collectedNotes)
+          .where(and(eq(collectedNotes.id, topic.sourceNoteId), eq(collectedNotes.userId, userId)))
+          .limit(1);
+        note = n;
+      }
+      const [hook = "", ...rest] = (topic.angle || "").split("\n");
+      let gen;
+      try {
+        gen = await generateDraft(deps, {
+          title: topic.title,
+          hook,
+          angle: rest.join("\n"),
+          positioning: typeof body.positioning === "string" ? body.positioning.trim().slice(0, 200) : "",
+          note,
+        });
+      } catch (e) {
+        return c.json({ error: e instanceof Error ? e.message : "AI failed" }, 502);
+      }
+      const [aiDraft] = await deps.db
+        .insert(drafts)
+        .values({ userId, collectedNoteId: topic.sourceNoteId, title: gen.title, content: gen.content, tags: gen.tags, images: [] })
+        .returning();
+      if (!aiDraft) return c.json({ error: "draft create failed" }, 500);
+      const [t2] = await deps.db
+        .update(topics)
+        .set({ status: "drafted", draftId: aiDraft.id, updatedAt: deps.now() })
+        .where(eq(topics.id, topic.id))
+        .returning();
+      return c.json({ draft: aiDraft, topic: t2, coverText: gen.cover, warnings: gen.warnings }, 201);
     }
     // 源自采集笔记的选题，顺带把素材/标签深拷贝进草稿（发布要求至少一张图）
     let noteImages: Array<{ url: string }> = [];

@@ -10,7 +10,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NoteImage } from "@v2media/shared";
+import { BANNED_KIND_META, checkBannedWords, summarizeBanned, type NoteImage } from "@v2media/shared";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
@@ -46,6 +46,8 @@ export default function DraftsPage() {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [tags, setTags] = useState<string[]>([]);
+  // 发布前自查：标题 + 正文里的违禁/限流词，边写边提示
+  const banned = useMemo(() => summarizeBanned(checkBannedWords(`${title}\n${content}`)), [title, content]);
   const [images, setImages] = useState<NoteImage[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [imageInput, setImageInput] = useState("");
@@ -405,6 +407,18 @@ export default function DraftsPage() {
                   "placeholder:text-muted-foreground/70 focus:border-ring",
                 )}
               />
+
+              {banned.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl bg-amber-500/10 px-3 py-2.5 text-xs">
+                  <span className="font-medium text-amber-600">可能被限流</span>
+                  {banned.map((b) => (
+                    <span key={b.word} title={BANNED_KIND_META[b.kind].hint} className="rounded-full bg-card px-2.5 py-1 text-foreground/80 ring-1 ring-amber-500/30">
+                      {b.word}
+                      <span className="ml-1 text-muted-foreground">{BANNED_KIND_META[b.kind].label}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
 
               <div>
                 <p className="mb-2 text-xs font-medium text-muted-foreground">

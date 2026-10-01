@@ -175,6 +175,10 @@ export interface TopicUpdateRequest {
 export interface TopicToDraftResponse {
   draft: Draft;
   topic: Topic;
+  /** AI 成稿时的封面大字建议。 */
+  coverText?: string;
+  /** AI 成稿自查后仍命中的违禁词。 */
+  warnings?: Array<{ word: string; kind: string; count: number }>;
 }
 
 /** POST /api/ai/topics —— 对采集库爆款笔记生成选题建议并直接入池（status=idea）。 */
