@@ -88,11 +88,16 @@ async function waitFor<T>(
 }
 
 /** 按候选选择器找第一个可见元素。 */
+/** 有尺寸且不在负坐标屏外——发布页会在 (-9727,-9918) 放一份同名 tab 诱饵。 */
+function isShown(e: Element): boolean {
+  const r = e.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && r.right > 0 && r.bottom > 0;
+}
+
 function qVisible(selectors: string[], root: ParentNode = document): AnyEl | null {
   for (const sel of selectors) {
     for (const e of root.querySelectorAll<AnyEl>(sel)) {
-      const r = e.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) return e;
+      if (isShown(e)) return e;
     }
   }
   return null;
@@ -103,9 +108,7 @@ function byText(texts: string[], tags = "button,div,span,li,label", root: Parent
   const els = root.querySelectorAll<AnyEl>(tags);
   for (const t of texts) {
     for (const e of els) {
-      const txt = (e.textContent ?? "").trim();
-      const r = e.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0 && txt === t) return e;
+      if ((e.textContent ?? "").trim() === t && isShown(e)) return e;
     }
   }
   return null;
@@ -129,14 +132,46 @@ function clickEl(e: AnyEl) {
   e.click();
 }
 
+/** 真实点击（chrome.debugger，isTrusted）：可见性下拉等组件不认合成事件。失败退回合成点击。 */
+let clickSeq = 0;
+/** 依次真实点击多组元素（同一次 debugger attach 内）；每组取第一个可见的。打标记让 background 现场量坐标（DOM 属性跨 world 可见）。 */
+let lastClickDiag = "";
+/** 每步是元素（打标记定位）或 background 现场解析的选择器串（支持 "sel @text=甲|乙"）。 */
+async function trustedClickSeq(steps: Array<AnyEl | string>): Promise<boolean> {
+  const marked: AnyEl[] = [];
+  const selectors = steps.map((st) => {
+    if (typeof st === "string") return st;
+    const m = String(++clickSeq);
+    st.setAttribute("data-v2m-click", m);
+    marked.push(st);
+    return `[data-v2m-click="${m}"]`;
+  });
+  const res = await sendToBackground<{ ok?: boolean; diag?: string }>({
+    type: "TRUSTED_CLICK",
+    x: 0,
+    y: 0,
+    selectors,
+  }).catch(() => null);
+  lastClickDiag = res?.diag ?? (res ? "" : "后台无响应");
+  marked.forEach((e) => e.removeAttribute("data-v2m-click"));
+  return Boolean(res?.ok);
+}
+
+async function trustedClickEl(e: AnyEl): Promise<boolean> {
+  const ok = await trustedClickSeq([e]);
+  if (!ok) clickEl(e);
+  return ok;
+}
+
 // ---------- 发布页选择器（多候选，按官方发布页常见结构 + 语义文本兜底） ----------
 
 const SEL = {
   uploadTab: [".creator-tab", ".tab-item", ".publish-tab"], // 配合 byText("上传图文")
+  // 只认图片 input：停在「上传视频」页签时那个 input 只收 .mp4/.mov，注进去会假成功
   fileInput: [
     'input[type="file"][accept*="image"]',
-    ".upload-input input[type=file]",
-    'input[type="file"]',
+    'input[type="file"][accept*="jpg"]',
+    'input[type="file"][accept*="png"]',
   ],
   preview: [
     ".img-preview img",
@@ -169,12 +204,8 @@ const SEL = {
     '[role="listbox"] [role="option"]',
     ".search-result-item",
   ],
-  publishBtn: [
-    "button.publishBtn",
-    ".publish-page-publish-btn button",
-    'button[class*="publish"]',
-    ".submit button",
-  ],
+  // 旧版普通 DOM 按钮；新版是 <xhs-publish-btn>（closed shadow），见 findPublishBtn
+  publishBtn: ["button.publishBtn", ".publish-page-publish-btn button.bg-red"],
   successMark: [
     '[class*="success"]',
     ".publish-success",
@@ -226,10 +257,10 @@ async function injectImages(images: { url: string }[]) {
 
 // ---------- 标题 / 正文 / 话题 ----------
 
-function fillTitle(title: string) {
+async function fillTitle(title: string) {
   if (!title) return;
-  const input = qVisible(SEL.titleInput);
-  if (!input) throw new Error("找不到标题输入框");
+  // 编辑区在图片上传完成后才渲染
+  const input = await waitFor(() => qVisible(SEL.titleInput), 15000, "标题输入框");
   setInputValue(input, title.slice(0, 20)); // 小红书标题上限 20 字
 }
 
@@ -287,6 +318,10 @@ async function addTags(tags: string[]) {
     `话题：${wanted.length - failed.length}/${wanted.length}${failed.length ? `（未选中 ${failed.join("/")}）` : ""}`,
     failed.length === wanted.length ? "err" : "ok",
   );
+  // 最后一个话题的联想框可能还开着，会盖住下面的可见性下拉——失焦并等它收起
+  ed.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  ed.blur();
+  await waitFor(() => !qVisible(SEL.topicPopup), 3000, "话题联想框收起").catch(() => {});
 }
 
 // ---------- 定时发布 / 可见性 ----------
@@ -324,21 +359,109 @@ async function applySchedule(scheduledAt: number) {
   }
 }
 
-function applyVisibility(visibility: "public" | "private" | "friends") {
+/** 可见性是下拉（d-select）：先展开再选；选完回读确认，没生效就中止——绝不能以公开身份发出去。 */
+async function applyVisibility(visibility: "public" | "private" | "friends") {
   if (visibility === "public") return; // 默认公开
-  const label = visibility === "private" ? ["仅自己可见", "私密"] : ["仅好友可见", "好友可见"];
-  const radio = byText(label, "label,div,span");
-  if (!radio) throw new Error(`找不到可见性选项「${label[0] ?? label.join("/")}」`);
-  clickEl(radio);
+  const label =
+    visibility === "private" ? ["仅自己可见", "私密"] : ["仅互关好友可见", "仅好友可见", "好友可见"];
+  const select = qVisible([".permission-card-select .d-select-main", ".permission-card-select"]);
+  if (!select) throw new Error("找不到可见性下拉框");
+  // 展开 + 选中在同一次真实点击序列里完成（中途 detach 调试器会让下拉收起）；
+  // 选项按文字现场找——展开时会重新渲染，不能事先打标记
+  let trusted = false;
+  const diags: string[] = [];
+  for (let round = 1; round <= 2 && !trusted; round++) {
+    trusted = await trustedClickSeq([select, `.custom-option @text=${label.join("|")}`]);
+    if (!trusted) diags.push(`第${round}轮：${lastClickDiag || "无诊断"}`);
+  }
+  if (!trusted) throw new Error(`可见性下拉真实点击失败（${diags.join(" ／ ")}）`);
+  await waitFor(
+    () => {
+      const shown = qVisible([".permission-card-select"])?.textContent ?? "";
+      return label.some((l) => shown.includes(l));
+    },
+    5000,
+    `确认可见性已切到「${label[0]}」`,
+  );
 }
 
 // ---------- 发布 + 结果 ----------
 
-async function clickPublish() {
-  const btn =
-    qVisible(SEL.publishBtn) ?? byText(["发布", "发布笔记"], "button");
-  if (!btn) throw new Error("找不到发布按钮");
-  clickEl(btn);
+/**
+ * 发布按钮在 <xhs-publish-btn submit-text="发布"> 的 closed shadow root 里，脚本拿不到内部 <button>。
+ * 宿主属性给出可用状态；内部版式固定：「暂存离开」「发布」各 120px、间距 24px、整体居中，
+ * 所以「发布」中心 = 宿主中心 + 72px（没有暂存按钮时就在中心）。返回宿主 + 横向偏移，交给真实点击。
+ */
+type PublishTarget = { el: AnyEl; dx: number; host: boolean };
+async function findPublishBtn(): Promise<PublishTarget> {
+  return waitFor<PublishTarget>(
+    () => {
+      const host = [...document.querySelectorAll<AnyEl>("xhs-publish-btn")].find(isShown);
+      if (host) {
+        if (host.getAttribute("submit-text") !== "发布") return null;
+        if (host.getAttribute("submit-disabled") === "true" || host.getAttribute("submit-loading") === "true")
+          return null;
+        const dx = host.getAttribute("is-save-draft") === "true" ? 72 : 0;
+        return { el: host, dx, host: true };
+      }
+      const btn = qVisible(SEL.publishBtn) ?? byText(["发布"], "button");
+      return btn ? { el: btn, dx: 0, host: false } : null;
+    },
+    10000,
+    "发布按钮（可点击状态）",
+  ).catch((e: Error) => {
+    const h = document.querySelector("xhs-publish-btn");
+    const state = h
+      ? `xhs-publish-btn submit-text=${h.getAttribute("submit-text")} disabled=${h.getAttribute("submit-disabled")} loading=${h.getAttribute("submit-loading")} 可见=${isShown(h)}`
+      : publishCandidates().join("，") || "无";
+    throw new Error(`${e.message}（${state}）`);
+  });
+}
+
+/** 点击点必须落在发布宿主上（closed shadow 内部命中会被重定向成宿主），否则说明被别的东西盖住。 */
+function publishPointCovered(t: PublishTarget): string {
+  t.el.scrollIntoView({ block: "center" });
+  const r = t.el.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2 + t.dx, r.top + r.height / 2);
+  return !hit || hit === t.el || t.el.contains(hit) ? "" : `${hit.tagName}.${String(hit.className).split(" ")[0]}`;
+}
+
+/** 诊断：找文字含「发布」的最内层元素（含 Shadow DOM、同源 iframe），附三层祖先链。 */
+function publishCandidates(): string[] {
+  const out: string[] = [];
+  const cls = (el: Element | null) => (el ? `${el.tagName}.${String(el.className).split(" ")[0]}` : "");
+  const walk = (root: Document | ShadowRoot, where: string) => {
+    for (const el of root.querySelectorAll("*")) {
+      if (el.shadowRoot) walk(el.shadowRoot, `${where}shadow(${cls(el)})>`);
+      if (el instanceof HTMLIFrameElement) {
+        try {
+          if (el.contentDocument) walk(el.contentDocument, `${where}iframe>`);
+        } catch {
+          out.push(`${where}跨域iframe(${el.src.slice(0, 40)})`);
+        }
+      }
+      const own = [...el.childNodes]
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.textContent ?? "")
+        .join("");
+      if (!/发\s*布/.test(own)) continue;
+      const r = el.getBoundingClientRect();
+      const p = el.parentElement;
+      out.push(
+        `${where}${cls(p?.parentElement ?? null)}>${cls(p)}>${cls(el)}「${JSON.stringify(own.trim().slice(0, 8))}」@${Math.round(r.x)},${Math.round(r.y)},${Math.round(r.width)}w`,
+      );
+    }
+  };
+  walk(document, "");
+  return out.filter((t) => !t.includes("发布笔记")).slice(0, 10);
+}
+
+function describeEl(e: AnyEl): string {
+  const r = e.getBoundingClientRect();
+  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  const covered = hit && hit !== e && !e.contains(hit) ? ` 被${hit.tagName}.${String(hit.className).split(" ")[0]}遮挡` : "";
+  const disabled = e.matches("[disabled],[class*=disabled]") ? " 禁用态" : "";
+  return `${e.tagName}.${String(e.className).split(" ")[0]}「${(e.textContent ?? "").trim().slice(0, 6)}」${disabled}${covered}`;
 }
 
 async function awaitResult(): Promise<{ resultUrl?: string }> {
@@ -361,7 +484,12 @@ async function awaitResult(): Promise<{ resultUrl?: string }> {
     },
     60000,
     "发布结果",
-  );
+  ).catch((e: Error) => {
+    // 已点发布但没认出结果：带上页面上的提示文字，便于对成功/失败判定
+    const hints =
+      (document.body?.innerText ?? "").match(/[^\n]{0,12}(成功|失败|审核|违规|频繁|上限|请稍后)[^\n]{0,12}/g) ?? [];
+    throw new Error(`${e.message}（地址 ${location.pathname}；页面提示：${hints.slice(0, 4).join("｜") || "无"}）`);
+  });
   return { resultUrl: r === "done" ? location.href : r };
 }
 
@@ -377,16 +505,23 @@ async function runJob(job: PublishJobPayload) {
   step("load", `任务 #${job.id} 加载中`);
   await ensureEnabled();
   // 1. 确保「上传图文」页签
-  const imgTab = byText(["上传图文", "图文"], SEL.uploadTab.join(","));
-  if (imgTab) {
-    clickEl(imgTab);
-    await sleep(800);
-  }
+  // 页签是微前端异步渲染的：等它出现再点；点完确认图片 input 出现（停在视频页会把图片塞进视频 input），没切过去就再点
+  await waitFor(
+    () => {
+      if (document.querySelector(SEL.fileInput.join(","))) return true;
+      const imgTab = byText(["上传图文", "图文"], SEL.uploadTab.join(","));
+      if (imgTab) clickEl(imgTab);
+      return false;
+    },
+    30000,
+    "切换到「上传图文」",
+    1000,
+  );
   step("load", "发布页就绪", "ok");
 
   await injectImages(draft.images ?? []);
   step("fields", "填写标题/正文");
-  fillTitle(draft.title ?? "");
+  await fillTitle(draft.title ?? "");
   fillContent(draft.content ?? "");
   step("fields", "标题/正文已填", "ok");
 
@@ -399,15 +534,37 @@ async function runJob(job: PublishJobPayload) {
     await applySchedule(scheduleAt);
     step("schedule", "定时已设置", "ok");
   }
+  // 从这里起不再遇错即停：把可见性、发布按钮的问题一次收集齐再报（有任何问题都不点发布）
+  const problems: string[] = [];
   if (job.visibility && job.visibility !== "public") {
     step("visibility", `可见性：${job.visibility}`);
-    applyVisibility(job.visibility);
-    step("visibility", "可见性已设置", "ok");
+    try {
+      await applyVisibility(job.visibility);
+      step("visibility", "可见性已设置", "ok");
+    } catch (e) {
+      step("visibility", "可见性设置失败", "err");
+      problems.push(`【可见性】${(e as Error).message}`);
+    }
+  }
+  let btn: PublishTarget | null = null;
+  try {
+    btn = await findPublishBtn();
+    const cover = publishPointCovered(btn);
+    if (cover) problems.push(`【发布按钮】点击点被 ${cover} 遮挡`);
+    else if (problems.length) problems.push(`【发布按钮】已找到 ${describeEl(btn.el)}`);
+  } catch (e) {
+    problems.push(`【发布按钮】${(e as Error).message}`);
+  }
+  if (problems.length || !btn) {
+    throw new Error(`未点发布。${problems.join(" ")}`);
   }
 
   await ensureEnabled();
   step("publish", "点击发布");
-  await clickPublish();
+  const clicked = btn.host
+    ? await trustedClickSeq([`xhs-publish-btn[submit-text="发布"] @dx=${btn.dx}`])
+    : await trustedClickEl(btn.el);
+  if (!clicked) throw new Error(`点击发布失败（${lastClickDiag || "真实点击未成功"}）`);
   const { resultUrl } = await awaitResult();
   step("publish", "发布完成", "ok");
   return { resultUrl };
@@ -456,7 +613,7 @@ async function main() {
       type: "JOB_RESULT",
       jobId: job.id,
       status: "failed",
-      error: msg.slice(0, 300),
+      error: msg.slice(0, 1500),
     }).catch(() => {});
   }
 }
