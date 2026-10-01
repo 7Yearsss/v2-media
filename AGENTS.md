@@ -27,5 +27,5 @@ npm workspaces，TypeScript 全栈：
 
 - 线上： https://xhs.v2api.top → nginx → 127.0.0.1:3000（systemd `v2-media`，目录 `~/apps/v2-media`，Postgres 走 `v2media-postgres` docker on 127.0.0.1:5433）
 - CI：push/merge 到 main 触发 `.github/workflows/deploy.yml`（build web + `scripts/package-extension.sh` 打插件 zip → rsync → npm install → `systemctl restart`）；仓库需配 secrets `SSH_PRIVATE_KEY`/`SSH_HOST`/`SSH_USER`/`SSH_KNOWN_HOSTS`
-- 媒体存 Cloudflare R2 桶 `v2-media`（采集后后台把 xhscdn 图转存，DB 存 `/api/media/objects/<key>` 绝对 URL）；没配 `R2_*` 环境变量时降级为实时代理。`/api/media/*` 无鉴权（要给 <img> 用），proxy 只放白名单域、objects key 是内容哈希不可枚举
+- 媒体存 Cloudflare R2 桶 `v2-media`（采集后后台把 xhscdn 图转存，DB 存 `/api/media/objects/<key>` 绝对 URL）；没配 `R2_*` 环境变量时降级为实时代理。视频同样转存（`vid/`），单个上限 `MEDIA_VIDEO_MAX_BYTES`（默认 80MB，pro 档 `MEDIA_VIDEO_MAX_BYTES_PRO` 默认 200MB），主流超限时退到 `raw_json.video.fallbackUrls` 里更小的清晰度，都超限则保留原链；桶总量上限 `R2_MAX_BYTES``/api/media/*` 无鉴权（要给 <img> 用），proxy 只放白名单域、objects key 是内容哈希不可枚举
 - Devin 连服务器走 SSH 隧道而非公网：`ssh -i ~/.ssh/v2media_actions -L 3000:127.0.0.1:3000 ubuntu@40.160.139.134` 后访问 localhost:3000；服务器在共享生产机上，勿动其他 nginx vhost / docker 容器

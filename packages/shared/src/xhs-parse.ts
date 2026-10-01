@@ -8,7 +8,7 @@
  * 纯函数，不依赖 DOM —— 可在插件、服务端、单测三处复用。
  */
 
-import type { CollectSource, NoteCard, NoteComment, NoteDetail, NoteImage } from "./types";
+import type { CollectSource, NoteCard, NoteComment, NoteDetail, NoteImage, VideoInfo } from "./types";
 
 type Any = Record<string, any>;
 
@@ -74,6 +74,112 @@ export function xhsInitialStateFromHtml(html: string): Any | null {
     else if (char === '"') quoted = !quoted;
   }
   try { return JSON.parse(output) as Any; } catch { return null; }
+}
+
+/** 超过这个高度的流不优先选：1080p 以内画质够用，文件小得多。 */
+const PREFERRED_MAX_HEIGHT = 1080;
+
+/**
+ * 从笔记的 video 节点挑出要保存的一路流 + 元信息。
+ * 接口是 snake_case、页面 store 是 camelCase；流分组键也不固定（h264/h265/av1 或 EF4 这类），
+ * 所以不按键名取，枚举全部流自己挑：1080p 以内最高清，同清晰度优先 h264（浏览器兼容最好），再选小的。
+ * 其余更小的清晰度放进 fallbackUrls，供转存时主流超限退而求其次。
+ */
+export function pickVideo(video?: Any): { url?: string; info?: VideoInfo } {
+  video = unwrap<Any>(video);
+  if (!video || typeof video !== "object") return {};
+  const pk = (o: Any, ...keys: string[]) => {
+    for (const k of keys) if (o?.[k] != null) return unwrap(o[k]);
+    return undefined;
+  };
+  const media = pk(video, "media") ?? {};
+  const stream = pk(media, "stream") ?? {};
+  type Cand = { url: string; width: number; height: number; size: number; fps: number; format: string; codec: string; bitrate: number; quality: string; durationMs: number };
+  const cands: Cand[] = [];
+  for (const group of Object.values(stream)) {
+    const list = unwrap<any>(group);
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      const item = unwrap<Any>(raw);
+      const backups = pk(item, "backup_urls", "backupUrls");
+      const url = normalizeXhsMediaUrl(str(pk(item, "master_url", "masterUrl") || (Array.isArray(backups) ? backups[0] : "") || ""));
+      if (!/^https?:\/\//.test(url)) continue;
+      cands.push({
+        url,
+        width: num(item.width),
+        height: num(item.height),
+        size: num(item.size),
+        fps: num(item.fps),
+        format: str(item.format),
+        codec: str(pk(item, "video_codec", "videoCodec")).toLowerCase(),
+        bitrate: num(pk(item, "avg_bitrate", "avgBitrate")),
+        quality: str(pk(item, "quality_type", "qualityType")),
+        durationMs: num(pk(item, "video_duration", "videoDuration") || item.duration),
+      });
+    }
+  }
+  const rank = (c: Cand) => [
+    c.height && c.height > PREFERRED_MAX_HEIGHT ? 0 : 1,
+    c.height && c.height > PREFERRED_MAX_HEIGHT ? -c.height : c.height,
+    /264|avc/.test(c.codec) ? 1 : 0,
+    -(c.size || Number.MAX_SAFE_INTEGER),
+  ];
+  cands.sort((a, b) => {
+    const ra = rank(a), rb = rank(b);
+    for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return rb[i]! - ra[i]!;
+    return 0;
+  });
+  const best = cands[0];
+  if (!best) return { url: legacyVideoUrl(video) };
+  const mediaVideo = pk(media, "video") ?? {};
+  const fallbackUrls = cands
+    .slice(1)
+    .filter((c) => c.url !== best.url && (!best.size || !c.size || c.size < best.size))
+    .map((c) => c.url);
+  const info: VideoInfo = {
+    ...(best.durationMs || num(mediaVideo.duration) ? { durationMs: best.durationMs || num(mediaVideo.duration) * 1000 } : {}),
+    ...(best.width ? { width: best.width } : {}),
+    ...(best.height ? { height: best.height } : {}),
+    ...(best.fps ? { fps: best.fps } : {}),
+    ...(best.size ? { size: best.size } : {}),
+    ...(best.format ? { format: best.format } : {}),
+    ...(best.codec ? { videoCodec: best.codec } : {}),
+    ...(best.bitrate ? { bitrate: best.bitrate } : {}),
+    ...(best.quality ? { quality: best.quality } : {}),
+    ...(str(pk(media, "video_id", "videoId") ?? pk(mediaVideo, "video_id", "videoId")) ? { videoId: str(pk(media, "video_id", "videoId") ?? pk(mediaVideo, "video_id", "videoId")) } : {}),
+    ...(fallbackUrls.length ? { fallbackUrls: fallbackUrls.slice(0, 3) } : {}),
+  };
+  return { url: best.url, info };
+}
+
+/** 没有 stream 分组时的老兜底：video.url / 深搜 master_url / originVideoKey。 */
+function legacyVideoUrl(video: Any): string | undefined {
+  const direct =
+    video?.url ??
+    deepMediaUrl(video) ??
+    (video?.consumer?.originVideoKey || video?.consumer?.origin_video_key
+      ? `https://sns-video-qc.xhscdn.com/${str(video.consumer.originVideoKey ?? video.consumer.origin_video_key)}`
+      : undefined);
+  return direct ? normalizeXhsMediaUrl(direct) : undefined;
+}
+
+function deepMediaUrl(v: Any, depth = 0): string | undefined {
+  if (!v || typeof v !== "object" || depth > 6) return undefined;
+  for (const [k, val] of Object.entries(v)) {
+    if (
+      (k === "master_url" || k === "masterUrl" || k === "origin_video_key" || k === "originVideoKey" || k === "url") &&
+      typeof val === "string" &&
+      /^https?:\/\//.test(val)
+    )
+      return val;
+  }
+  for (const val of Object.values(v)) {
+    if (val && typeof val === "object") {
+      const found = deepMediaUrl(val, depth + 1);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
 
 export function noteUrl(noteId: string, xsecToken = "", xsecSource = "pc_search"): string {
@@ -163,35 +269,7 @@ export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<Note
       height: img?.height,
     }))
     .filter((i: NoteImage) => i.url);
-  const videoUrl =
-    card.video?.media?.stream?.h264?.[0]?.master_url ??
-    card.video?.media?.stream?.h265?.[0]?.master_url ??
-    card.video?.media?.stream?.av1?.[0]?.master_url ??
-    card.video?.url ??
-    deepMediaUrl(card.video) ??
-    (card.video?.consumer?.originVideoKey || card.video?.consumer?.origin_video_key
-      ? `https://sns-video-qc.xhscdn.com/${str(card.video.consumer.originVideoKey ?? card.video.consumer.origin_video_key)}`
-      : undefined);
-  // 部分响应把流地址放在非常规路径，兜底深搜 video 子树；
-  // 只有 key（非 URL）时按 xhscdn 域名构造播放地址
-  function deepMediaUrl(v: Any, depth = 0): string | undefined {
-    if (!v || typeof v !== "object" || depth > 6) return undefined;
-    for (const [k, val] of Object.entries(v)) {
-      if (
-        (k === "master_url" || k === "origin_video_key" || k === "originVideoKey" || k === "url") &&
-        typeof val === "string" &&
-        /^https?:\/\//.test(val)
-      )
-        return val;
-    }
-    for (const val of Object.values(v)) {
-      if (val && typeof val === "object") {
-        const found = deepMediaUrl(val, depth + 1);
-        if (found) return found;
-      }
-    }
-    return undefined;
-  }
+  const { url: videoUrl, info: video } = pickVideo(card.video);
   const tagList: Any[] = card.tag_list ?? card.tagList ?? [];
   const xsecToken = str(items?.[0]?.xsec_token ?? fallback?.xsecToken ?? "");
   return {
@@ -204,6 +282,7 @@ export function noteDetailFromFeedResponse(payload: Any, fallback?: Partial<Note
     tags: tagList.map((t) => str(t?.name)).filter(Boolean),
     images,
     videoUrl,
+    ...(video ? { video } : {}),
     author: {
       userId: str(user.user_id ?? ""),
       nickname: str(user.nickname ?? user.nick_name ?? ""),

@@ -148,13 +148,14 @@ export async function fetchAllowed(
   url: string,
   redirectsLeft = 3,
   range?: string,
+  timeoutMs = 10_000,
 ): Promise<Response | null> {
   let current = url;
   for (let i = 0; i <= redirectsLeft; i++) {
     const res = await fetch(current, {
       headers: { Referer: "https://www.xiaohongshu.com/", ...(range ? { Range: range } : {}) },
       redirect: "manual",
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
     }).catch(() => null);
     if (!res) return null;
     if (res.status >= 300 && res.status < 400) {
@@ -232,35 +233,38 @@ async function storeRemoteImage(
   return `${base}${OBJECT_PREFIX}${key}`;
 }
 
+/** 视频下载整体超时：大文件慢网下载远超 fetchAllowed 默认的 10 秒（该超时连 body 流一起算）。 */
+const VIDEO_DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
+
 /**
- * 转存视频到 R2（vid/<hash>）。容量大、并发多：先 HEAD 看 content-length 超限直接
+ * 转存一路视频到 R2（vid/<hash>）。容量大、并发多：先看 content-length 超限直接
  * 放弃；下载落临时文件（计数超限即断），再流式上传 —— 全程不整包进内存。
+ * 成功返回对外地址；超限 / 失败 / 域名不在白名单返回 null（调用方保留原链）。
  */
-async function storeRemoteVideo(
-  r2: R2Storage | null | undefined,
-  url: string | null,
+async function storeOneVideo(
+  r2: R2Storage,
+  url: string,
   base: string,
   quality: MediaQuality,
 ): Promise<string | null> {
-  if (!r2 || !url) return url;
   let host: string;
   try {
     host = new URL(url).hostname;
   } catch {
-    return url;
+    return null;
   }
-  if (!MEDIA_SRC_ALLOWED.test(host)) return url;
+  if (!MEDIA_SRC_ALLOWED.test(host)) return null;
   const key = `vid/${await sha256Hex(url)}`;
   // 并发同 URL 可能同毫秒撞名 —— 每次调用独占一个临时文件
   const tmp = `${tmpdir()}/v2m-vid-${randomUUID()}`;
   try {
     if (!(await r2.head(key))) {
-      const res = await fetchAllowed(url);
-      if (!res?.ok || !res.body) return url;
+      const res = await fetchAllowed(url, 3, undefined, VIDEO_DOWNLOAD_TIMEOUT_MS);
+      if (!res?.ok || !res.body) return null;
       if (Number(res.headers.get("content-length") ?? 0) > quality.videoMaxBytes) {
         // 预检超限：取消 body 释放连接，不真正拉视频
         await res.body?.cancel().catch(() => {});
-        return url;
+        return null;
       }
       // 下载 → 临时文件，Transform 里计数超限即中止（content-length 可能缺报）
       let size = 0;
@@ -280,7 +284,7 @@ async function storeRemoteVideo(
         counter,
         createWriteStream(tmp),
       ).then(() => true).catch(() => false);
-      if (!ok || over || !size) return url;
+      if (!ok || over || !size) return null;
       await r2.putStream(
         key,
         createReadStream(tmp),
@@ -289,11 +293,30 @@ async function storeRemoteVideo(
       );
     }
   } catch {
-    return url;
+    return null;
   } finally {
     await unlink(tmp).catch(() => {});
   }
   return `${base}${OBJECT_PREFIX}${key}`;
+}
+
+/**
+ * 转存视频：先试主流，主流超出该档位的大小上限就依次退到更小的清晰度（fallbackUrls，由大到小）。
+ * 全都存不下则保留原链（过期后无法播放，但不占 R2）。
+ */
+async function storeRemoteVideo(
+  r2: R2Storage | null | undefined,
+  url: string | null,
+  base: string,
+  quality: MediaQuality,
+  fallbackUrls: readonly string[] = [],
+): Promise<string | null> {
+  if (!r2 || !url) return url;
+  for (const candidate of [url, ...fallbackUrls]) {
+    const stored = await storeOneVideo(r2, candidate, base, quality);
+    if (stored) return stored;
+  }
+  return url;
 }
 
 /**
@@ -349,7 +372,10 @@ export async function persistCollectedMedia(
         url: await storeRemoteImage(deps.r2, i.url, base, quality),
       })),
     );
-    const videoUrl = await storeRemoteVideo(deps.r2, row.videoUrl, base, quality);
+    const videoUrl = await storeRemoteVideo(
+      deps.r2, row.videoUrl, base, quality,
+      (row.rawJson as { video?: { fallbackUrls?: string[] } } | null)?.video?.fallbackUrls,
+    );
     const changed =
       cover !== row.cover ||
       videoUrl !== row.videoUrl ||

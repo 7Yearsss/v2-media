@@ -35,11 +35,33 @@ export interface NoteImage {
   height?: number;
 }
 
+/** 视频元信息（详情页才有）；url 之外的信息放这里，不改表结构，存在 raw_json.video。 */
+export interface VideoInfo {
+  /** 时长（毫秒）。 */
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  /** 所选这一路流的文件大小（字节）。 */
+  size?: number;
+  format?: string;
+  videoCodec?: string;
+  /** 平均码率（bps）。 */
+  bitrate?: number;
+  /** 画质档位，如 HD。 */
+  quality?: string;
+  /** 站点视频 id。 */
+  videoId?: string;
+  /** 比主流更小的其它清晰度地址（由大到小）：主流超过存储上限时转存可退而求其次。 */
+  fallbackUrls?: string[];
+}
+
 export interface NoteDetail extends Omit<NoteCard, "source"> {
   content: string;
   tags: string[];
   images: NoteImage[];
   videoUrl?: string;
+  video?: VideoInfo;
   publishedAt?: string;
   ipLocation?: string;
   /** 已采到的评论明细；comments 是站点显示的评论数量。 */
@@ -164,6 +186,8 @@ export interface CollectedNote {
   cover: string;
   images: NoteImage[];
   videoUrl?: string;
+  /** 视频时长 / 分辨率 / 大小等（仅视频笔记且采到详情时有）。 */
+  video?: VideoInfo;
   likes: number;
   collects: number;
   comments: number;

@@ -3,13 +3,12 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  FolderOpen,
   LayoutGrid,
   List,
   Search,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -20,7 +19,7 @@ import {
 import type { CollectedNote, NoteSortField, NoteSortDirection } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
-import { CollectionPicker } from "@/components/app/collection-picker";
+import { CollectionTabs } from "@/components/app/collection-tabs";
 import { useCollectionPrefs } from "@/lib/hooks/use-collection-prefs";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { InfiniteMasonry } from "@/components/motion/infinite-masonry";
@@ -29,13 +28,12 @@ import {
   MorphingSearch,
   type MorphingSearchItem,
 } from "@/components/motion/morphing-search";
-import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { LibraryNoteDetail } from "@/components/app/library-note-detail";
 import { FilterSelect } from "@/components/app/filter-select";
 import { LibraryBulkBar } from "@/components/app/library-bulk-bar";
 import { LibraryFilterBar, rangeFilterActive } from "@/components/app/library-filter-bar";
-import { LibrarySummary } from "@/components/app/library-summary";
+import { LibraryStats, LibraryTopics } from "@/components/app/library-summary";
 import { LibraryNoteCard } from "@/components/app/library-note-card";
 import { LibraryNoteRow, NOTE_ROW_COLUMNS } from "@/components/app/library-note-row";
 import { api, type NoteRangeFilter } from "@/lib/api";
@@ -43,6 +41,7 @@ import { formatCount } from "@/lib/format";
 import { hotThreshold } from "@/lib/note-insight";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
+import { useViewedNotes } from "@/lib/hooks/use-viewed-notes";
 
 const SORT_OPTIONS = [
   { value: "id-asc", label: "默认顺序" },
@@ -63,37 +62,91 @@ const SORT_OPTIONS = [
   }),
 ];
 
-const SOURCE_TABS = [
-  { value: "", label: "全部" },
-  { value: "search", label: "搜索" },
-  { value: "homefeed", label: "首页" },
-  { value: "collect_page", label: "收藏" },
-  { value: "like_page", label: "点赞" },
+const SOURCE_OPTIONS = [
+  { value: "", label: "来源：全部" },
+  { value: "search", label: "来源：搜索" },
+  { value: "homefeed", label: "来源：首页推荐" },
+  { value: "collect_page", label: "来源：收藏页" },
+  { value: "like_page", label: "来源：点赞页" },
 ] as const;
+
+const UNDO_MS = 5000;
 
 export default function LibraryPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const location = useLocation();
+  const [params, setParams] = useSearchParams();
   const [keyword, setKeyword] = useState("");
-  const [source, setSource] = useState("");
-  const [collection, setCollection] = useState(""); // "" | "none" | id 字符串
-  const [selected, setSelected] = useState<number | null>(null);
-  const closeDetail = useCallback(() => setSelected(null), []);
-  const [exporting, setExporting] = useState(false);
-  const [tag, setTag] = useState("");
-  const [range, setRange] = useState<NoteRangeFilter>({});
+  // 筛选 / 排序 / 当前打开的笔记都放进 URL：可分享、可刷新恢复、返回键能关闭详情
+  const source = params.get("source") ?? "";
+  const collection = params.get("col") ?? ""; // "" | "none" | id 字符串
+  const tag = params.get("tag") ?? "";
+  const sort = (params.get("sort") ?? "id") as NoteSortField;
+  const direction = (params.get("dir") ?? "asc") as NoteSortDirection;
+  const typeParam = params.get("type");
+  const likesParam = Number(params.get("likes")) || undefined;
+  const daysParam = Number(params.get("days")) || undefined;
+  const authorParam = params.get("author") || undefined;
+  const authorNameParam = params.get("authorName") || undefined;
+  const range = useMemo<NoteRangeFilter>(
+    () => ({
+      type: typeParam === "video" || typeParam === "image" ? typeParam : undefined,
+      minLikes: likesParam,
+      withinDays: daysParam,
+      authorId: authorParam,
+      authorName: authorParam ? authorNameParam : undefined,
+    }),
+    [typeParam, likesParam, daysParam, authorParam, authorNameParam],
+  );
+  const selected = Number(params.get("note")) || null;
+  const patch = useCallback(
+    (changes: Record<string, string | undefined>, opts?: { push?: boolean }) =>
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          for (const [k, v] of Object.entries(changes)) {
+            if (v) next.set(k, v);
+            else next.delete(k);
+          }
+          return next;
+        },
+        { replace: !opts?.push, state: opts?.push ? { fromList: true } : location.state },
+      ),
+    [setParams, location.state],
+  );
+  const setSource = (v: string) => patch({ source: v || undefined });
+  const setCollection = (v: string) => patch({ col: v || undefined });
+  const setTag = (v: string) => patch({ tag: v || undefined });
+  const setRange = (r: NoteRangeFilter) =>
+    patch({
+      type: r.type || undefined,
+      likes: r.minLikes ? String(r.minLikes) : undefined,
+      days: r.withinDays ? String(r.withinDays) : undefined,
+      author: r.authorId || undefined,
+      authorName: r.authorId ? r.authorName || undefined : undefined,
+    });
+  // 详情里点话题 / 作者：回到列表并按它筛选（关闭详情，不入历史栈）
+  const filterByTag = (t: string) => patch({ tag: t, note: undefined });
+  const filterByAuthor = (id: string, name: string) => patch({ author: id, authorName: name || undefined, note: undefined });
+  const setSortBy = (field: NoteSortField, dir: NoteSortDirection) =>
+    patch({ sort: field === "id" ? undefined : field, dir: field === "id" ? undefined : dir });
+  const openNote = useCallback((id: number) => patch({ note: String(id) }, { push: true }), [patch]);
+  const closeDetail = useCallback(() => {
+    if ((location.state as { fromList?: boolean } | null)?.fromList) navigate(-1);
+    else patch({ note: undefined });
+  }, [location.state, navigate, patch]);
   const [checked, setChecked] = useState<Set<number>>(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [renaming, setRenaming] = useState<{ id: number; name: string } | null>(null);
   const [deletingCol, setDeletingCol] = useState<{ id: number; name: string; noteCount: number } | null>(null);
-  const [sort, setSort] = useState<NoteSortField>("id");
-  const [direction, setDirection] = useState<NoteSortDirection>("asc");
-  const sortBy = (field: NoteSortField) => {
-    setDirection(sort === field && direction === "desc" ? "asc" : "desc");
-    setSort(field);
-  };
+  const [drafted, setDrafted] = useState<Set<number>>(() => new Set());
+  const [hidden, setHidden] = useState<Set<number>>(() => new Set());
+  const pendingDelete = useRef(new Map<number, ReturnType<typeof setTimeout>>());
+  const viewed = useViewedNotes();
+  const sortBy = (field: NoteSortField) => setSortBy(field, sort === field && direction === "desc" ? "asc" : "desc");
   const [view, setView] = useState<"grid" | "list">(() => {
     try { return localStorage.getItem("v2media:library-view") === "list" ? "list" : "grid"; }
     catch { return "grid"; }
@@ -102,6 +155,8 @@ export default function LibraryPage() {
     setView(next);
     try { localStorage.setItem("v2media:library-view", next); } catch { /* Storage can be unavailable. */ }
   };
+
+  const [exporting, setExporting] = useState(false);
 
   // 导出当前筛选为 CSV（Excel 双击直开）；文件名取库名方便归档
   const exportCsv = async () => {
@@ -195,10 +250,74 @@ export default function LibraryPage() {
     prefs.touch(id);
   };
 
-  const items = useMemo(
+  const loaded = useMemo(
     () => notesQuery.data?.pages.flatMap((p) => p.items) ?? [],
     [notesQuery.data],
   );
+  // 撤销窗口内的笔记先从列表里藏起来，到点才真删
+  const items = useMemo(() => (hidden.size ? loaded.filter((n) => !hidden.has(n.id)) : loaded), [loaded, hidden]);
+
+  // 离开页面时把还在撤销窗口里的删除立刻落实，避免"看着删了其实没删"
+  useEffect(() => {
+    const timers = pendingDelete.current;
+    return () => {
+      for (const [id, t] of timers) {
+        clearTimeout(t);
+        void api.deleteNote(id);
+      }
+      timers.clear();
+    };
+  }, []);
+  const deleteWithUndo = useCallback(
+    (id: number, title: string) => {
+      setHidden((h) => new Set(h).add(id));
+      if (selected === id) closeDetail();
+      const finish = () => {
+        pendingDelete.current.delete(id);
+        void api
+          .deleteNote(id)
+          .then(() => {
+            void queryClient.invalidateQueries({ queryKey: ["notes"] });
+            void queryClient.invalidateQueries({ queryKey: ["notes-summary"] });
+            void queryClient.invalidateQueries({ queryKey: ["collections"] });
+            void queryClient.invalidateQueries({ queryKey: ["overview"] });
+          })
+          .catch((e) => toast.error("删除失败", e instanceof Error ? e.message : undefined))
+          .finally(() => setHidden((h) => { const n = new Set(h); n.delete(id); return n; }));
+      };
+      pendingDelete.current.set(id, setTimeout(finish, UNDO_MS));
+      toast.toast({
+        title: "已删除",
+        description: title || "（无标题）",
+        status: "success",
+        action: {
+          label: "撤销",
+          onClick: () => {
+            const t = pendingDelete.current.get(id);
+            if (t === undefined) return;
+            clearTimeout(t);
+            pendingDelete.current.delete(id);
+            setHidden((h) => { const n = new Set(h); n.delete(id); return n; });
+          },
+        },
+      });
+    },
+    [selected, closeDetail, queryClient, toast],
+  );
+
+  // 打开过的笔记标记为已看
+  useEffect(() => {
+    if (selected !== null) viewed.mark(selected);
+  }, [selected, viewed.mark]);
+  const selectedIndex = selected === null ? -1 : items.findIndex((n) => n.id === selected);
+  const goNeighbor = useCallback(
+    (step: -1 | 1) => {
+      const next = items[selectedIndex + step];
+      if (next) patch({ note: String(next.id) });
+    },
+    [items, selectedIndex, patch],
+  );
+  const clearFilters = () => setParams(new URLSearchParams(), { replace: true });
 
   const hotAt = useMemo(() => hotThreshold(items), [items]);
 
@@ -213,13 +332,47 @@ export default function LibraryPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [checked.size]);
-  const toggleChecked = useCallback((id: number) => {
+  const lastChecked = useRef<number | null>(null);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  // range=true（按住 Shift）：从上次勾选的那条到这条之间整段选中
+  const toggleChecked = useCallback((id: number, range?: boolean) => {
+    const anchor = lastChecked.current;
+    lastChecked.current = id;
     setChecked((prev) => {
       const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
+      const list = itemsRef.current;
+      const from = anchor === null ? -1 : list.findIndex((n) => n.id === anchor);
+      const to = list.findIndex((n) => n.id === id);
+      if (range && from >= 0 && to >= 0) {
+        const [a, b] = from < to ? [from, to] : [to, from];
+        for (let i = a; i <= b; i++) next.add(list[i]!.id);
+      } else if (!next.delete(id)) next.add(id);
       return next;
     });
   }, []);
+  // 悬停卡片就提前取详情，点开几乎秒开
+  const prefetchNote = useCallback(
+    (id: number) => void queryClient.prefetchQuery({ queryKey: ["note", id], queryFn: () => api.note(id), staleTime: 60_000 }),
+    [queryClient],
+  );
+  useEffect(() => {
+    // 开着详情时顺带预取上一条 / 下一条
+    if (selectedIndex < 0) return;
+    for (const n of [items[selectedIndex - 1], items[selectedIndex + 1]]) if (n) prefetchNote(n.id);
+  }, [selectedIndex, items, prefetchNote]);
+  // 拖拽到采集库标签：被拖的是已勾选的就带上全部勾选项，否则只移这一条
+  const dragIds = (id: number) => (checked.has(id) ? [...checked] : [id]);
+  const moveNotes = async (noteIds: number[], collectionId: number | null) => {
+    try {
+      const { affected } = await api.batchNotes({ action: "move", ids: noteIds, collectionId });
+      const name = collectionId === null ? "未分组" : collections.find((c) => c.id === collectionId)?.name ?? "目标库";
+      toast.success(`已移入「${name}」`, `${affected} 条笔记`);
+      afterBulk();
+    } catch (e) {
+      toast.error("移入库失败", e instanceof Error ? e.message : undefined);
+    }
+  };
 
   const ids = () => [...checked];
   const afterBulk = () => {
@@ -257,7 +410,7 @@ export default function LibraryPage() {
     return runBulk("删除", async () => {
       const list = ids();
       const { affected } = await api.batchNotes({ action: "delete", ids: list });
-      if (selected !== null && list.includes(selected)) setSelected(null);
+      if (selected !== null && list.includes(selected)) closeDetail();
       toast.success("已删除", `${affected} 条笔记`);
       afterBulk();
     });
@@ -278,7 +431,10 @@ export default function LibraryPage() {
         status: failed ? "error" : "success",
         action: { label: "打开", onClick: () => navigate("/drafts") },
       });
-      if (ok > 0) setChecked(new Set());
+      if (ok > 0) {
+        setDrafted((d) => new Set([...d, ...ids()]));
+        setChecked(new Set());
+      }
     });
   const bulkExport = () =>
     runBulk("导出", async () => {
@@ -293,7 +449,8 @@ export default function LibraryPage() {
   const enqueue = useMutation({
     mutationFn: (noteId: number) =>
       api.createDraft({ collectedNoteId: noteId }),
-    onSuccess: (draft) => {
+    onSuccess: (draft, noteId) => {
+      setDrafted((d) => new Set(d).add(noteId));
       void queryClient.invalidateQueries({ queryKey: ["drafts"] });
       toast.toast({
         title: "已送入草稿工坊",
@@ -316,9 +473,9 @@ export default function LibraryPage() {
         title: n.title || "（无标题）",
         description: `${n.authorName || "未知作者"} · ${formatCount(n.likes)} 赞`,
         icon: Search,
-        onSelect: () => setSelected(n.id),
+        onSelect: () => openNote(n.id),
       })),
-    [items],
+    [items, openNote],
   );
 
   return (
@@ -326,15 +483,7 @@ export default function LibraryPage() {
       <div className={cn("relative min-h-0 min-w-0 flex-1 flex-col", selected !== null ? "hidden lg:flex" : "flex")}>
         <div className="shrink-0 space-y-4 px-6 pt-6">
           <div className="flex flex-wrap items-center gap-3">
-            <div>
-              <h2 className="text-xl font-semibold tracking-tight text-foreground">
-                内容库
-              </h2>
-              <p className="mt-0.5 text-sm text-muted-foreground">
-                插件采集的笔记素材，{items.length}
-                {notesQuery.hasNextPage ? "+" : ""} 条
-              </p>
-            </div>
+            {summary ? <LibraryStats summary={summary} /> : null}
             <div className="ml-auto">
               <MorphingSearch
                 items={searchItems}
@@ -346,63 +495,55 @@ export default function LibraryPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3">
-          <Tabs value={source} onValueChange={setSource} variant="pill">
-            <TabsList>
-              {SOURCE_TABS.map((t) => (
-                <TabsTrigger key={t.value} value={t.value}>
-                  {t.label}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
-          <div className="flex items-center gap-2">
-          <FilterSelect
-            value={`${sort}-${direction}`}
-            onChange={(v) => {
-              const [field, order] = v.split("-");
-              setSort(field as NoteSortField);
-              setDirection(order as NoteSortDirection);
-            }}
-            options={SORT_OPTIONS}
-            className="w-36"
-            panelClassName="right-0 left-auto w-44"
+          <LibraryFilterBar
+            value={range}
+            onChange={setRange}
+            lead={
+              <FilterSelect
+                value={source}
+                onChange={setSource}
+                options={SOURCE_OPTIONS}
+                className="w-36"
+              />
+            }
+            trail={
+              <>
+                {summary ? <LibraryTopics summary={summary} activeTag={tag} onTag={setTag} /> : null}
+                <FilterSelect
+                  value={`${sort}-${direction}`}
+                  onChange={(v) => {
+                    const [field, order] = v.split("-");
+                    setSortBy(field as NoteSortField, order as NoteSortDirection);
+                  }}
+                  options={SORT_OPTIONS}
+                  className="w-36"
+                  panelClassName="right-0 left-auto w-44"
+                />
+                <div role="group" aria-label="内容库视图" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5">
+                  {([{ value: "grid", label: "网格", icon: LayoutGrid }, { value: "list", label: "列表", icon: List }] as const).map(({ value, label, icon: Icon }) =>
+                    <button key={value} type="button" aria-pressed={view === value} onClick={() => changeView(value)} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Icon className="size-3.5" />{label}</button>)}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 rounded-lg px-2.5 text-xs"
+                  disabled={exporting || items.length === 0}
+                  onClick={() => void exportCsv()}
+                  title="导出当前筛选结果为 CSV（Excel 可直接打开）"
+                >
+                  <Download className="size-3.5" />
+                  {exporting ? "导出中…" : "导出"}
+                </Button>
+              </>
+            }
           />
-          <div role="group" aria-label="内容库视图" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5">
-            {([{ value: "grid", label: "网格", icon: LayoutGrid }, { value: "list", label: "列表", icon: List }] as const).map(({ value, label, icon: Icon }) =>
-              <button key={value} type="button" aria-pressed={view === value} onClick={() => changeView(value)} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Icon className="size-3.5" />{label}</button>)}
-          </div>
-          </div>
-          </div>
-
-          <LibraryFilterBar value={range} onChange={setRange} />
-          {summary ? <LibrarySummary summary={summary} activeTag={tag} onTag={setTag} /> : null}
-
-          {/* 采集库筛选：插件「当前采集库」把一批笔记归组 */}
-          <div className="flex flex-wrap items-center gap-2">
-            <FolderOpen className="size-4 text-muted-foreground" />
-            {(
-              [
-                { v: "", label: "全部" },
-                { v: "none", label: "未分组" },
-              ] as const
-            ).map((t) => (
-              <button
-                key={t.v}
-                onClick={() => setCollection(t.v)}
-                className={cn(
-                  "h-10 rounded-xl px-4 text-sm transition-colors",
-                  collection === t.v
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted text-muted-foreground hover:bg-muted/70",
-                )}
-              >
-                {t.label}
-              </button>
-            ))}
-            <CollectionPicker
+          {/* 采集库标签栏 + 当前范围统计，合并成一行 */}
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+            <CollectionTabs
+              onDropNotes={(noteIds, collectionId) => void moveNotes(noteIds, collectionId)}
               collections={collections}
               value={collection}
+              onChange={setCollection}
               pinned={prefs.pinned}
               recent={prefs.recent}
               creating={createCol.isPending}
@@ -412,22 +553,19 @@ export default function LibraryPage() {
               onDelete={(c) => setDeletingCol({ id: c.id, name: c.name, noteCount: c.noteCount })}
               onCreate={(name) => createCol.mutate(name)}
             />
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto h-7 rounded-full px-3 text-xs"
-              disabled={exporting || items.length === 0}
-              onClick={() => void exportCsv()}
-            >
-              <Download className="size-3.5" />
-              {exporting ? "导出中…" : "导出 Excel"}
-            </Button>
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 px-6 pb-6 pt-4">
+        <div className={cn("min-h-0 flex-1 px-6 pb-6 pt-3", checked.size > 0 && "pb-24")}>
           {notesQuery.isPending ? (
-            <PageLoading label="加载内容库…" className="h-full" />
+            <div aria-busy="true" aria-label="加载内容库…" className="grid h-full grid-cols-[repeat(auto-fill,minmax(220px,1fr))] content-start gap-3.5 overflow-hidden">
+              {Array.from({ length: 10 }, (_, i) => (
+                <div key={i} className="animate-pulse overflow-hidden rounded-2xl border border-border bg-card">
+                  <div className="aspect-[4/3] bg-muted" />
+                  <div className="space-y-2 p-3"><div className="h-3 w-4/5 rounded-full bg-muted" /><div className="h-2 w-1/2 rounded-full bg-muted" /></div>
+                </div>
+              ))}
+            </div>
           ) : notesQuery.isError ? (
             <PageError
               error={notesQuery.error}
@@ -441,6 +579,11 @@ export default function LibraryPage() {
                 keyword || tag || rangeFilterActive(range)
                   ? "换个关键词或放宽筛选条件试试"
                   : "安装并授权浏览器插件后，在小红书页面浏览即可自动采集"
+              }
+              action={
+                keyword || tag || source || collection || rangeFilterActive(range) ? (
+                  <Button variant="outline" size="sm" onClick={clearFilters}>清除筛选</Button>
+                ) : undefined
               }
               className="h-full"
             />
@@ -459,16 +602,21 @@ export default function LibraryPage() {
               key={`${view}-${sort}-${direction}`}
               items={items}
               getItemKey={(n) => n.id}
-              renderItem={(n) => {
+              renderItem={(n, i) => {
                 const props = {
                   note: n,
                   selected: selected === n.id,
                   checked: checked.has(n.id),
                   selecting: checked.size > 0,
-                  onToggle: () => toggleChecked(n.id),
-                  onOpen: () => setSelected(n.id),
+                  onToggle: (range?: boolean) => toggleChecked(n.id, range),
+                  onOpen: () => openNote(n.id),
+                  onHover: () => prefetchNote(n.id),
+                  index: i,
+                  dragIds: () => dragIds(n.id),
                   onEnqueue: () => enqueue.mutate(n.id),
                   enqueuing: enqueue.isPending,
+                  drafted: drafted.has(n.id),
+                  viewed: viewed.has(n.id),
                   hotAt,
                 };
                 return view === "list" ? <LibraryNoteRow {...props} /> : <LibraryNoteCard {...props} />;
@@ -521,6 +669,7 @@ export default function LibraryPage() {
             <LibraryBulkBar
               count={checked.size}
               totalShown={items.length}
+              total={summary?.notes}
               collections={collections}
               busy={bulkBusy}
               onSelectAll={() => setChecked(new Set(items.map((n) => n.id)))}
@@ -534,7 +683,15 @@ export default function LibraryPage() {
         ) : null}
       </div>
       {selected !== null ? (
-        <LibraryNoteDetail key={selected} noteId={selected} onClose={closeDetail} />
+        <LibraryNoteDetail
+          noteId={selected}
+          onClose={closeDetail}
+          onTag={filterByTag}
+          onAuthor={filterByAuthor}
+          onPrev={selectedIndex > 0 ? () => goNeighbor(-1) : undefined}
+          onNext={selectedIndex >= 0 && selectedIndex < items.length - 1 ? () => goNeighbor(1) : undefined}
+          onDelete={deleteWithUndo}
+        />
       ) : null}
       <ConfirmDialog
         open={confirmBulkDelete}

@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import type { ReactNode } from "react";
 import type { NoteRangeFilter } from "@/lib/api";
 import { FilterSelect } from "@/components/app/filter-select";
 import { formatCount } from "@/lib/format";
@@ -14,23 +15,31 @@ const TYPE_OPTIONS = [
 
 /** 已选范围条件（传给 api.notes 的形状）；空值 = 不限。 */
 export function rangeFilterActive(f: NoteRangeFilter): boolean {
-  return Boolean(f.type || f.minLikes || f.withinDays);
+  return Boolean(f.type || f.minLikes || f.withinDays || f.authorId);
 }
 
 export function LibraryFilterBar({
   value,
   onChange,
+  lead,
+  trail,
 }: {
   value: NoteRangeFilter;
   onChange: (next: NoteRangeFilter) => void;
+  /** 放在范围筛选之前（来源）。 */
+  lead?: ReactNode;
+  /** 靠右（排序 / 视图）。 */
+  trail?: ReactNode;
 }) {
   const chips: Array<{ key: keyof NoteRangeFilter; label: string }> = [];
   if (value.type) chips.push({ key: "type", label: value.type === "video" ? "视频" : "图文" });
   if (value.minLikes) chips.push({ key: "minLikes", label: `点赞 ≥ ${formatCount(value.minLikes)}` });
   if (value.withinDays) chips.push({ key: "withinDays", label: `近 ${value.withinDays} 天发布` });
+  if (value.authorId) chips.push({ key: "authorId", label: `作者：${value.authorName || value.authorId}` });
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      {lead}
       <FilterSelect
         value={value.type ?? ""}
         onChange={(v) => onChange({ ...value, type: (v || undefined) as NoteRangeFilter["type"] })}
@@ -53,7 +62,7 @@ export function LibraryFilterBar({
         <button
           key={c.key}
           type="button"
-          onClick={() => onChange({ ...value, [c.key]: undefined })}
+          onClick={() => onChange({ ...value, [c.key]: undefined, ...(c.key === "authorId" ? { authorName: undefined } : {}) })}
           className={cn(
             "inline-flex h-7 items-center gap-1 rounded-full bg-primary/10 pl-2.5 pr-1.5 text-xs text-primary outline-none",
             "hover:bg-primary/15 focus-visible:ring-2 focus-visible:ring-ring",
@@ -73,6 +82,7 @@ export function LibraryFilterBar({
           清除全部
         </button>
       ) : null}
+      {trail ? <div className="ml-auto flex items-center gap-2">{trail}</div> : null}
     </div>
   );
 }

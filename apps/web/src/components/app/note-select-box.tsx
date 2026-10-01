@@ -10,7 +10,8 @@ export function NoteSelectBox({
 }: {
   checked: boolean;
   label: string;
-  onToggle: () => void;
+  /** range=true：按住 Shift 点击，连选一段。 */
+  onToggle: (range?: boolean) => void;
   className?: string;
 }) {
   return (
@@ -21,7 +22,7 @@ export function NoteSelectBox({
       aria-label={label}
       onClick={(e) => {
         e.stopPropagation();
-        onToggle();
+        onToggle(e.shiftKey);
       }}
       onKeyDown={(e) => e.stopPropagation()}
       className={cn(

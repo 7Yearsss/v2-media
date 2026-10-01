@@ -6,6 +6,7 @@ import { Button } from "@/components/motion/button";
 export function LibraryBulkBar({
   count,
   totalShown,
+  total,
   collections,
   busy,
   onSelectAll,
@@ -17,6 +18,8 @@ export function LibraryBulkBar({
 }: {
   count: number;
   totalShown: number;
+  /** 当前筛选下的总条数（含尚未加载的）。 */
+  total?: number;
   collections: Collection[];
   busy: boolean;
   onSelectAll: () => void;

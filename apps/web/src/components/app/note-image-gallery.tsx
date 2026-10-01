@@ -1,8 +1,9 @@
-import { ChevronLeft, ChevronRight, ExternalLink } from "lucide-react";
+import { ChevronLeft, ChevronRight, Maximize2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useReducedMotion } from "motion/react";
 import { mediaUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { ImageLightbox } from "./image-lightbox";
 
 export function NoteImageGallery({ images }: { images: { url: string }[] }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -11,6 +12,7 @@ export function NoteImageGallery({ images }: { images: { url: string }[] }) {
   const drag = useRef<{ id: number; x: number; left: number; index: number } | null>(null);
   const [index, setIndex] = useState(0);
   const [dragging, setDragging] = useState(false);
+  const [zoom, setZoom] = useState(false);
   const [ratios, setRatios] = useState<Record<string, number>>({});
   const reduceMotion = useReducedMotion();
   const current = Math.min(index, images.length - 1);
@@ -42,7 +44,7 @@ export function NoteImageGallery({ images }: { images: { url: string }[] }) {
   const arrowClass = "absolute top-1/2 z-10 grid size-10 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white outline-none transition-colors hover:bg-black/65 focus-visible:ring-2 focus-visible:ring-white disabled:opacity-25 active:scale-95";
   return (
     <section aria-label="笔记图片">
-      <div className="relative">
+      <div className="relative overflow-hidden rounded-2xl">
         <div
           ref={trackRef}
           role="region"
@@ -118,11 +120,17 @@ export function NoteImageGallery({ images }: { images: { url: string }[] }) {
           <button type="button" aria-label="下一张图片" disabled={current === images.length - 1} onClick={() => goTo(current + 1)} className={cn(arrowClass, "right-3")}><ChevronRight className="size-6" strokeWidth={1.75} /></button>
         </> : null}
         <span aria-live="polite" className="pointer-events-none absolute right-3 top-3 rounded-full bg-black/45 px-3 py-1 text-xs tabular-nums text-white">{current + 1} / {images.length}</span>
-        <a href={mediaUrl(images[current]?.url)} target="_blank" rel="noreferrer" className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-full bg-black/45 px-3 py-1.5 text-[11px] text-white outline-none focus-visible:ring-2 focus-visible:ring-white"><ExternalLink className="size-3" />查看大图</a>
+        <button type="button" onClick={() => setZoom(true)} className="absolute bottom-3 right-3 inline-flex items-center gap-1 rounded-full bg-black/45 px-3 py-1.5 text-[11px] text-white outline-none focus-visible:ring-2 focus-visible:ring-white"><Maximize2 className="size-3" />查看大图</button>
       </div>
       {images.length > 1 ? <div className={cn("flex gap-0.5 overflow-x-auto px-4 py-1.5", images.length > 12 ? "justify-start" : "justify-center")} aria-label="图片分页">
         {images.map((image, position) => <button key={`${image.url}-${position}`} type="button" aria-label={`查看第 ${position + 1} 张图片`} aria-pressed={position === current} onClick={() => goTo(position)} className="grid size-6 shrink-0 place-items-center rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className={cn("size-1.5 rounded-full", position === current ? "bg-primary" : "bg-foreground/20")} /></button>)}
       </div> : null}
+      <ImageLightbox
+        images={zoom ? images.map(image => mediaUrl(image.url)) : null}
+        index={current}
+        onIndexChange={goTo}
+        onClose={() => setZoom(false)}
+      />
     </section>
   );
 }
