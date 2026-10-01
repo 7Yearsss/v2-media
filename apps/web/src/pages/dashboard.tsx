@@ -110,16 +110,8 @@ export default function DashboardPage() {
         : [];
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
-      <div className="mb-6 flex items-end justify-between">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight text-foreground">
-            仪表盘
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            采集、草稿、账号与发布的全局概览
-          </p>
-        </div>
+    <div className="w-full px-6 pb-8 pt-6">
+      <div className="mb-4 flex items-center justify-end">
         {jobs.data && jobs.data.length > 0 ? (
           <AnimatedBadge size="sm" status="info">
             共 {jobs.data.length} 个发布任务

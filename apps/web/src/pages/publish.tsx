@@ -478,16 +478,8 @@ export default function PublishPage() {
   const errored = jobsQuery.isError;
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-6xl flex-col px-6 py-8">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight text-foreground">
-            发布中心
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            发布任务由已授权的浏览器插件执行
-          </p>
-        </div>
+    <div className="flex h-full w-full flex-col px-6 pb-8 pt-6">
+      <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <Button size="sm" onClick={openCreate}>
           <Plus className="size-3.5" />
           新建发布

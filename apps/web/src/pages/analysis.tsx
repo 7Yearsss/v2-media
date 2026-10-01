@@ -1,5 +1,4 @@
 import {
-  BrainCircuit,
   FileText,
   Flame,
   Lightbulb,
@@ -410,12 +409,7 @@ export default function AnalysisPage() {
   if (cols.isError) return <PageError error={cols.error} onRetry={() => void cols.refetch()} />;
 
   return (
-    <div className="flex flex-col gap-6 p-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <BrainCircuit className="size-5 text-primary" />
-        <h1 className="text-lg font-semibold">AI 分析</h1>
-      </div>
-
+    <div className="flex flex-col gap-5 px-6 pb-8 pt-6">
       {/* 采集库选择 */}
       <div className="flex flex-wrap items-center gap-2">
         {(cols.data?.items ?? []).map((col) => (

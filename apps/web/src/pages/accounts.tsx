@@ -139,16 +139,8 @@ export default function AccountsPage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-6 py-8">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-semibold tracking-tight text-foreground">
-            账号矩阵
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            插件心跳上报的托管账号，发布任务按账号分发
-          </p>
-        </div>
+    <div className="w-full px-6 pb-8 pt-6">
+      <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
