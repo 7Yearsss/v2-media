@@ -285,7 +285,12 @@ export function extModule(deps: Deps) {
   app.post("/collect", async (c) => {
     const userId = c.get("userId");
     const parsed = collectSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    if (!parsed.success) {
+      // 说清楚是哪个字段不合格：否则插件那边只会静默失败，笔记整条采不进来
+      const issues = parsed.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`);
+      console.warn("ext collect rejected:", issues);
+      return c.json({ error: "bad payload", issues }, 400);
+    }
     const p = parsed.data;
     // collectionId 三态：undefined=老客户端不动分组；null=显式不分组；number=归库（校验归属）
     const hasCollection = p.collectionId !== undefined;

@@ -25,6 +25,27 @@ export interface R2Storage {
   delete(key: string): Promise<boolean>;
 }
 
+/**
+ * 解析 ListObjectsV2 的 XML。每个 <Contents> 单独取字段、不依赖字段顺序
+ * （R2 把 Size 放在 LastModified 前面；按固定顺序写一条正则会把相邻两个对象吞成一个，只列出一半）。
+ */
+export function parseR2ListXml(xml: string): R2Object[] {
+  const field = (block: string, tag: string) =>
+    new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(block)?.[1];
+  const out: R2Object[] = [];
+  for (const m of xml.matchAll(/<Contents>([\s\S]*?)<\/Contents>/g)) {
+    const block = m[1]!;
+    const key = field(block, "Key");
+    if (!key) continue;
+    out.push({
+      key,
+      lastModified: Date.parse(field(block, "LastModified") ?? ""),
+      size: Number(field(block, "Size") ?? 0),
+    });
+  }
+  return out;
+}
+
 export function createR2(): R2Storage | null {
   if (
     !env.r2Endpoint ||
@@ -87,15 +108,7 @@ export function createR2(): R2Storage | null {
         );
         if (!res.ok) throw new Error(`r2 list ${res.status}`);
         const xml = await res.text();
-        for (const m of xml.matchAll(
-          /<Contents>[\s\S]*?<Key>([\s\S]*?)<\/Key>[\s\S]*?<LastModified>([\s\S]*?)<\/LastModified>[\s\S]*?<Size>(\d+)<\/Size>[\s\S]*?<\/Contents>/g,
-        )) {
-          out.push({
-            key: m[1]!,
-            lastModified: Date.parse(m[2]!),
-            size: Number(m[3]),
-          });
-        }
+        out.push(...parseR2ListXml(xml));
         token = /<NextContinuationToken>([\s\S]*?)<\/NextContinuationToken>/.exec(
           xml,
         )?.[1] ?? "";
