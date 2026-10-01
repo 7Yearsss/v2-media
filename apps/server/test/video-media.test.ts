@@ -10,7 +10,11 @@ function storage() {
   const r2 = {
     head: vi.fn(async (key: string) => objects.has(key)),
     put: vi.fn(async (key: string, bytes: ArrayBuffer) => { objects.set(key, bytes.byteLength); }),
-    putStream: vi.fn(async (key: string, _body: unknown, _type: string, length: number) => { objects.set(key, length); }),
+    // 和真实上传一致：必须把流读完再返回（临时文件在调用返回后会被删，不读完会在 Linux 上抛未处理的 ENOENT）
+    putStream: vi.fn(async (key: string, body: AsyncIterable<unknown>, _type: string, length: number) => {
+      for await (const _chunk of body) { /* drain */ }
+      objects.set(key, length);
+    }),
     list: vi.fn(async () => []),
     delete: vi.fn(async () => true),
   } as unknown as R2Storage;
