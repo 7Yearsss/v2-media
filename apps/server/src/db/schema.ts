@@ -1,4 +1,4 @@
-import type { AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight } from "@v2media/shared";
+import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -45,6 +45,7 @@ export const collectionAnalyses = pgTable("collection_analyses", {
       insight: CollectionInsight | null;
       positioning?: string;
       visual?: AnalysisVisualItem[];
+      progress?: AnalysisProgress;
     }>()
     .notNull(),
   /** running=后台还在跑 / done / failed。老数据默认 done。 */

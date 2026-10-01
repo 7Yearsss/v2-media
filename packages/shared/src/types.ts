@@ -205,6 +205,18 @@ export interface AnalysisSignals {
   traps: Array<{ ref: number; title: string; reason: "old" | "author" | "outlier"; detail: string }>;
 }
 
+/** 分析流水线的阶段：信号由代码先算好，其余是 AI 步骤。 */
+export type AnalysisStage = "signals" | "covers" | "videos" | "hypotheses" | "report";
+
+export interface AnalysisProgress {
+  /** 当前阶段。 */
+  stage: AnalysisStage;
+  /** 本次会经过的全部阶段（视频拆解默认不在其中）。 */
+  steps: AnalysisStage[];
+  /** 进入当前阶段的时间（ms 时间戳）。 */
+  at: number;
+}
+
 /** AI 看过的封面：爆款 + 对照组，页面做成封面画廊。 */
 export interface AnalysisVisualItem {
   ref: number;
@@ -246,6 +258,8 @@ export interface CollectionAnalysis {
     /** 分析时填的目标账号定位（空=通用）。 */
     positioning?: string;
     visual?: AnalysisVisualItem[];
+    /** 生成中的进度（done 后移除）。 */
+    progress?: AnalysisProgress;
   };
   /** running=后台生成中（页面轮询）/ done / failed。 */
   status: "running" | "done" | "failed";

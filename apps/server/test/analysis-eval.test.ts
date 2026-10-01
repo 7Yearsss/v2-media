@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { gradeInsight } from "../src/lib/analysis-grader";
 import { computeSignals, type SignalNote } from "../src/lib/analysis-signals";
-import { parseInsight } from "../src/modules/collections";
+import { parseInsight } from "../src/lib/insight-parse";
 
 /**
  * 分析评测（不连外网）：
@@ -270,5 +270,86 @@ describe("选题成稿", () => {
     expect(r.coverText).toBe("新手臀腿");
     expect(r.warnings).toEqual([]);
     expect(r.topic.status).toBe("drafted");
+  });
+});
+
+describe("分析进度", () => {
+  it("生成中能读到当前阶段；完成后进度移除", async () => {
+    const { makeApp, registerUser, authed } = await import("./helpers");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+    const { app } = await makeApp({
+      complete: async () => {
+        calls++;
+        if (calls === 1) await gate; // 卡在第一次 AI 调用（提假设）
+        return calls === 1 ? "假设" : JSON.stringify({ summary: "结论", findings: [{ claim: "c", evidence: ["e"], boundary: "b", todo: "t" }] });
+      },
+    });
+    const { token } = await registerUser(app);
+    const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
+    await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "t", author: {}, cover: "", likes: 5 }] }) }));
+    const run = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    const get = async () => (await (await app.request(`/api/collections/${col.id}/analyses/${run.id}`, authed(token))).json()) as any;
+
+    let row: any = run;
+    for (let i = 0; i < 100 && row.data?.progress?.stage !== "hypotheses"; i++) {
+      await new Promise((r) => setTimeout(r, 30));
+      row = await get();
+    }
+    expect(row.status).toBe("running");
+    expect(row.data.progress.stage).toBe("hypotheses");
+    expect(row.data.progress.steps).toEqual(["signals", "covers", "hypotheses", "report"]);
+
+    release();
+    for (let i = 0; i < 100 && row.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, 30));
+      row = await get();
+    }
+    expect(row.status).toBe("done");
+    expect(row.data.progress).toBeUndefined();
+  });
+});
+
+describe("输出质量把关", () => {
+  const good = { summary: "给动作组数的跟练清单最易被收藏", findings: [
+    { claim: "封面打出动作名和组数", evidence: ["e"], boundary: "b", todo: "t", confidence: "high" },
+    { claim: "标题点名新手人群", evidence: ["e"], boundary: "b", todo: "t", confidence: "mid" },
+  ] };
+  const junk = { summary: "Analyzing data to structure the JSON response effectively.", findings: [{ claim: "Calculate popularity", evidence: ["x"], boundary: "b", todo: "t" }] };
+
+  it("英文草稿不合格；中文终稿合格", async () => {
+    const { isUsableInsight } = await import("../src/lib/insight-parse");
+    expect(isUsableInsight(parseInsight(JSON.stringify(junk)))).toBe(false);
+    expect(isUsableInsight(parseInsight(JSON.stringify(good)))).toBe(true);
+    expect(isUsableInsight(null)).toBe(false);
+  });
+
+  it("多个对象时优先选合格的：英文草稿在后也不会被选中", () => {
+    const text = `${JSON.stringify(good)}\n\n再想想：\n${JSON.stringify(junk)}`;
+    expect(parseInsight(text)!.summary).toBe(good.summary);
+  });
+
+  it("流水线：第一次终稿不合格 → 重写一次并采用合格的", async () => {
+    const { makeApp, registerUser, authed } = await import("./helpers");
+    let reports = 0;
+    const { app } = await makeApp({
+      complete: async (system) => {
+        if (!system.includes("审稿人")) return "假设";
+        reports++;
+        return JSON.stringify(reports === 1 ? junk : good);
+      },
+    });
+    const { token } = await registerUser(app);
+    const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
+    await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "t", author: {}, cover: "", likes: 5 }] }) }));
+    const run = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    let row: any = run;
+    for (let i = 0; i < 100 && row.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, 30));
+      row = (await (await app.request(`/api/collections/${col.id}/analyses/${run.id}`, authed(token))).json()) as any;
+    }
+    expect(reports).toBe(2);
+    expect(row.data.insight.summary).toBe(good.summary);
   });
 });

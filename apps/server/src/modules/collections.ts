@@ -2,10 +2,8 @@ import { and, count, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
-import type { CollectionInsight } from "@v2media/shared";
-
 import { env } from "../env";
-import { jsonObjectsIn } from "../lib/json-extract";
+import { parseInsight } from "../lib/insight-parse";
 import type { Deps } from "../context";
 import { runAnalysisAI, type RunNote } from "../lib/analysis-run";
 import { computeSignals, engagementOf, type SignalNote } from "../lib/analysis-signals";
@@ -15,53 +13,6 @@ import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
 const ANALYZE_LIMIT = 40;
 /** 分析 running 超过这么久视为中断（AI 单次最长 ~5min，两步加起来留足余量）。 */
 const ANALYZE_STALE_MS = 12 * 60_000;
-
-type RawRef = unknown;
-const asStr = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
-const asArr = (v: unknown) => (Array.isArray(v) ? v : []);
-
-/** 从模型输出里抠出 JSON 洞察：有多个对象时取最后一个能用的（终稿在后）；失败返回 null（原文进 report 兜底）。refs 由 resolve 映射成笔记。 */
-export function parseInsight(text: string, resolve: (r: RawRef) => { id: number; title: string } | null = () => null): CollectionInsight | null {
-  for (const raw of jsonObjectsIn(text).reverse()) {
-    const out = parseOne(raw, resolve);
-    if (out) return out;
-  }
-  return null;
-}
-
-function parseOne(raw: string, resolve: (r: RawRef) => { id: number; title: string } | null): CollectionInsight | null {
-  try {
-    const j = JSON.parse(raw);
-    const refs = (v: unknown) => asArr(v).map(resolve).filter((x): x is { id: number; title: string } => !!x).slice(0, 4);
-    const insight: CollectionInsight = {
-      summary: asStr(j.summary, 120),
-      findings: asArr(j.findings)
-        .map((f: any) => ({
-          claim: asStr(f?.claim, 80),
-          evidence: asArr(f?.evidence).map((e) => asStr(e, 80)).filter(Boolean).slice(0, 3),
-          boundary: asStr(f?.boundary, 80),
-          todo: asStr(f?.todo, 80),
-          confidence: (["high", "mid", "low"].includes(f?.confidence) ? f.confidence : "mid") as "high" | "mid" | "low",
-          refs: refs(f?.refs),
-        }))
-        .filter((f) => f.claim),
-      needs: asArr(j.needs)
-        .map((n: any) => ({ need: asStr(n?.need, 60), quote: asStr(n?.quote, 100), refs: refs(n?.refs) }))
-        .filter((n) => n.need),
-      traps: asArr(j.traps)
-        .map((t: any) => ({ title: asStr(t?.title, 120), reason: asStr(t?.reason, 80) }))
-        .filter((t) => t.title),
-      ideas: asArr(j.ideas)
-        .map((i: any) => ({ title: asStr(i?.title, 120), hook: asStr(i?.hook, 100), angle: asStr(i?.angle, 100), refs: refs(i?.refs) }))
-        .filter((i) => i.title),
-    };
-    // 模型返回了无关 JSON（如 {"error":...}）时视为解析失败，走原文兜底
-    const usable = insight.summary || insight.findings?.length || insight.needs?.length || insight.ideas?.length;
-    return usable ? insight : null;
-  } catch {
-    return null;
-  }
-}
 
 const nameSchema = z.object({
   name: z.string().trim().min(1, "name required").max(64),
@@ -277,6 +228,12 @@ export function collectionsModule(deps: Deps) {
           signals,
           now: deps.now(),
           withVideo: body?.withVideo === true,
+          onStage: async (stage, steps) => {
+            await deps.db
+              .update(collectionAnalyses)
+              .set({ data: { stats, insight: null, ...(positioning ? { positioning } : {}), progress: { stage, steps, at: Date.now() } } })
+              .where(eq(collectionAnalyses.id, runId));
+          },
         });
         await deps.db
           .update(collectionAnalyses)

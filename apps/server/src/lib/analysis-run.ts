@@ -1,10 +1,11 @@
-import type { AnalysisSignals, AnalysisVideoBreakdown, AnalysisVisualItem } from "@v2media/shared";
+import type { AnalysisSignals, AnalysisStage, AnalysisVideoBreakdown, AnalysisVisualItem } from "@v2media/shared";
 
 import type { Deps } from "../context";
 import { env } from "../env";
 import type { AiPart } from "../modules/ai";
 import { HYPOTHESIS_SYSTEM, REPORT_SYSTEM, VIDEO_SYSTEM, VISION_SYSTEM } from "./analysis-prompts";
 import { engagementOf, signalsForPrompt } from "./analysis-signals";
+import { isUsableInsight, parseInsight } from "./insight-parse";
 
 /** 分析需要的笔记字段（路由查库后传入）。ref = 候选池里的互动排名，AI 只引用编号。 */
 export interface RunNote {
@@ -41,6 +42,8 @@ export interface RunInput {
   now: Date;
   /** 是否拆视频（默认否）。 */
   withVideo?: boolean;
+  /** 进入新阶段时回调（写进度，页面轮询展示）；失败不影响分析。 */
+  onStage?: (stage: AnalysisStage, steps: AnalysisStage[]) => Promise<void> | void;
 }
 
 const HIT_VISUAL = 8;
@@ -127,7 +130,7 @@ async function describeCovers(deps: Deps, targets: RunNote[]): Promise<Map<numbe
     try {
       const j = JSON.parse(m[0]);
       const ref = Number(j.ref);
-      if (Number.isInteger(ref)) out.set(ref, { kind: String(j.kind ?? "").slice(0, 20), text: String(j.text ?? "").slice(0, 60), hook: String(j.hook ?? "").slice(0, 80) });
+      if (Number.isInteger(ref)) out.set(ref, { kind: String(j.kind ?? "").slice(0, 20), text: ["空", "无", "没有", "无文字", "无字"].includes(String(j.text ?? "").trim()) ? "" : String(j.text ?? "").slice(0, 60), hook: String(j.hook ?? "").slice(0, 80) });
     } catch {
       /* 非 JSON 行忽略 */
     }
@@ -184,6 +187,17 @@ const dayAge = (n: RunNote, now: Date) =>
 export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ report: string; visual: AnalysisVisualItem[] }> {
   const { pool, sample, signals, now, positioning } = input;
   const hitSet = new Set(pool.slice(0, signals.sample.hit).map((n) => n.id));
+  const steps: AnalysisStage[] = input.withVideo
+    ? ["signals", "covers", "videos", "hypotheses", "report"]
+    : ["signals", "covers", "hypotheses", "report"];
+  const stage = async (s: AnalysisStage) => {
+    try {
+      await input.onStage?.(s, steps);
+    } catch {
+      /* 进度只是展示，写失败别拖垮分析 */
+    }
+  };
+  await stage("covers");
 
   // 1. 看封面：爆款 top N + 对照组
   const pairs = contrastPairs(pool, signals.sample.hit);
@@ -201,6 +215,7 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     .slice(0, signals.sample.hit + 4)
     .filter((n) => n.type === "video" && n.videoUrl?.includes("/objects/vid/") && (n.videoSize ?? 0) <= VIDEO_MAX_BYTES)
     .slice(0, VIDEO_MAX_COUNT);
+  if (videoTargets.length) await stage("videos");
   const videos = videoTargets.length ? await describeVideos(deps, videoTargets).catch(() => new Map<number, AnalysisVideoBreakdown>()) : new Map<number, AnalysisVideoBreakdown>();
   const visual: AnalysisVisualItem[] = uniq
     .filter((n) => covers.has(n.ref))
@@ -263,10 +278,23 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
   // 分析要稳：温度低一点，两次输出差异才小
   const model = { model: env.aiAnalysisModel, temperature: 0.3 };
   const t0 = Date.now();
+  await stage("hypotheses");
   const hypotheses = await deps.ai.complete(HYPOTHESIS_SYSTEM, context, model);
   if (process.env.ANALYSIS_DEBUG) console.info(`【假设】\n${hypotheses}`);
   const t1 = Date.now();
-  const report = await deps.ai.complete(REPORT_SYSTEM, `${reviewContext}\n\n【上一步假设】\n${hypotheses}`, model);
+  await stage("report");
+  const reportInput = `${reviewContext}\n\n【上一步假设】\n${hypotheses}`;
+  let report = await deps.ai.complete(REPORT_SYSTEM, reportInput, { ...model, json: true });
+  // 模型偶尔把思考草稿（英文占位 JSON）当终稿：质量不合格就让它重写一次
+  if (!isUsableInsight(parseInsight(report))) {
+    console.warn("analyze report unusable, retrying once");
+    const retry = await deps.ai.complete(
+      REPORT_SYSTEM,
+      `${reportInput}\n\n上一次的输出不能用：必须只输出一个 JSON，所有内容用中文，结论要引用上面的真实数据。请重新输出。`,
+      { ...model, json: true },
+    );
+    if (isUsableInsight(parseInsight(retry))) report = retry;
+  }
   console.info(
     `analyze AI ok: covers ${covers.size}/${uniq.length}, videos ${videos.size}/${videoTargets.length}, hypotheses ${t1 - t0}ms (in ${context.length}字), report ${Date.now() - t1}ms (in ${reviewContext.length}字)`,
   );

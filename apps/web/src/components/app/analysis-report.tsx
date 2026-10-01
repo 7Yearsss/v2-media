@@ -1,64 +1,38 @@
-import { AlertTriangle, ArrowRight, Check, Lightbulb, Loader2, PenLine, Plus, Quote } from "lucide-react";
+import { Loader2, PenLine, Plus } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type {
-  AnalysisSignals,
-  AnalysisVisualItem,
-  CollectionAnalysis,
-  InsightFinding,
-  InsightIdea,
-  InsightRef,
-} from "@v2media/shared";
-import { NumberTicker } from "@/components/motion/number-ticker";
-import { TextReveal } from "@/components/motion/text-reveal";
+import type { AnalysisSignals, AnalysisVisualItem, CollectionAnalysis, InsightFinding, InsightRef } from "@v2media/shared";
 import { TextShimmer } from "@/components/motion/text-shimmer";
+import { AnalysisProgressView } from "@/components/app/analysis-progress";
 import { api } from "@/lib/api";
 import { formatCount } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
-/** 卡片壳：标题只有一个小标签，其余靠图。 */
-function Panel({
-  title,
-  className,
-  children,
-  delay = 0,
-}: {
-  title: string;
-  className?: string;
-  children: React.ReactNode;
-  delay?: number;
-}) {
-  const reduce = useReducedMotion();
+/* ───────── 版式零件 ───────── */
+
+/** 区块：标题是一句完整的话（不是小灰字标签），区块之间只靠留白和一根细线分隔。 */
+function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <motion.section
-      initial={reduce ? false : { opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay, ease: "easeOut" }}
-      className={cn("rounded-3xl border border-border bg-card p-5", className)}
-    >
-      <div className="mb-4 text-xs font-medium tracking-wide text-muted-foreground">{title}</div>
+    <section className="border-t border-border/60 pt-10">
+      <div className="mb-6 flex items-baseline justify-between gap-4">
+        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        {aside}
+      </div>
       {children}
-    </motion.section>
+    </section>
   );
 }
 
-const refLink = (colId: number, r: InsightRef) => `/library?col=${colId}&note=${r.id}`;
-
-/** 来源笔记小标：点了跳回内容库对应笔记。 */
-function RefChips({ colId, refs }: { colId: number; refs?: InsightRef[] }) {
+/** 来源笔记：行内的小链接，点了回到内容库对应笔记。 */
+function Sources({ colId, refs }: { colId: number; refs?: InsightRef[] }) {
   if (!refs?.length) return null;
   return (
-    <span className="flex flex-wrap gap-1">
+    <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
       {refs.map((r) => (
-        <Link
-          key={r.id}
-          to={refLink(colId, r)}
-          title={r.title}
-          className="max-w-[10rem] truncate rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
-        >
+        <Link key={r.id} to={`/library?col=${colId}&note=${r.id}`} title={r.title} className="max-w-[14rem] truncate underline decoration-border underline-offset-4 transition-colors hover:text-primary hover:decoration-primary">
           {r.title}
         </Link>
       ))}
@@ -66,299 +40,319 @@ function RefChips({ colId, refs }: { colId: number; refs?: InsightRef[] }) {
   );
 }
 
-/** 爆款 vs 其余：每行两根横条，爆款一根长出来。 */
-function TraitBars({ traits }: { traits: AnalysisSignals["traits"] }) {
+/* ───────── 封面墙：整页唯一的“重”元素 ───────── */
+
+function CoverWall({ items, colId }: { items: AnalysisVisualItem[]; colId: number }) {
+  const reduce = useReducedMotion();
+  const hits = items.filter((i) => i.hit);
+  const lows = items.filter((i) => !i.hit);
+  const kinds = new Map<string, number>();
+  for (const i of hits) kinds.set(i.kind, (kinds.get(i.kind) ?? 0) + 1);
+  const top = [...kinds.entries()].sort((a, b) => b[1] - a[1])[0];
+  const tile = (it: AnalysisVisualItem, i: number) => (
+    <motion.div
+      key={it.id}
+      initial={reduce ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, delay: i * 0.05, ease: "easeOut" }}
+      className="w-36 shrink-0"
+    >
+      <Link to={`/library?col=${colId}&note=${it.id}`} title={it.hook || it.title} className="group block aspect-[3/4] overflow-hidden rounded-lg bg-muted">
+        <img src={it.cover} alt="" className="size-full object-cover transition-transform duration-500 group-hover:scale-[1.04]" />
+      </Link>
+      <div className="mt-2 flex items-baseline justify-between gap-2">
+        <span className={cn("text-sm font-semibold tabular-nums", !it.hit && "text-muted-foreground")}>{formatCount(it.engagement)}</span>
+        <span className="truncate text-xs text-muted-foreground">{it.kind}</span>
+      </div>
+      {it.text && <p className="mt-1 line-clamp-2 text-xs leading-4 text-muted-foreground">{it.text}</p>}
+    </motion.div>
+  );
   return (
-    <div className="flex flex-col gap-4">
+    <div>
+      {top && <p className="mb-5 text-sm text-muted-foreground">爆款封面以「{top[0]}」为主，{hits.length} 篇里占 {top[1]} 篇。</p>}
+      <div className="-mx-1 flex gap-4 overflow-x-auto overflow-y-hidden px-1 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {hits.map((it, i) => tile(it, i))}
+        {lows.length > 0 && (
+          <>
+            <div className="mx-1 flex shrink-0 items-center gap-3 self-stretch">
+              <div className="w-px self-stretch bg-border" />
+              <span className="text-xs text-muted-foreground [writing-mode:vertical-rl]">同类但没火</span>
+            </div>
+            {lows.map((it, i) => tile(it, hits.length + i))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ───────── 做法：一行一条，左边是判断和证据，右边是下一篇怎么写 ───────── */
+
+function FindingRow({ f, colId }: { f: InsightFinding; colId: number }) {
+  const strength = { high: 3, mid: 2, low: 1 }[f.confidence];
+  return (
+    <li className="grid gap-x-12 gap-y-4 py-7 first:pt-0 md:grid-cols-2">
+      <div>
+        <div className="flex items-start justify-between gap-4">
+          <h3 className="text-[19px] font-semibold leading-snug tracking-tight">{f.claim}</h3>
+          <span className="mt-2 flex shrink-0 gap-0.5" title={{ high: "把握大", mid: "把握中等", low: "把握小，样本少" }[f.confidence]}>
+            {[1, 2, 3].map((n) => (
+              <i key={n} className={cn("h-3 w-1 rounded-full", n <= strength ? "bg-foreground/70" : "bg-border")} />
+            ))}
+          </span>
+        </div>
+        <ul className="mt-3 space-y-1 text-sm leading-6 text-muted-foreground">
+          {f.evidence.map((e, i) => (
+            <li key={i}>{e}</li>
+          ))}
+        </ul>
+        <Sources colId={colId} refs={f.refs} />
+      </div>
+      <div className="border-l-2 border-primary/60 pl-5">
+        <p className="text-[15px] leading-7">
+          <span className="text-muted-foreground">下一篇　</span>
+          {f.todo}
+        </p>
+        {f.boundary && (
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            <span>不灵的时候　</span>
+            {f.boundary}
+          </p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/* ───────── 差异：哑铃图 + 以“持平”为中线的发散条 ───────── */
+
+function Dumbbells({ traits }: { traits: AnalysisSignals["traits"] }) {
+  const reduce = useReducedMotion();
+  return (
+    <div>
       {traits.map((t, i) => {
         const max = Math.max(t.hit, t.rest, 0.0001);
+        const at = (v: number) => (v / max) * 88 + 4;
+        const lo = Math.min(at(t.hit), at(t.rest));
+        const hi = Math.max(at(t.hit), at(t.rest));
         return (
-          <div key={t.key}>
-            <div className="mb-1.5 flex items-baseline justify-between text-xs">
-              <span className="text-foreground/80">{t.label}</span>
-              <span className="tabular-nums text-muted-foreground">
-                <b className="font-semibold text-primary">
-                  {t.hit}
-                  {t.unit}
-                </b>
-                {"  /  "}
+          <div key={t.key} className="grid grid-cols-[5rem_1fr] items-center gap-4 py-2.5">
+            <span className="text-sm">{t.label}</span>
+            <div className="relative h-11">
+              <div className="absolute inset-x-0 top-1/2 h-px bg-border" />
+              <motion.div
+                className="absolute top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-foreground/15"
+                style={{ left: `${lo}%`, width: `${hi - lo}%`, originX: 0 }}
+                initial={reduce ? false : { scaleX: 0 }}
+                animate={{ scaleX: 1 }}
+                transition={{ duration: 0.7, delay: 0.1 + i * 0.06, ease: "easeOut" }}
+              />
+              <i className="absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-card ring-2 ring-muted-foreground/50" style={{ left: `${at(t.rest)}%` }} />
+              <i className="absolute top-1/2 size-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary ring-4 ring-primary/15" style={{ left: `${at(t.hit)}%` }} />
+              <span className="absolute top-0 -translate-x-1/2 text-xs font-semibold tabular-nums text-primary" style={{ left: `${at(t.hit)}%` }}>
+                {t.hit}
+                {t.unit}
+              </span>
+              <span className="absolute bottom-0 -translate-x-1/2 text-xs tabular-nums text-muted-foreground" style={{ left: `${at(t.rest)}%` }}>
                 {t.rest}
                 {t.unit}
               </span>
             </div>
-            {([["hit", t.hit, "bg-primary"], ["rest", t.rest, "bg-muted-foreground/30"]] as const).map(([k, v, c], j) => (
-              <div key={k} className="mb-1 h-1.5 overflow-hidden rounded-full bg-muted/60">
-                <motion.div
-                  className={cn("h-full rounded-full", c)}
-                  initial={{ width: 0 }}
-                  animate={{ width: `${(v / max) * 100}%` }}
-                  transition={{ duration: 0.8, delay: 0.1 + i * 0.07 + j * 0.05, ease: "easeOut" }}
-                />
-              </div>
-            ))}
           </div>
         );
       })}
-      <div className="flex items-center gap-4 text-[11px] text-muted-foreground">
-        <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-primary" />爆款</span>
-        <span className="flex items-center gap-1.5"><i className="size-2 rounded-full bg-muted-foreground/30" />其余</span>
-      </div>
+      <p className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1.5">
+          <i className="size-2.5 rounded-full bg-primary" />
+          爆款
+        </span>
+        <span className="flex items-center gap-1.5">
+          <i className="size-2.5 rounded-full bg-card ring-2 ring-muted-foreground/50" />
+          其余
+        </span>
+      </p>
     </div>
   );
 }
 
-/** 标题钩子增益：×N 倍，样本不足的灰掉。 */
-function HookLift({ hooks }: { hooks: AnalysisSignals["hooks"] }) {
-  const max = Math.max(...hooks.map((h) => h.lift ?? 0), 1);
+function HookSpread({ hooks }: { hooks: AnalysisSignals["hooks"] }) {
+  const maxDelta = Math.max(...hooks.map((h) => (h.lift == null ? 0 : Math.abs(h.lift - 1))), 0.5);
   return (
-    <div className="flex flex-col gap-3.5">
-      {hooks.map((h, i) => (
-        <div key={h.key} title={`例：${h.example}`}>
-          <div className="mb-1 flex items-baseline justify-between text-xs">
-            <span>{h.label}</span>
-            <span className="tabular-nums text-muted-foreground">
-              {h.lift != null ? <b className={cn("font-semibold", h.lift >= 1.5 ? "text-emerald-500" : h.lift < 1 ? "text-rose-500" : "text-foreground")}>×{h.lift}</b> : "样本不足"}
-              <span className="ml-2 opacity-70">{h.count}篇</span>
+    <div>
+      {hooks.map((h) => {
+        const delta = h.lift == null ? 0 : (h.lift - 1) / maxDelta; // -1..1
+        const w = Math.abs(delta) * 46;
+        return (
+          <div key={h.key} className="grid grid-cols-[8rem_1fr_3.5rem] items-center gap-3 py-2.5" title={`例：${h.example}`}>
+            <span className="text-sm">
+              {h.label}
+              <span className="ml-1.5 whitespace-nowrap text-xs text-muted-foreground">{h.count} 篇</span>
+            </span>
+            <div className="relative h-4">
+              <div className="absolute inset-y-0 left-1/2 w-px bg-foreground/30" />
+              {h.lift != null && (
+                <div
+                  className={cn("absolute top-1/2 h-2.5 -translate-y-1/2", delta >= 0 ? "left-1/2 rounded-r-full bg-emerald-500" : "right-1/2 rounded-l-full bg-rose-500/80")}
+                  style={{ width: `${w}%` }}
+                />
+              )}
+            </div>
+            <span className={cn("text-right text-sm font-semibold tabular-nums", h.lift == null ? "text-xs font-normal text-muted-foreground" : h.lift >= 1 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500")}>
+              {h.lift == null ? "样本少" : `×${h.lift}`}
             </span>
           </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-muted/60">
-            <motion.div
-              className={cn("h-full rounded-full", h.lift == null ? "bg-muted-foreground/25" : h.lift < 1 ? "bg-rose-500/70" : "bg-emerald-500")}
-              initial={{ width: 0 }}
-              animate={{ width: `${((h.lift ?? 0.3) / max) * 100}%` }}
-              transition={{ duration: 0.8, delay: 0.1 + i * 0.07, ease: "easeOut" }}
-            />
-          </div>
-        </div>
-      ))}
+        );
+      })}
+      <p className="mt-3 text-xs text-muted-foreground">中线是持平：带这个钩子的笔记，中位互动比不带的高（右）或低（左）几倍。</p>
     </div>
   );
 }
 
-const KIND_META = {
-  tool: { label: "收藏型", color: "bg-sky-500" },
-  talk: { label: "讨论型", color: "bg-amber-500" },
-  like: { label: "点赞型", color: "bg-rose-400" },
+/* ───────── 笔记的性格：散点 / 评论构成 / 发布星期 ───────── */
+
+const KIND = {
+  tool: { label: "收藏型", dot: "bg-sky-500" },
+  talk: { label: "讨论型", dot: "bg-amber-500" },
+  like: { label: "点赞型", dot: "bg-rose-400" },
 } as const;
 
-/** 笔记类型散点：横轴评赞比（讨论度），纵轴藏赞比（收藏理由），点大小=互动量。 */
-function TypeScatter({ points, colId }: { points: AnalysisSignals["points"]; colId: number }) {
+function Personality({ points, colId }: { points: AnalysisSignals["points"]; colId: number }) {
+  const reduce = useReducedMotion();
   const [hover, setHover] = useState<number | null>(null);
-  // 用 90 分位定轴，避免一个离群点把其余挤成一团；超出的点贴边
   const q = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length * 0.9)] ?? 0;
   const xMax = Math.max(0.15, q(points.map((p) => p.talkRate))) * 1.15;
   const yMax = Math.max(0.4, q(points.map((p) => p.saveRate))) * 1.15;
-  const clamp = (v: number) => Math.min(1, v);
   const eMax = Math.max(...points.map((p) => p.engagement), 1);
+  const clamp = (v: number) => Math.min(1, v);
   const cur = points.find((p) => p.ref === hover);
   return (
     <div>
-      <div className="relative h-56 rounded-2xl bg-muted/40">
-        <span className="absolute bottom-1.5 right-3 text-[10px] text-muted-foreground">评论多 →</span>
-        <span className="absolute left-3 top-1.5 text-[10px] text-muted-foreground">↑ 收藏多</span>
+      <div className="relative h-60 border-b border-l border-border">
+        <span className="absolute left-3 top-2 text-xs text-muted-foreground">收藏多</span>
+        <span className="absolute bottom-2 right-3 text-xs text-muted-foreground">评论多</span>
         {points.map((p, i) => {
           const size = 8 + Math.sqrt(p.engagement / eMax) * 18;
-          const id = p.id || undefined;
           const dot = (
             <motion.span
               onMouseEnter={() => setHover(p.ref)}
               onMouseLeave={() => setHover(null)}
-              className={cn("absolute block cursor-pointer rounded-full opacity-80 ring-2 ring-card transition-opacity hover:opacity-100", KIND_META[p.kind].color)}
-              style={{ left: `${clamp(p.talkRate / xMax) * 92 + 2}%`, bottom: `${clamp(p.saveRate / yMax) * 86 + 6}%`, width: size, height: size, marginLeft: -size / 2, marginBottom: -size / 2 }}
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 0.8 }}
-              transition={{ type: "spring", stiffness: 260, damping: 18, delay: 0.15 + Math.min(i, 30) * 0.025 }}
+              className={cn("absolute block cursor-pointer rounded-full opacity-80 ring-2 ring-background transition-opacity hover:opacity-100", KIND[p.kind].dot)}
+              style={{ left: `${clamp(p.talkRate / xMax) * 92 + 3}%`, bottom: `${clamp(p.saveRate / yMax) * 86 + 6}%`, width: size, height: size, marginLeft: -size / 2, marginBottom: -size / 2 }}
+              initial={reduce ? false : { scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ type: "spring", stiffness: 260, damping: 20, delay: 0.1 + Math.min(i, 30) * 0.02 }}
             />
           );
-          return id ? <Link key={p.ref} to={`/library?col=${colId}&note=${id}`}>{dot}</Link> : <span key={p.ref}>{dot}</span>;
+          return p.id ? (
+            <Link key={p.ref} to={`/library?col=${colId}&note=${p.id}`}>
+              {dot}
+            </Link>
+          ) : (
+            <span key={p.ref}>{dot}</span>
+          );
         })}
       </div>
-      <div className="mt-3 flex min-h-5 items-center justify-between gap-3 text-xs">
-        <div className="flex gap-3 text-muted-foreground">
-          {Object.values(KIND_META).map((k) => (
-            <span key={k.label} className="flex items-center gap-1.5"><i className={cn("size-2 rounded-full", k.color)} />{k.label}</span>
+      <div className="mt-3 flex min-h-5 items-center justify-between gap-4 text-xs text-muted-foreground">
+        <span className="flex gap-4">
+          {Object.values(KIND).map((k) => (
+            <span key={k.label} className="flex items-center gap-1.5">
+              <i className={cn("size-2 rounded-full", k.dot)} />
+              {k.label}
+            </span>
           ))}
-        </div>
-        <span className="min-w-0 truncate text-foreground/80">{cur ? `${cur.title} · ${formatCount(cur.engagement)}` : ""}</span>
+        </span>
+        <span className="min-w-0 truncate text-foreground">{cur ? `${cur.title}　${formatCount(cur.engagement)}` : ""}</span>
       </div>
     </div>
   );
 }
 
-const CMT_COLORS = ["#0ea5e9", "#f59e0b", "#10b981", "#f43f5e", "#a1a1aa"];
+const CMT = ["bg-sky-500", "bg-amber-500", "bg-emerald-500", "bg-rose-400", "bg-muted-foreground/40"];
 
-/** 评论构成圆环：扇区依次画出，悬停某类显示一条代表评论。 */
-function CommentRing({ data }: { data: NonNullable<AnalysisSignals["comments"]> }) {
-  const [hover, setHover] = useState(0);
-  const R = 44;
-  const C = 2 * Math.PI * R;
-  let acc = 0;
-  const cats = data.categories;
-  const cur = cats[hover];
+function CommentSplit({ data }: { data: NonNullable<AnalysisSignals["comments"]> }) {
+  const reduce = useReducedMotion();
   return (
-    <div className="flex items-center gap-5">
-      <div className="relative size-36 shrink-0">
-        <svg viewBox="0 0 120 120" className="size-full -rotate-90">
-          <circle cx="60" cy="60" r={R} fill="none" strokeWidth="14" className="stroke-muted/60" />
-          {cats.map((c, i) => {
-            const len = (c.count / data.total) * C;
-            const off = acc;
-            acc += len;
-            return (
-              <motion.circle
-                key={c.key}
-                cx="60"
-                cy="60"
-                r={R}
-                fill="none"
-                strokeWidth={hover === i ? 17 : 14}
-                stroke={CMT_COLORS[i % CMT_COLORS.length]}
-                strokeDasharray={`${Math.max(0, len - 2)} ${C}`}
-                strokeDashoffset={-off}
-                initial={{ opacity: 0, pathLength: 0 }}
-                animate={{ opacity: 1, pathLength: 1 }}
-                transition={{ duration: 0.6, delay: 0.15 + i * 0.12 }}
-                onMouseEnter={() => setHover(i)}
-                className="cursor-pointer transition-[stroke-width]"
-              />
-            );
-          })}
-        </svg>
-        <div className="absolute inset-0 grid place-items-center text-center">
-          <div>
-            <NumberTicker value={data.total} className="text-xl font-semibold tabular-nums" />
-            <div className="text-[10px] text-muted-foreground">条评论</div>
-          </div>
-        </div>
+    <div>
+      <div className="flex h-3 overflow-hidden rounded-full bg-muted">
+        {data.categories.map((c, i) => (
+          <motion.div
+            key={c.key}
+            className={cn("h-full border-r-2 border-background last:border-r-0", CMT[i % CMT.length])}
+            style={{ width: `${(c.count / data.total) * 100}%`, originX: 0 }}
+            initial={reduce ? false : { scaleX: 0 }}
+            animate={{ scaleX: 1 }}
+            transition={{ duration: 0.6, delay: 0.1 + i * 0.08, ease: "easeOut" }}
+          />
+        ))}
       </div>
-      <div className="min-w-0 flex-1">
-        <ul className="flex flex-col gap-1.5">
-          {cats.map((c, i) => (
-            <li
-              key={c.key}
-              onMouseEnter={() => setHover(i)}
-              className={cn("flex cursor-default items-center gap-2 text-xs transition-opacity", hover === i ? "opacity-100" : "opacity-60")}
-            >
-              <i className="size-2 shrink-0 rounded-full" style={{ background: CMT_COLORS[i % CMT_COLORS.length] }} />
-              <span className="flex-1">{c.label}</span>
-              <span className="tabular-nums text-muted-foreground">{Math.round((c.count / data.total) * 100)}%</span>
-            </li>
-          ))}
-        </ul>
-        {cur?.sample && (
-          <div className="mt-3 line-clamp-2 rounded-xl bg-muted/50 px-3 py-2 text-xs text-muted-foreground">“{cur.sample}”</div>
-        )}
-      </div>
+      <ul className="mt-4 space-y-2.5">
+        {data.categories.map((c, i) => (
+          <li key={c.key} className="grid grid-cols-[0.75rem_1fr_2.5rem] items-baseline gap-x-3 text-sm">
+            <i className={cn("size-2 translate-y-px rounded-full", CMT[i % CMT.length])} />
+            <span>
+              {c.label}
+              {c.sample && <span className="ml-2 text-xs text-muted-foreground">“{c.sample}”</span>}
+            </span>
+            <span className="text-right tabular-nums text-muted-foreground">{Math.round((c.count / data.total) * 100)}%</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
 
-/** 爆款发布时间：周一到周日 7 根柱。 */
-function WeekdayBars({ timing }: { timing: NonNullable<AnalysisSignals["timing"]> }) {
+function WeekdayRow({ timing }: { timing: NonNullable<AnalysisSignals["timing"]> }) {
   const names = ["日", "一", "二", "三", "四", "五", "六"];
   const max = Math.max(...timing.byWeekday, 1);
   const best = timing.byWeekday.indexOf(max);
   return (
-    <div className="flex h-24 items-end gap-2">
+    <div className="flex h-20 items-end gap-2">
       {timing.byWeekday.map((n, d) => (
-        <div key={d} className="flex flex-1 flex-col items-center gap-1.5">
-          <motion.div
-            className={cn("w-full rounded-t-lg", d === best ? "bg-primary" : "bg-muted-foreground/25")}
-            initial={{ height: 0 }}
-            animate={{ height: `${Math.max(4, (n / max) * 100)}%` }}
-            transition={{ duration: 0.7, delay: 0.1 + d * 0.05, ease: "easeOut" }}
-            title={`周${names[d]}：${n} 篇爆款`}
-          />
-          <span className="text-[10px] text-muted-foreground">{names[d]}</span>
+        <div key={d} className="flex flex-1 flex-col items-center gap-1.5" title={`周${names[d]}：${n} 篇爆款`}>
+          <div className={cn("w-full rounded-t-sm", d === best ? "bg-primary" : "bg-foreground/15")} style={{ height: `${Math.max(6, (n / max) * 100)}%` }} />
+          <span className={cn("text-xs", d === best ? "font-semibold text-foreground" : "text-muted-foreground")}>{names[d]}</span>
         </div>
       ))}
     </div>
   );
 }
 
-/** AI 看过的封面：爆款在前、对照组在后，悬停看它抓人的点。 */
-function CoverStrip({ items, colId }: { items: AnalysisVisualItem[]; colId: number }) {
-  const hits = items.filter((i) => i.hit);
-  const kinds = new Map<string, number>();
-  for (const i of hits) kinds.set(i.kind, (kinds.get(i.kind) ?? 0) + 1);
-  return (
-    <div>
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        {[...kinds.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .map(([k, n]) => (
-            <span key={k} className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
-              {k} ×{n}
-            </span>
-          ))}
-      </div>
-      <div className="-mx-1 flex gap-3 overflow-x-auto overflow-y-hidden px-1 pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {items.map((it, i) => (
-          <motion.div
-            key={it.id}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 + i * 0.06 }}
-            className="w-32 shrink-0"
-          >
-            <Link to={`/library?col=${colId}&note=${it.id}`} title={it.hook} className="group relative block aspect-[3/4] overflow-hidden rounded-2xl bg-muted">
-              <img src={it.cover} alt="" className="size-full object-cover transition-transform duration-300 group-hover:scale-105" />
-              <span className={cn("absolute left-2 top-2 rounded-full px-2 py-0.5 text-[10px] font-medium backdrop-blur", it.hit ? "bg-primary/90 text-primary-foreground" : "bg-black/50 text-white")}>
-                {it.hit ? "爆款" : "对照"}
-              </span>
-              <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-2 pt-6 text-[11px] leading-4 text-white">
-                {it.kind}
-                <span className="ml-1 opacity-80">{formatCount(it.engagement)}</span>
-              </span>
-            </Link>
-            {it.text && <div className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-muted-foreground">“{it.text}”</div>}
-          </motion.div>
-        ))}
-      </div>
-    </div>
-  );
-}
+/* ───────── 视频拆解（默认不跑，开了才有） ───────── */
 
-const SEG_COLORS = ["bg-sky-500", "bg-primary", "bg-emerald-500", "bg-amber-500", "bg-violet-500", "bg-rose-400", "bg-teal-500", "bg-orange-400"];
+const SEG = ["bg-sky-500", "bg-primary", "bg-emerald-500", "bg-amber-500", "bg-violet-500", "bg-rose-400", "bg-teal-500", "bg-orange-400"];
 
-/** 视频拆解：一条时间轴，每段按时长占比，悬停看这一段在做什么；下面一行口播、一行结尾。 */
 function VideoTimeline({ items, colId }: { items: AnalysisVisualItem[]; colId: number }) {
   const [hover, setHover] = useState<Record<number, number>>({});
   return (
-    <div className="flex flex-col gap-5">
-      {items.map((it, k) => {
+    <div className="space-y-8">
+      {items.map((it) => {
         const v = it.video!;
         const total = Math.max(...v.segments.map((x) => x.to), v.durationSec ?? 0, 1);
         const cur = v.segments[hover[it.id] ?? 0];
         return (
-          <div key={it.id} className="flex gap-4">
-            <Link to={`/library?col=${colId}&note=${it.id}`} className="aspect-[3/4] w-16 shrink-0 overflow-hidden rounded-xl bg-muted">
+          <div key={it.id} className="flex gap-5">
+            <Link to={`/library?col=${colId}&note=${it.id}`} className="aspect-[3/4] w-16 shrink-0 overflow-hidden rounded-lg bg-muted">
               <img src={it.cover} alt="" className="size-full object-cover" />
             </Link>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold">{it.title}</div>
-              <div className="mt-2 flex h-7 gap-0.5 overflow-hidden rounded-lg">
+              <h3 className="truncate text-[15px] font-semibold">{it.title}</h3>
+              <div className="mt-3 flex h-6 gap-0.5 overflow-hidden rounded-md">
                 {v.segments.map((s, i) => (
-                  <motion.button
+                  <button
                     key={i}
                     type="button"
                     onMouseEnter={() => setHover((h) => ({ ...h, [it.id]: i }))}
-                    className={cn("grid min-w-0 place-items-center text-[10px] font-medium text-white", SEG_COLORS[i % SEG_COLORS.length], (hover[it.id] ?? 0) === i ? "opacity-100" : "opacity-60")}
+                    className={cn("min-w-0 text-[10px] font-medium text-white transition-opacity", SEG[i % SEG.length], (hover[it.id] ?? 0) === i ? "opacity-100" : "opacity-55")}
                     style={{ flexBasis: `${((s.to - s.from) / total) * 100}%` }}
-                    initial={{ scaleX: 0, originX: 0 }}
-                    animate={{ scaleX: 1 }}
-                    transition={{ duration: 0.5, delay: 0.1 + i * 0.07 }}
                   >
                     {s.from}s
-                  </motion.button>
+                  </button>
                 ))}
               </div>
-              <div className="mt-1.5 min-h-4 text-xs text-foreground/80">{cur ? `${cur.from}-${cur.to}s　${cur.what}` : ""}</div>
-              <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
-                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-primary">开头：{v.opening.line || v.opening.visual}</span>
-                <span className="rounded-full bg-muted px-2.5 py-1 text-muted-foreground">{v.voiceover}</span>
-                <span className="rounded-full bg-muted px-2.5 py-1 text-muted-foreground">结尾：{v.ending}</span>
-              </div>
+              <p className="mt-2 min-h-5 text-sm">{cur ? `${cur.from}-${cur.to} 秒　${cur.what}` : ""}</p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                开头「{v.opening.line || v.opening.visual}」　{v.voiceover}　结尾：{v.ending}
+              </p>
             </div>
           </div>
         );
@@ -367,86 +361,7 @@ function VideoTimeline({ items, colId }: { items: AnalysisVisualItem[]; colId: n
   );
 }
 
-const CONF = { high: 3, mid: 2, low: 1 } as const;
-
-/** 一条论证：判断（粗）→ 证据（标签）→ 边界 / 怎么做（各一行带图标）。 */
-function FindingCard({ f, i, colId }: { f: InsightFinding; i: number; colId: number }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      initial={reduce ? false : { opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, delay: 0.1 + i * 0.1 }}
-      className="flex flex-col gap-3 rounded-2xl bg-muted/40 p-4"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-[15px] font-semibold leading-6">{f.claim}</div>
-        <span className="mt-1.5 flex shrink-0 gap-0.5" title={`把握度：${f.confidence}`}>
-          {[1, 2, 3].map((n) => (
-            <i key={n} className={cn("size-1.5 rounded-full", n <= CONF[f.confidence] ? "bg-primary" : "bg-muted-foreground/25")} />
-          ))}
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {f.evidence.map((e, k) => (
-          <span key={k} className="rounded-full bg-card px-2.5 py-1 text-xs text-foreground/80 ring-1 ring-border">{e}</span>
-        ))}
-      </div>
-      <div className="flex flex-col gap-1.5 text-xs">
-        {f.boundary && (
-          <div className="flex items-start gap-1.5 text-amber-600 dark:text-amber-400">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />{f.boundary}
-          </div>
-        )}
-        {f.todo && (
-          <div className="flex items-start gap-1.5 font-medium text-primary">
-            <ArrowRight className="mt-0.5 size-3.5 shrink-0" />{f.todo}
-          </div>
-        )}
-      </div>
-      <RefChips colId={colId} refs={f.refs} />
-    </motion.div>
-  );
-}
-
-/** 选题卡：一键入选题池（带来源笔记）。 */
-function IdeaCard({ idea, i, colId, added, onAdd, onWrite, writing, pending }: { idea: InsightIdea; i: number; colId: number; added: boolean; onAdd: () => void; onWrite: () => void; writing: boolean; pending: boolean }) {
-  const reduce = useReducedMotion();
-  return (
-    <motion.div
-      initial={reduce ? false : { opacity: 0, scale: 0.96 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.35, delay: 0.1 + i * 0.08 }}
-      className="flex flex-col gap-2 rounded-2xl border border-border p-4"
-    >
-      <div className="text-[15px] font-semibold leading-6">{idea.title}</div>
-      <div className="text-sm leading-6 text-foreground/80">“{idea.hook}”</div>
-      <div className="text-xs text-muted-foreground">{idea.angle}</div>
-      <div className="mt-1 flex items-center justify-between gap-2">
-        <RefChips colId={colId} refs={idea.refs} />
-        <button
-          onClick={onAdd}
-          disabled={added || pending}
-          className={cn(
-            "flex shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition-colors",
-            added ? "bg-emerald-500/15 text-emerald-600" : "bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground",
-          )}
-        >
-          {added ? <Check className="size-3.5" /> : <Plus className="size-3.5" />}
-          {added ? "已入池" : "入选题池"}
-        </button>
-        <button
-          onClick={onWrite}
-          disabled={writing}
-          className="flex shrink-0 items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-opacity disabled:opacity-50"
-        >
-          {writing ? <Loader2 className="size-3.5 animate-spin" /> : <PenLine className="size-3.5" />}
-          {writing ? "写稿中…" : "写成草稿"}
-        </button>
-      </div>
-    </motion.div>
-  );
-}
+/* ───────── 页面 ───────── */
 
 export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onTopicAdded?: () => void }) {
   const running = a.status === "running";
@@ -496,153 +411,152 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
     for (const [i] of (insight?.ideas ?? []).entries()) if (!added.has(i)) await addTopic.mutateAsync(i).catch(() => {});
     toast.success("已全部入选题池");
   };
+
   const lowCoverage = sig.sample.withDetail < sig.sample.total * 0.6;
+  const videoItems = a.data.visual?.filter((i) => i.video) ?? [];
+  const traps = insight?.traps?.length ? insight.traps : sig.traps.map((t) => ({ title: t.title, reason: t.detail }));
 
   return (
-    <div className="flex flex-col gap-4">
-      {/* 一句话判断 + 样本芯片 */}
-      <div className="rounded-3xl border border-primary/25 bg-gradient-to-br from-primary/10 to-transparent p-6">
+    <article className="max-w-6xl space-y-10 pb-16">
+      {/* 判词：整页最大的字 */}
+      <header>
         {insight?.summary ? (
-          <TextReveal text={insight.summary} className="text-xl font-semibold leading-8" split="word" stagger={0.03} once />
+          <h1 className="max-w-[22em] text-[34px] font-bold leading-[1.28] tracking-tight">{insight.summary}</h1>
         ) : running ? (
-          <TextShimmer className="text-xl font-semibold leading-8 text-muted-foreground">AI 正在解读这些信号…</TextShimmer>
+          <>
+            <TextShimmer className="text-[34px] font-bold leading-[1.28] tracking-tight text-muted-foreground">AI 正在解读</TextShimmer>
+            <div className="mt-4 max-w-2xl">
+              <AnalysisProgressView progress={a.data.progress} />
+            </div>
+          </>
         ) : (
-          <div className="text-sm text-muted-foreground">AI 没有产出结构化结论，下面是代码算出的信号</div>
+          <p className="text-sm text-muted-foreground">AI 没有给出结构化结论，下面是代码算出的数据。</p>
         )}
-        <div className="mt-4 flex flex-wrap gap-2 text-xs">
-          {[
-            [sig.sample.total, "篇样本"],
-            [sig.sample.hit, "篇爆款"],
-            [sig.sample.withComments, "篇有评论"],
-            [sig.sample.videos, "个视频"],
-          ].map(([n, l]) => (
-            <span key={l} className="rounded-full bg-card/80 px-3 py-1 ring-1 ring-border">
-              <NumberTicker value={Number(n)} className="font-semibold tabular-nums" /> {l}
-            </span>
-          ))}
-          {a.data.positioning && <span className="rounded-full bg-primary/15 px-3 py-1 text-primary">{a.data.positioning}</span>}
-          {lowCoverage && <span className="rounded-full bg-amber-500/15 px-3 py-1 text-amber-600">多数笔记没进详情页，结论偏保守</span>}
-        </div>
-      </div>
+        <p className="mt-5 max-w-2xl text-sm leading-6 text-muted-foreground">
+          基于 {sig.sample.total} 篇笔记，其中 {sig.sample.hit} 篇爆款、{sig.sample.withComments} 篇带评论
+          {sig.sample.videos > 0 ? `、${sig.sample.videos} 个视频` : ""}。
+          {a.data.positioning ? `按「${a.data.positioning}」的定位来写。` : ""}
+          {lowCoverage ? "多数笔记没进详情页，结论偏保守。" : ""}
+        </p>
+      </header>
 
-      {/* AI 看过的封面 */}
       {a.data.visual?.length ? (
-        <Panel title="AI 看过的封面" delay={0.05}>
-          <CoverStrip items={a.data.visual} colId={a.collectionId} />
-        </Panel>
+        <Section title="爆款的封面长什么样">
+          <CoverWall items={a.data.visual} colId={a.collectionId} />
+        </Section>
       ) : null}
 
-      {/* 视频拆解 */}
-      {a.data.visual?.some((i) => i.video) ? (
-        <Panel title="爆款视频拆解" delay={0.08}>
-          <VideoTimeline items={a.data.visual.filter((i) => i.video)} colId={a.collectionId} />
-        </Panel>
+      {videoItems.length ? (
+        <Section title="视频是怎么拍的">
+          <VideoTimeline items={videoItems} colId={a.collectionId} />
+        </Section>
       ) : null}
 
-      {/* 论证过的结论 */}
       {insight?.findings?.length ? (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {insight.findings.map((f, i) => (
-            <FindingCard key={i} f={f} i={i} colId={a.collectionId} />
-          ))}
-        </div>
+        <Section title="哪些做法管用">
+          <ul className="divide-y divide-border/60">
+            {insight.findings.map((f, i) => (
+              <FindingRow key={i} f={f} colId={a.collectionId} />
+            ))}
+          </ul>
+        </Section>
       ) : null}
 
-      {/* 信号图：差异 / 钩子 */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title="爆款 vs 其余" delay={0.1}><TraitBars traits={sig.traits} /></Panel>
-        {sig.hooks.length > 0 && <Panel title="标题钩子 · 带它的中位互动是不带的几倍" delay={0.15}><HookLift hooks={sig.hooks} /></Panel>}
-      </div>
+      <Section title="和没火的比，差在哪">
+        <div className="grid gap-x-16 gap-y-10 lg:grid-cols-2">
+          <Dumbbells traits={sig.traits} />
+          {sig.hooks.length > 0 && <HookSpread hooks={sig.hooks} />}
+        </div>
+      </Section>
 
-      {/* 散点 / 评论环 */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {sig.points.length >= 3 && (
-          <Panel title="笔记类型" delay={0.2}><TypeScatter points={sig.points} colId={a.collectionId} /></Panel>
-        )}
-        {sig.comments ? (
-          <Panel title="评论在说什么" delay={0.25}><CommentRing data={sig.comments} /></Panel>
-        ) : sig.timing ? (
-          <Panel title="爆款发布星期" delay={0.25}><WeekdayBars timing={sig.timing} /></Panel>
-        ) : null}
-      </div>
+      <Section title="这批笔记各是什么性格">
+        <div className="grid gap-x-16 gap-y-10 lg:grid-cols-2">
+          {sig.points.length >= 3 && <Personality points={sig.points} colId={a.collectionId} />}
+          <div className="space-y-10">
+            {sig.comments && <CommentSplit data={sig.comments} />}
+            {sig.timing && (
+              <div>
+                <p className="mb-3 text-sm text-muted-foreground">爆款都发在周几</p>
+                <WeekdayRow timing={sig.timing} />
+              </div>
+            )}
+          </div>
+        </div>
+      </Section>
 
-      {sig.comments && sig.timing && (
-        <Panel title="爆款发布星期" delay={0.3}><WeekdayBars timing={sig.timing} /></Panel>
-      )}
-
-      {/* 没被满足的需求 */}
       {insight?.needs?.length ? (
-        <Panel title="观众想要但没人给" delay={0.3}>
-          <div className="grid gap-3 md:grid-cols-2">
+        <Section title="观众想要，但没人给">
+          <div className="grid gap-x-16 gap-y-8 md:grid-cols-2">
             {insight.needs.map((n, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: 0.2 + i * 0.1 }}
-                className="rounded-2xl bg-muted/40 p-4"
-              >
-                <div className="flex items-start gap-2 text-sm text-foreground/80">
-                  <Quote className="mt-0.5 size-4 shrink-0 text-muted-foreground" />“{n.quote}”
-                </div>
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">{n.need}</span>
-                  <RefChips colId={a.collectionId} refs={n.refs} />
-                </div>
-              </motion.div>
+              <blockquote key={i} className="border-l-2 border-primary/50 pl-5">
+                <p className="text-lg leading-8">“{n.quote}”</p>
+                <footer className="mt-2 text-sm text-muted-foreground">{n.need}</footer>
+                <Sources colId={a.collectionId} refs={n.refs} />
+              </blockquote>
             ))}
           </div>
-        </Panel>
+        </Section>
       ) : null}
 
-      {/* 选题：可直接入池 */}
       {insight?.ideas?.length ? (
-        <Panel title="可以直接做的选题" delay={0.35}>
-          <div className="mb-3 flex justify-end">
+        <Section
+          title="可以直接做的选题"
+          aside={
             <button
               onClick={() => void addAll()}
               disabled={addTopic.isPending || added.size === insight.ideas.length}
-              className="flex items-center gap-1.5 rounded-full bg-primary px-3.5 py-1.5 text-xs font-medium text-primary-foreground transition-opacity disabled:opacity-40"
+              className="text-sm text-muted-foreground underline decoration-border underline-offset-4 transition-colors hover:text-primary hover:decoration-primary disabled:opacity-40"
             >
-              <Lightbulb className="size-3.5" />全部入选题池
+              全部入选题池
             </button>
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
+          }
+        >
+          <ul className="divide-y divide-border/60">
             {insight.ideas.map((idea, i) => (
-              <IdeaCard
-                key={i}
-                idea={idea}
-                i={i}
-                colId={a.collectionId}
-                added={added.has(i)}
-                pending={addTopic.isPending}
-                onAdd={() => addTopic.mutate(i)}
-                onWrite={() => void writeDraft(i)}
-                writing={writingIdx === i}
-              />
+              <li key={i} className="grid items-start gap-x-8 gap-y-4 py-6 first:pt-0 md:grid-cols-[1fr_auto]">
+                <div>
+                  <h3 className="text-lg font-semibold leading-snug tracking-tight">{idea.title}</h3>
+                  <p className="mt-2 text-[15px] leading-7">“{idea.hook}”</p>
+                  <p className="mt-1 text-sm text-muted-foreground">{idea.angle}</p>
+                  <Sources colId={a.collectionId} refs={idea.refs} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => addTopic.mutate(i)}
+                    disabled={added.has(i) || addTopic.isPending}
+                    className="flex h-9 items-center gap-1.5 rounded-full border border-border px-4 text-sm transition-colors hover:border-foreground/40 disabled:opacity-50"
+                  >
+                    {added.has(i) ? "已在选题池" : (<><Plus className="size-3.5" />入选题池</>)}
+                  </button>
+                  <button
+                    onClick={() => void writeDraft(i)}
+                    disabled={writingIdx === i}
+                    className="flex h-9 items-center gap-1.5 rounded-full bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-60"
+                  >
+                    {writingIdx === i ? <Loader2 className="size-3.5 animate-spin" /> : <PenLine className="size-3.5" />}
+                    {writingIdx === i ? "写稿中" : "写成草稿"}
+                  </button>
+                </div>
+              </li>
             ))}
-          </div>
-        </Panel>
+          </ul>
+        </Section>
       ) : null}
 
-      {/* 不可复制 */}
-      {(insight?.traps?.length || sig.traps.length) ? (
-        <Panel title="看着火，但别照抄" delay={0.4}>
-          <div className="flex flex-col gap-2">
-            {(insight?.traps?.length ? insight.traps : sig.traps.map((t) => ({ title: t.title, reason: t.detail }))).map((t, i) => (
-              <div key={i} className="flex items-start gap-2 rounded-xl bg-amber-500/10 px-3 py-2 text-xs">
-                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-                <span className="truncate font-medium">{t.title}</span>
-                <span className="ml-auto shrink-0 text-muted-foreground">{t.reason}</span>
-              </div>
+      {traps.length ? (
+        <Section title="看着火，但别照抄">
+          <ul className="space-y-3">
+            {traps.map((t, i) => (
+              <li key={i} className="border-l-2 border-amber-500/60 pl-5">
+                <p className="font-medium">{t.title}</p>
+                <p className="mt-0.5 text-sm text-muted-foreground">{t.reason}</p>
+              </li>
             ))}
-          </div>
-        </Panel>
+          </ul>
+        </Section>
       ) : null}
 
-      {!insight && a.report ? (
-        <div className="whitespace-pre-wrap rounded-2xl border border-border bg-card p-6 text-sm leading-7">{a.report}</div>
-      ) : null}
-    </div>
+      {!insight && a.report ? <pre className="whitespace-pre-wrap rounded-lg bg-muted/50 p-5 text-sm leading-7">{a.report}</pre> : null}
+    </article>
   );
 }

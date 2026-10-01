@@ -12,7 +12,7 @@ export type AiPart = { type: "text"; text: string } | { type: "image_url"; image
 
 export interface AiClient {
   /** opts.model：本次调用覆盖默认模型（分析要用响应快的，网关 100s 会切断长请求）。 */
-  complete(system: string, user: string | AiPart[], opts?: { model?: string; temperature?: number }): Promise<string>;
+  complete(system: string, user: string | AiPart[], opts?: { model?: string; temperature?: number; json?: boolean }): Promise<string>;
 }
 
 export function createOpenAiClient(
@@ -36,6 +36,7 @@ export function createOpenAiClient(
             { role: "user", content: user },
           ],
           temperature: opts?.temperature ?? 0.7,
+          ...(opts?.json ? { response_format: { type: "json_object" } } : {}),
           // 流式：网关前面有 Cloudflare，非流式的长请求 ~100s 无响应会被切成 524
           stream: true,
         }),
