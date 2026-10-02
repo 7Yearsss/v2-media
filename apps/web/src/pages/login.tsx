@@ -67,9 +67,6 @@ export default function LoginPage() {
             <h1 className="text-lg font-semibold tracking-tight text-foreground">
               v2-media 工作台
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              小红书一站式运营平台
-            </p>
           </div>
         </div>
 
@@ -133,7 +130,7 @@ export default function LoginPage() {
         </div>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
-          采集与发布由浏览器插件完成，登录后在「账号矩阵」授权插件
+          登录后在「账号」页授权插件
         </p>
       </motion.div>
     </div>

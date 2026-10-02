@@ -62,11 +62,11 @@ export default function App() {
             <div className="flex h-full items-center justify-center p-8">
               <NotFoundSpotlight
                 title="页面不存在"
-                description="这个地址没有对应的工作台页面"
+                description="请检查地址"
                 homeHref="/"
-                homeLabel="回到仪表盘"
+                homeLabel="回到今日"
                 browseHref="/library"
-                browseLabel="去内容库"
+                browseLabel="资料库"
               />
             </div>
           }

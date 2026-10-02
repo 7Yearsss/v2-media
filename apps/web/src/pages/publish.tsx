@@ -158,9 +158,7 @@ function NewJobDrawer({
       <div className="flex h-full flex-col">
         <div className="border-b border-border px-6 py-4">
           <h2 className="text-base font-semibold text-foreground">新建发布</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-            {initial ? "将使用当前草稿和当前账号人设建立新的发布版本，请重新核对" : "选择草稿与账号，由插件在浏览器里执行发布"}
-          </p>
+          {initial?.draftId && <p className="mt-1 text-xs text-muted-foreground">新版本使用当前草稿与人设，请重新核对。</p>}
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
@@ -198,7 +196,7 @@ function NewJobDrawer({
                   ))}
                 </div>
               )}
-              <a href={`/drafts/${draft.id}`} className="text-primary underline-offset-2 hover:underline">去草稿里改</a>
+              <a href={`/drafts/${draft.id}`} className="text-primary underline-offset-2 hover:underline">编辑草稿</a>
             </div>
           )}
 
@@ -231,10 +229,10 @@ function NewJobDrawer({
           {account?.redlines && <div className="space-y-1.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 text-xs leading-5">
             <p className="font-medium">「{account.nickname || "目标账号"}」内容红线</p>
             <p className="whitespace-pre-wrap">{account.redlines}</p>
-            <p className="text-muted-foreground">请核对标题、正文和图片是否符合这些要求。</p>
+            <p className="text-muted-foreground">发布前请核对全文与图片。</p>
           </div>}
           {account && draft && ((draft.accountId && draft.accountId !== account.id) || (draft.personaSnapshot?.accountId && draft.personaSnapshot.accountId !== account.id)) &&
-            <p className="text-xs leading-5 text-amber-600">这篇草稿曾使用其他账号设置，发布前请核对当前语气和目标账号红线。</p>}
+            <p className="text-xs leading-5 text-amber-600">草稿使用过其他账号人设，请核对语气与红线。</p>}
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">
               可见性
@@ -258,7 +256,7 @@ function NewJobDrawer({
             </p>
             <Input type="datetime-local" value={schedule} onChange={setSchedule} />
             <p className="mt-1 text-[11px] text-muted-foreground">
-              留空则进入队列后立即执行
+              留空立即排队
             </p>
           </div>
         </div>
@@ -307,12 +305,12 @@ function RetryJobDrawer({ selection, accounts, drafts, submitting, onClose, onRe
     <div className="flex h-full flex-col">
       <div className="border-b border-border px-6 py-4">
         <h2 className="text-base font-semibold text-foreground">重试原发布版本 #{job.id}</h2>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">确认后会立即重新排队，沿用下方原稿、图片、封面、账号人设与可见性。</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">立即排队，沿用原稿、图片、封面、人设与可见性。</p>
       </div>
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6 text-sm">
         {!allowed && <p role="alert" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">{job.retryEligibility?.reason ?? "该任务尚未确认可以安全重试，请刷新并核对原结果。"}</p>}
-        {draftChanged && <p role="status" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">当前草稿已修改。本次重试仍使用原发布版本；要采用修改后的内容，请选择“用当前稿新建”。</p>}
-        {personaChanged && <p role="status" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">账号人设已从 v{persona?.version} 更新到 v{account?.personaVersion}，请重新核对当前红线。本次重试保留原人设记录。</p>}
+        {draftChanged && <p role="status" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">草稿已修改；重试仍用原版。使用修改稿请选“用当前稿新建”。</p>}
+        {personaChanged && <p role="status" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">人设 v{persona?.version} → v{account?.personaVersion}；重试保留原人设，请核对当前红线。</p>}
         <dl className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-xs leading-5">
           <dt className="text-muted-foreground">原账号</dt><dd>{job.accountSnapshot?.nickname || job.accountSnapshot?.xhsUserId || persona?.nickname || `账号 #${job.accountId}`}<span className="ml-1 text-muted-foreground">（{job.accountSnapshot?.xhsUserId || "历史身份未保存"}）</span></dd>
           <dt className="text-muted-foreground">可见性</dt><dd>{VISIBILITY_LABEL[job.visibility]}</dd>
@@ -334,7 +332,7 @@ function RetryJobDrawer({ selection, accounts, drafts, submitting, onClose, onRe
           {personaChanged && <p className="whitespace-pre-wrap text-amber-600">当前红线：{account?.redlines || "未设置"}</p>}
         </section>}
         {draft && <Button variant="secondary" size="sm" disabled={submitting} onClick={() => onCurrentDraft(job)}>用当前稿新建</Button>}
-        <p className="text-[11px] leading-5 text-muted-foreground">若已有笔记发布成功或结果未知，请先到小红书核对，避免重复发布。</p>
+        <p className="text-[11px] leading-5 text-muted-foreground">已成功或结果未知时，请先到小红书核对，避免重复发布。</p>
       </div>
       <div className="shrink-0 border-t border-border p-4">
         {allowed ? <ApprovalCard title="确认重试原版本" description={`「${snapshot?.title}」 · ${VISIBILITY_LABEL[job.visibility]} · 立即排队`} status={submitting ? "submitting" : "pending"} approveLabel="确认重试原版本" onApprove={onRetry} onDismiss={submitting ? undefined : onClose} />
@@ -599,7 +597,7 @@ export default function PublishPage() {
 
   return (
     <div className="workspace-page flex min-h-full flex-col">
-      <header className="mb-4"><h1 className="workspace-page-title">核对这一版，再交给浏览器</h1><p className="mt-2 text-sm text-muted-foreground">分别查看发布执行、站点核对和指标采样的结果。</p></header>
+      <header className="mb-4"><h1 className="workspace-page-title">发布</h1></header>
       <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <Button size="sm" disabled={readOnly} onClick={openCreate}>
           <Plus className="size-3.5" />
@@ -614,8 +612,7 @@ export default function PublishPage() {
       ) : rows.length === 0 ? (
         <EmptyState
           icon={SendHorizontal}
-          title="还没有发布任务"
-          description="选一篇草稿和目标账号，创建第一个发布任务"
+          title="暂无发布任务"
           action={
             <Button size="sm" disabled={readOnly} onClick={openCreate}>
               <Plus className="size-3.5" />

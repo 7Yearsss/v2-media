@@ -80,8 +80,8 @@ function AccountCard({
         ) : null}
 
         <div className="space-y-1 text-xs leading-5 text-muted-foreground">
-          {account.archivedAt && <p>发布记录、指标与人设已保留；恢复后不会自动重发。</p>}
-          <p className="line-clamp-2">{account.positioning || "尚未设置人设，AI 按通用风格写作"}</p>
+          {account.archivedAt && <p>历史已保留，恢复后不自动重发。</p>}
+          <p className="line-clamp-2">{account.positioning || "通用风格 · 未设置人设"}</p>
           {account.styleNotes && <p className="line-clamp-1">风格：{account.styleNotes}</p>}
           {account.redlines && <p className="line-clamp-1">红线：{account.redlines}</p>}
         </div>
@@ -139,20 +139,20 @@ function PersonaDrawer({ account, onClose }: { account: HostedAccount | null; on
   return <Drawer open={!!account} onOpenChange={open => { if (!open) onClose(); }} side="right" ariaLabel="编辑账号人设" className="w-full max-w-lg">
     <div className="flex h-full flex-col">
       <div className="border-b border-border px-6 py-4"><h2 className="text-base font-semibold">{account?.nickname || "账号人设"}</h2>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">选题、成稿、分析和改写会使用这些设置。留空则沿用通用写法。</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">留空使用通用风格</p>
       </div>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
         {[
-          { label: "账号定位", value: positioning, set: setPositioning, max: ACCOUNT_PERSONA_LIMITS.positioning, placeholder: "写给谁、主要写什么，例如：下班备餐、家庭厨房整理" },
-          { label: "表达风格", value: styleNotes, set: setStyleNotes, max: ACCOUNT_PERSONA_LIMITS.styleNotes, placeholder: "例如：像朋友分享，短句、有步骤，少用夸张词" },
-          { label: "内容红线", value: redlines, set: setRedlines, max: ACCOUNT_PERSONA_LIMITS.redlines, placeholder: "明确不写什么，例如：不编造亲身体验、不做效果承诺" },
+          { label: "账号定位", value: positioning, set: setPositioning, max: ACCOUNT_PERSONA_LIMITS.positioning, placeholder: "受众与主题，如：上班族备餐" },
+          { label: "表达风格", value: styleNotes, set: setStyleNotes, max: ACCOUNT_PERSONA_LIMITS.styleNotes, placeholder: "如：短句、有步骤、像朋友分享" },
+          { label: "内容红线", value: redlines, set: setRedlines, max: ACCOUNT_PERSONA_LIMITS.redlines, placeholder: "如：不编造体验、不承诺效果" },
         ].map(field => <label key={field.label} className="block space-y-2 text-sm">
           <span className="font-medium">{field.label}</span>
           <textarea aria-label={field.label} rows={4} value={field.value} onChange={e => field.set(e.target.value)} maxLength={field.max} placeholder={field.placeholder}
             className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm leading-6 outline-none focus:border-primary" />
           <span className="block text-right text-[11px] text-muted-foreground">{field.value.length}/{field.max}</span>
         </label>)}
-        <p className="text-xs leading-5 text-muted-foreground">红线会进入 AI 提示并在发布前展示，请结合实际内容自查。现有违禁词检查继续生效。</p>
+        <p className="text-xs leading-5 text-muted-foreground">红线用于 AI 提示和发布自查，不能代替人工核对。</p>
         {error && <div role="alert" className="space-y-2 text-xs text-destructive"><p>{error}</p><button type="button" onClick={() => void reload()} className="underline">重新读取账号人设</button></div>}
       </div>
       <div className="flex justify-end gap-2 border-t border-border p-4"><Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>取消</Button>
@@ -232,7 +232,7 @@ export default function AccountsPage() {
 
   return (
     <div className="workspace-page">
-      <header className="mb-5"><h1 className="workspace-page-title">让每个账号有自己的表达</h1><p className="mt-2 text-sm text-muted-foreground">管理定位、风格与红线，并核对浏览器里的登录状态。</p></header>
+      <header className="mb-5"><h1 className="workspace-page-title">账号</h1></header>
       {requestedAccount && accountsQuery.isSuccess && !accountsQuery.data.some(account => String(account.id) === requestedAccount) && <p role="alert" className="mb-4 text-sm text-destructive">指定账号无法读取，请从当前账号列表选择。</p>}
       <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <div className="flex items-center gap-2">
@@ -258,8 +258,7 @@ export default function AccountsPage() {
         <div className="mb-6 flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs leading-5 text-amber-700 dark:text-amber-400">
           <Link2 className="mt-0.5 size-4 shrink-0" />
           <p>
-            未检测到浏览器插件。安装扩展后回到本页点「授权插件」，插件才会开始
-            心跳上报已登录的小红书账号。
+            未检测到插件。安装后点「授权插件」以同步账号。
           </p>
         </div>
       ) : null}
@@ -271,8 +270,8 @@ export default function AccountsPage() {
       ) : accountsQuery.data!.length === 0 ? (
         <EmptyState
           icon={Users}
-          title="还没有托管账号"
-          description="插件在小红书页面检测到登录态后，会通过心跳自动上报到这里"
+          title="暂无账号"
+          description="授权插件后，在浏览器登录小红书"
           action={
             <Button size="sm" disabled={readOnly} onClick={() => void authorize()}>
               <Zap className="size-3.5" />

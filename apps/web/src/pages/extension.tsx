@@ -19,7 +19,7 @@ const STEPS = [
   {
     icon: Download,
     title: "下载并解压",
-    desc: "点击下方按钮下载 extension.zip，解压得到一个文件夹。",
+    desc: "下载插件包并解压。",
   },
   {
     icon: ToggleRight,
@@ -34,14 +34,14 @@ const STEPS = [
   {
     icon: LogIn,
     title: "登录小红书并授权",
-    desc: "在浏览器里登录 xiaohongshu.com，回到「账号矩阵」点「授权插件」。",
+    desc: "登录 xiaohongshu.com，在「账号」页授权插件。",
   },
 ];
 
 export default function ExtensionPage() {
   const { online } = useExtensionStatus();
   return (
-    <div className="w-full px-6 pb-8 pt-6">
+    <div className="workspace-page">
       <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <AnimatedBadge
           size="sm"
@@ -59,26 +59,26 @@ export default function ExtensionPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-5">
-        <TiltCard max={6} className="lg:col-span-2">
+        <TiltCard max={0} className="lg:col-span-2">
           <div className="flex h-full flex-col gap-4 rounded-2xl border border-border bg-card p-6">
             <span className="grid size-11 place-items-center rounded-xl bg-primary/15 text-primary">
               <Puzzle className="size-5" />
             </span>
             <div>
               <h3 className="text-base font-semibold text-foreground">
-                v2-media 采集插件
+                v2-media 插件
               </h3>
               <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                在小红书页面采集热门笔记进内容库，上报托管账号心跳，并在创作服务平台执行一键发布。
+                小红书采集与发布
               </p>
             </div>
             <div className="mt-auto flex flex-col gap-2">
               <ButtonLink href="/extension.zip" download="v2-media-extension.zip">
                 <Download className="size-4" />
-                下载插件包（.zip）
+                下载插件
               </ButtonLink>
               <p className="text-xs text-muted-foreground">
-                解压后按右侧步骤加载到 Chrome
+                Chrome 扩展 · ZIP
               </p>
             </div>
           </div>
@@ -112,16 +112,15 @@ export default function ExtensionPage() {
       <div className="mt-4 flex items-start gap-3 rounded-2xl border border-border bg-card px-4 py-3 text-xs leading-5 text-muted-foreground">
         <Chrome className="mt-0.5 size-4 shrink-0" />
         <p>
-          状态说明：
           {online === true ? (
             <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
               <CheckCircle2 className="size-3.5" />
-              插件在线，正在上报账号心跳。可在「账号矩阵」查看托管账号、在「发布中心」下发任务。
+              已连接。可在「账号」页核对授权与登录状态。
             </span>
           ) : online === false ? (
             <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
               <XCircle className="size-3.5" />
-              未检测到插件 —— 请确认已按上方步骤安装并刷新本页，然后去「账号矩阵」点「授权插件」。
+              未检测到插件。安装后刷新页面，在「账号」页授权。
             </span>
           ) : (
             "正在检测插件连接…"

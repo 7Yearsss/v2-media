@@ -462,9 +462,8 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
           {a.data.positioning ? `按「${a.data.positioning}」的定位来写。` : ""}
           {lowCoverage ? "多数笔记没进详情页，结论偏保守。" : ""}
         </p>
-        {a.data.persona?.accountId && <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-          分析使用「{a.data.persona.nickname || `账号 #${a.data.persona.accountId}`}」的人设 v{a.data.persona.version}。
-          入池会保留此账号与来源定位；成稿使用该账号当前的风格和红线，历史报告保持原样。账号已解绑时需重新选择。
+        {a.data.persona?.accountId && <p title="入池保留来源账号；成稿使用该账号当前人设" className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+          写作账号：{a.data.persona.nickname || `账号 #${a.data.persona.accountId}`} · v{a.data.persona.version}
         </p>}
       </header>
 
@@ -528,7 +527,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
 
       {insight?.ideas?.length ? (
         <Section
-          title="可以直接做的选题"
+          title="推荐选题"
           aside={
             <button
               onClick={() => void addAll()}

@@ -68,16 +68,16 @@ import { WorkspaceAccountProvider, WorkspaceAccountSelector, useWorkspaceAccount
 import { TaskCenter } from "@/components/app/task-center";
 
 const NAV = [
-  { to: "/", label: "今日工作", icon: LayoutDashboard, match: /^\/$/ },
-  { to: "/library", label: "内容库", icon: LibraryBig, match: /^\/library/ },
+  { to: "/", label: "今日", icon: LayoutDashboard, match: /^\/$/ },
+  { to: "/library", label: "资料库", icon: LibraryBig, match: /^\/library/ },
   { to: "/analysis", label: "AI 分析", icon: BrainCircuit, match: /^\/analysis/ },
-  { to: "/topics", label: "选题池", icon: Lightbulb, match: /^\/topics/ },
-  { to: "/drafts", label: "草稿工坊", icon: NotebookPen, match: /^\/drafts/ },
-  { to: "/accounts", label: "账号矩阵", icon: Users, match: /^\/accounts/ },
-  { to: "/publish", label: "发布中心", icon: SendHorizontal, match: /^\/publish/ },
-  { to: "/insights", label: "数据洞察", icon: ChartNoAxesCombined, match: /^\/insights/ },
+  { to: "/topics", label: "选题", icon: Lightbulb, match: /^\/topics/ },
+  { to: "/drafts", label: "草稿", icon: NotebookPen, match: /^\/drafts/ },
+  { to: "/accounts", label: "账号", icon: Users, match: /^\/accounts/ },
+  { to: "/publish", label: "发布", icon: SendHorizontal, match: /^\/publish/ },
+  { to: "/insights", label: "复盘", icon: ChartNoAxesCombined, match: /^\/insights/ },
   { to: "/collection-tasks", label: "自动采集", icon: SearchCheck, match: /^\/collection-tasks/ },
-  { to: "/extension", label: "采集插件", icon: Puzzle, match: /^\/extension/ },
+  { to: "/extension", label: "插件", icon: Puzzle, match: /^\/extension/ },
 ] as const;
 
 const WORKSPACES = [
@@ -89,16 +89,16 @@ const WORKSPACES = [
 ];
 
 const PAGE_TITLES: [RegExp, string][] = [
-  [/^\/$/, "今日工作"],
-  [/^\/library/, "内容库"],
+  [/^\/$/, "今日"],
+  [/^\/library/, "资料库"],
   [/^\/analysis/, "AI 分析"],
-  [/^\/topics/, "选题池"],
-  [/^\/drafts/, "草稿工坊"],
-  [/^\/accounts/, "账号矩阵"],
-  [/^\/publish/, "发布中心"],
-  [/^\/insights/, "数据洞察"],
+  [/^\/topics/, "选题"],
+  [/^\/drafts/, "草稿"],
+  [/^\/accounts/, "账号"],
+  [/^\/publish/, "发布"],
+  [/^\/insights/, "复盘"],
   [/^\/collection-tasks/, "自动采集"],
-  [/^\/extension/, "采集插件"],
+  [/^\/extension/, "插件"],
 ];
 
 const ExtensionCtx = createContext<{ online: boolean | null }>({
@@ -128,6 +128,8 @@ function WorkspaceShell() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [tasksOpen, setTasksOpen] = useState(false);
   const workspace = WORKSPACES.find(item => item.match.test(location.pathname));
+  const multiplePages = !!workspace && workspace.pages.length > 1;
+  const previewNotice = import.meta.env.VITE_PREVIEW_NOTICE;
 
   const pageTitle =
     PAGE_TITLES.find(([re]) => re.test(location.pathname))?.[1] ?? "工作台";
@@ -228,8 +230,9 @@ function WorkspaceShell() {
         <AnimatedSidebar
           ariaLabel="v2-media 工作台"
           collapsible="icon"
-          className="min-h-0"
-          panelClassName="border-border bg-[var(--workspace-rail)]"
+          variant="inset"
+          className="workspace-sidebar min-h-0"
+          panelClassName="w-[calc(100%_-_16px)] rounded-3xl border border-border bg-[var(--workspace-rail)]"
         >
           <AnimatedSidebarHeader className="p-3 pb-4">
             <div className="flex min-h-11 items-center gap-3 overflow-hidden px-2">
@@ -239,9 +242,6 @@ function WorkspaceShell() {
               <div className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
                 <p className="truncate text-sm font-semibold text-foreground">
                   v2-media
-                </p>
-                <p className="truncate text-[10px] text-muted-foreground">
-                  小红书运营工作台
                 </p>
               </div>
               <AnimatedSidebarClose className="ml-auto text-muted-foreground hover:bg-muted md:hidden">
@@ -289,9 +289,6 @@ function WorkspaceShell() {
                     <span className="block truncate text-sm font-medium text-foreground">
                       {user?.email ?? "未登录"}
                     </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      账号设置
-                    </span>
                   </span>
                   <ChevronsUpDown
                     aria-hidden
@@ -328,23 +325,26 @@ function WorkspaceShell() {
           <AnimatedSidebarRail />
         </AnimatedSidebar>
 
-        <AnimatedSidebarInset className="min-h-0 bg-background">
-          <header className="flex h-14 shrink-0 items-center gap-3 border-border border-b bg-card/80 px-5">
+        <AnimatedSidebarInset className="workspace-content min-h-0 bg-background">
+          <header className="workspace-chrome flex h-14 shrink-0 items-center gap-3 border-border border-b px-5">
             <AnimatedSidebarTrigger className="text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
               <PanelLeft aria-hidden className="size-4" />
             </AnimatedSidebarTrigger>
             <p className="text-sm font-semibold text-foreground">{pageTitle}</p>
+            {readOnly && <span role="status" title="只读连接，修改与后台任务已停用" className="rounded-md bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-300">只读</span>}
+            {previewNotice && <span role="status" title={previewNotice} className="rounded-md bg-muted px-2 py-1 text-[10px] text-muted-foreground">{previewNotice.includes("合成") ? "本地预览" : previewNotice}</span>}
 
             <div className="ml-auto flex items-center gap-2">
-              <span className="hidden md:inline-flex">{extBadge}</span>
+              <WorkspaceAccountSelector label="默认账号" showDetails={false} className="hidden max-w-64 lg:block" />
+              <span className="hidden xl:inline-flex">{extBadge}</span>
 
               <button
                 type="button"
                 onClick={() => setPaletteOpen(true)}
-                className="hidden h-8 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs text-muted-foreground transition-colors hover:bg-muted sm:inline-flex"
+                className="hidden h-8 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs text-muted-foreground transition-colors hover:bg-muted xl:inline-flex"
               >
                 <PanelLeft className="hidden" aria-hidden />
-                命令面板
+                搜索
                 <kbd className="rounded border border-border bg-muted px-1 font-mono text-[10px]">
                   ⌘K
                 </kbd>
@@ -360,16 +360,14 @@ function WorkspaceShell() {
             </div>
           </header>
 
-          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-5 py-2">
-            <nav aria-label="当前工作区" className="flex flex-wrap gap-1">
+          <div className={`${multiplePages ? "flex" : "flex lg:hidden"} shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-card px-5 py-2`}>
+            {multiplePages && <nav aria-label="当前工作区" className="flex flex-wrap gap-1">
               {NAV.filter(item => workspace?.pages.includes(item.to)).map(item => <button key={item.to} type="button" onClick={() => { if (!item.match.test(location.pathname)) navigate(item.to); }} aria-current={item.match.test(location.pathname) ? "page" : undefined} className={`rounded-md px-2.5 py-1.5 text-xs transition-colors ${item.match.test(location.pathname) ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/60"}`}>{item.label}</button>)}
-            </nav>
-            <WorkspaceAccountSelector label="创作默认账号" showDetails={false} className="max-w-full" />
+            </nav>}
+            <WorkspaceAccountSelector label="默认账号" showDetails={false} className="ml-auto max-w-full lg:hidden" />
           </div>
 
           <main className="min-h-0 flex-1 overflow-y-auto">
-            {readOnly && <p role="status" className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">只读连接：可查看已有数据，修改与后台任务已停用。</p>}
-            {import.meta.env.VITE_PREVIEW_NOTICE && <p role="status" className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{import.meta.env.VITE_PREVIEW_NOTICE}</p>}
             <Outlet />
           </main>
         </AnimatedSidebarInset>

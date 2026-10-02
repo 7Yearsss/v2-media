@@ -99,12 +99,12 @@ export function DraftCover({ draftId, beforeGenerate }: { draftId: number; befor
           <TemplateSymbol id={t.id} /><span>{t.name}</span>
         </button>)}
       </div>
-      <label className="block space-y-1 text-xs text-muted-foreground"><span>封面大字（最多 36 字，可换行）</span>
+      <label className="block space-y-1 text-xs text-muted-foreground"><span>封面文字 · 36 字</span>
         <textarea aria-label="封面大字" value={headline} onChange={e => setHeadline(e.target.value)} maxLength={36} rows={2}
           className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary" />
       </label>
       <Input value={subtitle} onChange={setSubtitle} placeholder="底部一句话（可选）" aria-label="封面补充文字" />
-      {template === "checklist" && <label className="block space-y-1 text-xs text-muted-foreground"><span>2–4 个要点，每行一个，沿用正文真实内容</span>
+      {template === "checklist" && <label className="block space-y-1 text-xs text-muted-foreground"><span>要点 · 每行一条</span>
         <textarea aria-label="封面要点" rows={3} value={points} onChange={e => setPoints(e.target.value)} className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary" />
       </label>}
       {template === "comparison" && <div className="grid grid-cols-2 gap-2">
@@ -121,7 +121,7 @@ export function DraftCover({ draftId, beforeGenerate }: { draftId: number; befor
         {sending ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
         {rendering ? "按新参数重新生成" : draft.coverAssetId ? "重新生成封面" : "生成封面"}
       </Button>
-      <p className="text-[11px] leading-5 text-muted-foreground">生成后作为第一张图，其余图片会保留。未保存的封面参数不会影响当前图片。</p>
+      <p className="text-[11px] leading-5 text-muted-foreground">生成后用作首图</p>
     </>}
   </section>;
 }

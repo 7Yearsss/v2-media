@@ -28,10 +28,10 @@ function TaskRow({ task, onNavigate }: { task: WorkspaceTask; onNavigate: () => 
           <span className="ml-auto text-[11px] text-muted-foreground" title={fmtDateTime(task.updatedAt)}>{timeAgo(task.updatedAt)}</span>
         </div>
         <p className="mt-1 truncate text-[13px]" title={task.object?.title}>{task.object?.title ?? (task.kind === "media_store" ? "采集素材" : "关联内容已移除或未指定")}{task.object?.archived && <span className="ml-1 text-[11px] text-muted-foreground">已归档</span>}</p>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{task.description}</p>
+        {(["unknown", "failed", "blocked", "partial"].includes(task.state) || task.nextCheckKind === "scheduled" || task.description.includes("失效")) && <p className="mt-1 text-xs leading-5 text-muted-foreground">{task.state === "unknown" && task.source === "publish" ? "请先核对站点，勿直接重发。" : task.description}</p>}
         {task.state === "running" && <p className="mt-1 text-xs text-muted-foreground">{task.stage}</p>}
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-          <span>{task.account ? `${task.account.nickname}${task.account.archived ? " · 已归档" : ""}` : "未绑定账号"}</span>
+          {task.object?.type !== "account" && <span>{task.account ? `${task.account.nickname}${task.account.archived ? " · 已归档" : ""}` : "未绑定账号"}</span>}
           <span title={`原始状态：${task.rawStatus}`}>#{task.id}</span>
           {task.nextCheckAt && task.nextCheckKind && <span>{nextLabels[task.nextCheckKind]} {fmtDateTime(task.nextCheckAt)}</span>}
         </div>
@@ -62,10 +62,10 @@ export function TaskCenter({ open, onOpenChange, accountId }: TaskCenterProps) {
     return () => { window.removeEventListener("keydown", trap); previous?.focus(); };
   }, [open]);
   const data = query.data;
-  return <Drawer open={open} onOpenChange={onOpenChange} ariaLabel="任务中心" className="w-[480px] max-w-full bg-card shadow-xl" backdropClassName="bg-black/20 backdrop-blur-none">
+  return <Drawer open={open} onOpenChange={onOpenChange} ariaLabel="任务中心" className="w-[480px] max-w-full bg-card" backdropClassName="bg-black/20 backdrop-blur-none">
     <div ref={content} className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-4">
-        <div className="min-w-0 flex-1"><h2 className="text-base font-semibold">任务中心</h2><p className="mt-1 text-xs text-muted-foreground">{accountId ? "当前账号的关联任务" : "全部账号与未绑定账号的任务"}</p></div>
+        <div className="min-w-0 flex-1"><h2 className="text-base font-semibold">任务</h2><p className="mt-1 text-xs text-muted-foreground">{accountId ? "当前账号" : "全部账号"}</p></div>
         <Button size="icon" variant="ghost" aria-label="刷新任务" disabled={!query.available || query.isFetching} onClick={() => void query.refetch()}><RefreshCw className={cn("size-4", query.isFetching && "motion-safe:animate-spin")} /></Button>
         <button ref={closeButton} type="button" aria-label="关闭任务中心" onClick={() => onOpenChange(false)} className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"><X className="size-4" /></button>
       </header>
@@ -84,8 +84,7 @@ export function TaskCenter({ open, onOpenChange, accountId }: TaskCenterProps) {
         </>}
       </div>
       <footer className="shrink-0 border-t border-border px-5 py-3 text-[11px] leading-5 text-muted-foreground">
-        <p>此处只观察状态，停止、重试与核对请在关联页面处理。</p>
-        {data && <p>读取于 {fmtDateTime(data.observedAt)}{data.refreshAfterMs ? ` · 可见且在线时每 ${data.refreshAfterMs / 1000} 秒刷新` : " · 当前范围无需自动刷新"}</p>}
+        {data && <p>更新于 {fmtDateTime(data.observedAt)}</p>}
       </footer>
     </div>
   </Drawer>;

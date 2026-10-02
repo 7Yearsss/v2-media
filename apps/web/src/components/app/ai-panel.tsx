@@ -223,7 +223,7 @@ export function AiPanel({
           onClick={() => void startTitles()}
         >
           <ListPlus className="size-3.5" />
-          生成 5 个标题
+          生成标题
         </Button>
         <Button
           size="sm"
@@ -233,7 +233,7 @@ export function AiPanel({
           onClick={() => void startTags()}
         >
           <Hash className="size-3.5" />
-          话题标签
+          标签
         </Button>
       </div>
 
@@ -301,17 +301,13 @@ export function AiPanel({
             </div>
           ))}
         </div>
-      ) : (
-        <p className="mb-3 text-xs leading-5 text-muted-foreground">
-          用快捷指令一键改写/起标题/生成话题，或在下方输入自定义改写要求。
-        </p>
-      )}
+      ) : null}
 
       <PromptInput
         className="rounded-lg"
         value={prompt}
         onValueChange={setPrompt}
-        placeholder="对正文的改写要求，回车发送…"
+        placeholder="改写要求…"
         minRows={2}
         maxRows={5}
         loading={busy}

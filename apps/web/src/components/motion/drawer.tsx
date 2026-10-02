@@ -92,10 +92,10 @@ export function Drawer({
               }
               {...gate}
               className={cn(
-                "fixed inset-y-0 z-50 flex w-80 max-w-[85vw] flex-col bg-background shadow-2xl",
+                "fixed inset-y-0 z-50 flex w-80 max-w-[85vw] flex-col overflow-hidden rounded-[24px] border border-border bg-background shadow-[0_16px_48px_-16px_rgb(0_0_0_/_0.24)] sm:inset-y-2",
                 side === "right"
-                  ? "right-0 border-l border-border"
-                  : "left-0 border-r border-border",
+                  ? "right-0 sm:right-2"
+                  : "left-0 sm:left-2",
                 className,
               )}
             >

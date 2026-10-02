@@ -293,7 +293,7 @@ function HistoryMenu({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex h-9 items-center gap-1.5 rounded-full border border-border px-3.5 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+        className="flex h-9 items-center gap-1.5 rounded-xl border border-border px-3.5 text-sm text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
       >
         <FileText className="size-3.5" />
         历史 {items.length}
@@ -430,7 +430,7 @@ export default function AnalysisPage() {
 
   return (
     <div className="workspace-page flex flex-col gap-5">
-      <header><h1 className="workspace-page-title">找到下一篇的依据</h1><p className="mt-2 text-sm text-muted-foreground">选择资料范围与写作账号，把样本里的做法变成有来源的选题。</p></header>
+      <header><h1 className="workspace-page-title">AI 分析</h1></header>
       {invalidAddress && <p role="alert" className="rounded-lg border border-border p-3 text-xs text-muted-foreground">无法访问指定采集库或报告，地址无效或内容不属于当前用户。<button className="ml-2 text-primary" onClick={() => setParams(current => {
         const next = new URLSearchParams(current); next.delete("col"); next.delete("report"); return next;
       }, { replace: true })}>移除地址参数</button></p>}
@@ -441,7 +441,7 @@ export default function AnalysisPage() {
             key={col.id}
             onClick={() => pickReport(col.id, null)}
             className={cn(
-              "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors",
+              "flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-sm transition-colors",
               colId === col.id
                 ? "border-primary bg-primary/10 text-primary"
                 : "border-border hover:border-foreground/30",
@@ -453,8 +453,8 @@ export default function AnalysisPage() {
         ))}
         {!(cols.data?.items.length ?? 0) && (
           <EmptyState
-            title="还没有采集库"
-            description="先在插件 popup 或内容库页创建一个库，并采集一些笔记进来"
+            title="暂无采集库"
+            description="创建采集库并添加笔记后开始分析"
           />
         )}
         {colId != null && (
@@ -480,13 +480,13 @@ export default function AnalysisPage() {
           />
         )}
         {colId != null && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">本次分析账号
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">分析账号
             <select aria-label="分析目标账号" value={accountId} onChange={e => { setAccountOverride(e.target.value); updatePositioning(""); }}
-              className="h-9 rounded-full border border-border bg-card px-3 text-sm text-foreground">
+              className="h-9 rounded-xl border border-border bg-card px-3 text-sm text-foreground">
               <option value="">通用分析</option>{accountUnavailable && <option value={accountId} disabled>原目标账号不可用</option>}
               {workspace.accounts.map(a => <option key={a.id} value={a.id}>{a.nickname || a.xhsUserId}</option>)}
             </select>
-            {accountOverride !== null && <button type="button" className="text-primary" onClick={() => setAccountOverride(null)}>跟随写作账号</button>}
+            {accountOverride !== null && <button type="button" className="text-primary" onClick={() => setAccountOverride(null)}>使用默认账号</button>}
           </label>
         )}
         {colId != null && (
@@ -496,25 +496,27 @@ export default function AnalysisPage() {
             maxLength={1000}
             aria-label="本次分析定位"
             placeholder="本次定位（留空使用账号设置）"
-            className="h-9 w-72 rounded-full border border-border bg-card px-4 text-sm outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-primary"
+            className="h-9 w-72 rounded-xl border border-border bg-card px-4 text-sm outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-primary"
           />
         )}
       </div>
       {colId !== null && <nav aria-label="分析关联内容" className="flex flex-wrap gap-4 text-xs text-primary">
-        <Link to={`/library?col=${colId}`}>查看本库样本</Link>
-        {active?.data.persona?.accountId && <Link to={`/accounts?account=${active.data.persona.accountId}`}>此报告使用的账号</Link>}
+        <Link to={`/library?col=${colId}`}>查看样本</Link>
+        {active?.data.persona?.accountId && <Link to={`/accounts?account=${active.data.persona.accountId}`}>报告账号</Link>}
       </nav>}
       {colId !== null && (accountUnknown || accountUnavailable) && <p role="alert" className="text-xs text-destructive">{accountUnknown ? "账号状态未知，确认后才能开始新分析。" : "本次分析账号已归档或不可访问，请明确重新选择。"}</p>}
       {active?.aiRunId && <AiRunStatus key={active.aiRunId} id={active.aiRunId} onChange={() => {
         void queryClient.invalidateQueries({ queryKey: ["analyses", active.collectionId] });
         void queryClient.invalidateQueries({ queryKey: ["analysis-detail", active.collectionId, active.id] });
       }} />}
-      {active?.data.persona && <p className="text-xs leading-5 text-muted-foreground">
-        此报告使用：{active.data.persona.nickname || "通用风格"}
-        {active.data.persona.positioning ? ` · ${active.data.persona.positioning}` : ""}
-        {active.data.persona.styleNotes ? ` · 风格：${active.data.persona.styleNotes}` : ""}
-        {active.data.persona.redlines ? ` · 红线：${active.data.persona.redlines}` : ""}
-      </p>}
+      {active?.data.persona && <details className="text-xs leading-5 text-muted-foreground">
+        <summary className="cursor-pointer">报告人设 · {active.data.persona.nickname || "通用风格"}</summary>
+        <div className="mt-2 space-y-1">
+          {active.data.persona.positioning && <p>定位：{active.data.persona.positioning}</p>}
+          {active.data.persona.styleNotes && <p>风格：{active.data.persona.styleNotes}</p>}
+          {active.data.persona.redlines && <p>红线：{active.data.persona.redlines}</p>}
+        </div>
+      </details>}
 
       {colId != null && (
         <div>
@@ -531,7 +533,7 @@ export default function AnalysisPage() {
             {detail.isError && <PageError error={detail.error instanceof ApiError && detail.error.status === 404 ? new Error("无法访问指定报告，请核对地址和当前登录用户。") : detail.error} onRetry={() => void detail.refetch()} />}
             {active?.status === "failed" ? (
               <div className="flex flex-col items-start gap-2 rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6">
-                <div className="font-semibold text-rose-600">分析没跑完</div>
+                <div className="font-semibold text-rose-600">分析未完成</div>
                 <div className="text-xs text-muted-foreground">{active.error || "AI 调用失败"}</div>
               </div>
             ) : active ? (
@@ -543,7 +545,7 @@ export default function AnalysisPage() {
             ) : (
               !analyze.isPending && !params.has("report") && !detail.isError && !invalidAddress && (
                 <EmptyState
-                  title="选择库后点「开始分析」"
+                  title="选择采集库开始分析"
                 />
               )
             )}

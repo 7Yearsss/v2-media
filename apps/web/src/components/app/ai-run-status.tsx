@@ -31,7 +31,7 @@ export function AiRunStatus({ id, onChange }: { id: number; onChange: () => void
   if (!run || run.status === "done") return null;
   return <div className="workspace-panel flex flex-wrap items-center gap-3 px-4 py-3 text-xs">
     <span className="flex items-center gap-2 font-medium">{["queued", "running"].includes(run.status) && <Loader2 className="size-3.5 animate-spin" />}{labels[run.status]}</span>
-    <span className="min-w-0 flex-1 text-muted-foreground">{run.errorMessage || (run.status === "queued" ? "任务已保存，页面刷新后可以继续查看" : "按创建时的资料与账号设置处理")}</span>
+    {run.errorMessage && <span className="min-w-0 flex-1 text-muted-foreground">{run.errorMessage}</span>}
     {run.status === "failed" && <Button size="sm" variant="outline" disabled={busy || readOnly} onClick={() => void action(true)}>按原输入重试</Button>}
     {["queued", "running"].includes(run.status) && <Button size="sm" variant="ghost" disabled={busy || readOnly} onClick={() => void action(false)}>停止本次分析</Button>}
   </div>;

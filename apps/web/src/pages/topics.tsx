@@ -176,12 +176,9 @@ function NewTopicDrawer({
       <div className="flex h-full flex-col">
         <div className="border-b border-border px-6 py-4">
           <h2 className="text-base font-semibold text-foreground">新建选题</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            记下一个内容方向，后续可深评、排期、转草稿
-          </p>
         </div>
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
-          {prefill?.experiment && <p className="rounded-lg border border-border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">来自复盘的手工选题，确认后保存。以下文字可编辑，不作为已验证的分析来源。</p>}
+          {prefill?.experiment && <p className="rounded-xl border border-border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">复盘实验 · 手工选题，尚未验证。编辑后确认保存。</p>}
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">选题标题</p>
             <Input value={title} onChange={setTitle} placeholder="例：新手露营装备避坑清单" />
@@ -192,7 +189,7 @@ function NewTopicDrawer({
               value={angle}
               onChange={(e) => setAngle(e.target.value)}
               rows={4}
-              placeholder="从哪个角度写、覆盖哪些要点…"
+              placeholder="角度与要点"
               className="w-full resize-none rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/50"
             />
           </div>
@@ -307,13 +304,10 @@ function AiTopicsDrawer({
       <div className="flex h-full flex-col">
         <div className="border-b border-border px-6 py-4">
           <h2 className="text-base font-semibold text-foreground">AI 生成选题</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            分析采集库里的爆款笔记，沿同赛道换角度产出新选题，并做七维评分
-          </p>
         </div>
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
           <div>
-            <p className="mb-1.5 text-xs font-medium text-muted-foreground">基于哪个采集库</p>
+            <p className="mb-1.5 text-xs font-medium text-muted-foreground">来源采集库</p>
             <Select value={collectionId} onValueChange={setCollectionId}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="选择采集库…" />
@@ -406,7 +400,7 @@ function AiRunNotice({ run, onChanged }: { run: AiRun; onChanged: () => void }) 
       </div>
       {run.errorMessage && <p className="mt-2 leading-5 text-muted-foreground">{run.errorMessage}</p>}
       {isActiveAiRun(run) && run.progress?.steps?.length ? <p className="mt-2 leading-5 text-muted-foreground">{run.progress.steps.at(-1)}</p> : null}
-      {run.status === "done" && run.result && "count" in run.result && <p className="mt-2 text-muted-foreground">已生成 {run.result.count} 个选题并写入选题池</p>}
+      {run.status === "done" && run.result && "count" in run.result && <p className="mt-2 text-muted-foreground">已生成 {run.result.count} 个选题</p>}
     </div>
   );
 }
@@ -651,7 +645,7 @@ export default function TopicsPage() {
 
   return (
     <div className="workspace-page space-y-5">
-      <header><h1 className="workspace-page-title">为下一篇选个方向</h1><p className="mt-2 text-sm text-muted-foreground">把灵感、样本依据和账号匹配放在一起，再决定先写哪一篇。</p></header>
+      <header><h1 className="workspace-page-title">选题</h1></header>
       <div className="flex flex-wrap items-center gap-2">
         {STATUS_TABS.map((t) => (
           <button
@@ -685,15 +679,14 @@ export default function TopicsPage() {
 
       {(generationRuns.isError || scoreRuns.isError) && <p role="alert" className="rounded-xl border border-border p-3 text-xs text-muted-foreground">任务记录暂时无法读取，结果未知；连接恢复后刷新查看。</p>}
       {!!runs.length && <section className="space-y-2" aria-label="AI 任务记录">
-        <p className="text-xs font-medium text-muted-foreground">AI 任务 · 进度保存在服务器，可离开页面后继续查看</p>
+        <p className="text-xs font-medium text-muted-foreground">AI 任务</p>
         {runs.filter((run, index) => isActiveAiRun(run) || index < 3).map(run => <AiRunNotice key={run.id} run={run} onChanged={refresh} />)}
       </section>}
 
       {!items.length ? (
         <EmptyState
           icon={Lightbulb}
-          title={status ? "这个状态下还没有选题" : "选题池还是空的"}
-          description="手填一个方向，或让 AI 从采集库里的爆款帮你生成"
+          title={status ? "暂无此状态的选题" : "暂无选题"}
           action={
             <Button variant="ghost" onClick={() => setAiOpen(true)} disabled={!collections.length || readOnly}>
               <Sparkles className="size-4" />
@@ -713,7 +706,7 @@ export default function TopicsPage() {
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-foreground">{t.title}</p>
                   <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                    {t.angle || "（无切入角度）"}
+                    {t.angle || "未设置角度"}
                   </p>
                 </div>
                 {t.score != null && (

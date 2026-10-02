@@ -338,11 +338,11 @@ export default function DraftsPage() {
   );
 
   return (
-    <div inert={preparingPublish || undefined} aria-busy={preparingPublish} className="grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
+    <div inert={preparingPublish || undefined} aria-busy={preparingPublish} className="workspace-editor grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
       {/* 左栏：草稿队列（滑动删除） */}
       <aside className="flex max-h-[240px] min-h-0 flex-col border-b border-border bg-[var(--workspace-rail)] lg:max-h-[calc(100dvh-96px)] lg:border-b-0 lg:border-r xl:max-h-none">
         <div className="flex min-h-14 items-center justify-between border-b border-border px-4 py-2.5">
-          <p className="text-[13px] font-semibold text-foreground">草稿队列</p>
+          <p className="text-[13px] font-semibold text-foreground">草稿</p>
           <Button
             size="sm"
             className="rounded-md"
@@ -683,7 +683,7 @@ export default function DraftsPage() {
         <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-1">
           <div className="mx-auto w-full max-w-[280px] xl:max-w-none">
             <p className="mb-3 text-[11px] font-medium text-muted-foreground">
-              小红书卡片预览
+              预览
             </p>
             <XhsNotePreview
               className="rounded-xl shadow-none"
