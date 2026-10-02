@@ -12,9 +12,15 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Check production runtime setting
+        run: test "$V2MEDIA_RUNTIME_MODE" = "production-worker"
+        env:
+          V2MEDIA_RUNTIME_MODE: ${{ vars.V2MEDIA_RUNTIME_MODE }}
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -56,8 +62,18 @@ jobs:
 
       - name: Install deps + explicit migrations + restart service
         run: |
-          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
-            'cd ~/apps/v2-media && npm install --no-audit --no-fund && npm run db:migrate -w @v2media/server && sudo -n systemctl restart v2-media && sleep 2 && curl -sf http://127.0.0.1:3000/health'
+          test "$V2MEDIA_RUNTIME_MODE" = "production-worker"
+          ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" "bash -s -- $V2MEDIA_RUNTIME_MODE" <<'DEPLOY'
+          set -eu
+          cd ~/apps/v2-media
+          python3 scripts/configure-runtime.py --mode "$1"
+          npm install --no-audit --no-fund
+          npm run db:migrate -w @v2media/server
+          sudo -n systemctl restart v2-media
+          sleep 2
+          curl -sf http://127.0.0.1:3000/health
+          DEPLOY
         env:
+          V2MEDIA_RUNTIME_MODE: ${{ vars.V2MEDIA_RUNTIME_MODE }}
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
