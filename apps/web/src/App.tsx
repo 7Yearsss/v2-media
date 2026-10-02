@@ -8,17 +8,21 @@ import {
 import { AppShell } from "@/components/app/app-shell";
 import { NotFoundSpotlight } from "@/components/motion/not-found";
 import { useAuth } from "@/lib/auth";
-import AccountsPage from "@/pages/accounts";
-import AnalysisPage from "@/pages/analysis";
-import TopicsPage from "@/pages/topics";
-import DashboardPage from "@/pages/dashboard";
-import DraftsPage from "@/pages/drafts";
-import ExtensionPage from "@/pages/extension";
-import LibraryPage from "@/pages/library";
-import LoginPage from "@/pages/login";
-import PublishPage from "@/pages/publish";
-import InsightsPage from "@/pages/insights";
-import CollectionTasksPage from "@/pages/collection-tasks";
+import { RoutePage } from "@/components/app/route-page";
+
+const pages = {
+  login: () => import("@/pages/login"),
+  dashboard: () => import("@/pages/dashboard"),
+  library: () => import("@/pages/library"),
+  analysis: () => import("@/pages/analysis"),
+  topics: () => import("@/pages/topics"),
+  drafts: () => import("@/pages/drafts"),
+  accounts: () => import("@/pages/accounts"),
+  publish: () => import("@/pages/publish"),
+  insights: () => import("@/pages/insights"),
+  collectionTasks: () => import("@/pages/collection-tasks"),
+  extension: () => import("@/pages/extension"),
+};
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { token } = useAuth();
@@ -32,7 +36,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={<RoutePage load={pages.login} />} />
       <Route
         element={
           <RequireAuth>
@@ -40,18 +44,18 @@ export default function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<DashboardPage />} />
-        <Route path="library" element={<LibraryPage />} />
-        <Route path="analysis" element={<AnalysisPage />} />
-        <Route path="topics" element={<TopicsPage />} />
-        <Route path="drafts" element={<DraftsPage />} />
-        <Route path="drafts/:id" element={<DraftsPage />} />
-        <Route path="accounts" element={<AccountsPage />} />
-        <Route path="publish" element={<PublishPage />} />
-        <Route path="insights" element={<InsightsPage />} />
-        <Route path="insights/:id" element={<InsightsPage />} />
-        <Route path="collection-tasks" element={<CollectionTasksPage />} />
-        <Route path="extension" element={<ExtensionPage />} />
+        <Route index element={<RoutePage load={pages.dashboard} />} />
+        <Route path="library" element={<RoutePage load={pages.library} />} />
+        <Route path="analysis" element={<RoutePage load={pages.analysis} />} />
+        <Route path="topics" element={<RoutePage load={pages.topics} />} />
+        <Route path="drafts" element={<RoutePage load={pages.drafts} />} />
+        <Route path="drafts/:id" element={<RoutePage load={pages.drafts} />} />
+        <Route path="accounts" element={<RoutePage load={pages.accounts} />} />
+        <Route path="publish" element={<RoutePage load={pages.publish} />} />
+        <Route path="insights" element={<RoutePage load={pages.insights} />} />
+        <Route path="insights/:id" element={<RoutePage load={pages.insights} />} />
+        <Route path="collection-tasks" element={<RoutePage load={pages.collectionTasks} />} />
+        <Route path="extension" element={<RoutePage load={pages.extension} />} />
         <Route
           path="*"
           element={

@@ -59,6 +59,8 @@ export interface MorphingSearchProps {
 	defaultOpen?: boolean;
 	onOpenChange?: (open: boolean) => void;
 	onQueryChange?: (query: string) => void;
+	/** Controlled filters survive closing and reopening the search overlay. */
+	value?: string;
 	onSelect?: (item: MorphingSearchItem) => void;
 	className?: string;
 }
@@ -89,11 +91,14 @@ export function MorphingSearch({
 	defaultOpen = false,
 	onOpenChange,
 	onQueryChange,
+	value: controlledQuery,
 	onSelect,
 	className,
 }: MorphingSearchProps) {
 	const [internalOpen, setInternalOpen] = useState(defaultOpen);
-	const [query, setQuery] = useState("");
+	const [internalQuery, setQuery] = useState("");
+	const query = controlledQuery ?? internalQuery;
+	const queryControlled = controlledQuery !== undefined;
 	const [mounted, setMounted] = useState(false);
 	const [backgroundScrollLocked, setBackgroundScrollLocked] =
 		useState(defaultOpen);
@@ -168,9 +173,9 @@ export function MorphingSearch({
 	);
 
 	const closeSearch = useCallback(() => {
-		updateQuery("");
+		if (!queryControlled) updateQuery("");
 		setOpen(false);
-	}, [setOpen, updateQuery]);
+	}, [setOpen, updateQuery, queryControlled]);
 
 	useEffect(() => setMounted(true), []);
 
@@ -269,7 +274,7 @@ export function MorphingSearch({
 	// Only this component's own state. Telling the consumer the query changed is
 	// a side effect, so it waits for the effect below.
 	useOnOpen(open, () => {
-		setQuery("");
+		if (!queryControlled) setQuery("");
 		moveTo(null);
 	});
 
@@ -284,7 +289,7 @@ export function MorphingSearch({
 
 	useEffect(() => {
 		if (open) {
-			notifyQuery.current?.("");
+			if (!queryControlled) notifyQuery.current?.("");
 			const frame = requestAnimationFrame(() => inputRef.current?.focus());
 			return () => cancelAnimationFrame(frame);
 		}
@@ -299,7 +304,7 @@ export function MorphingSearch({
 			});
 			return () => cancelAnimationFrame(frame);
 		}
-	}, [open]);
+	}, [open, queryControlled]);
 
 	useEffect(() => {
 		wasOpenRef.current = open;

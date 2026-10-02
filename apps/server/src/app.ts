@@ -21,6 +21,7 @@ import { topicsModule } from "./modules/topics";
 import { insightsModule } from "./modules/insights";
 import { postmortemModule } from "./modules/postmortem";
 import { collectionTasksModule } from "./modules/collection-tasks";
+import { workspaceTasksModule } from "./modules/workspace-tasks";
 import { isReadOnly } from "./runtime";
 import { EXPECTED_SCHEMA_VERSION } from "./db/migrate";
 
@@ -58,6 +59,7 @@ export function createApp(deps: Deps) {
   secured.route("/publish", publishModule(deps));
   secured.route("/topics", topicsModule(deps));
   secured.route("/overview", overviewModule(deps));
+  secured.route("/workspace", workspaceTasksModule(deps));
   secured.route("/ext", extModule(deps));
   secured.route("/collection-tasks", collectionTasksModule(deps));
   secured.route("/ext/collection-tasks", collectionTasksModule(deps, true));

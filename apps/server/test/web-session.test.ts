@@ -7,7 +7,7 @@ let bundle: string;
 beforeAll(async () => {
   const result = await build({
     absWorkingDir: fileURLToPath(new URL("../../../", import.meta.url)),
-    stdin: { contents: 'export * from "./web/src/lib/api.ts"; export * from "./web/src/lib/session-query-scope.ts"; export * from "./web/src/lib/user-storage.ts";', resolveDir: fileURLToPath(new URL("../../", import.meta.url)), loader: "ts" },
+    stdin: { contents: 'export * from "./web/src/lib/api.ts"; export * from "./web/src/lib/session-query-scope.ts"; export * from "./web/src/lib/user-storage.ts"; export { parseWorkspaceAccountSelection, resolveWorkspaceAccountSelection } from "./web/src/lib/account-context.tsx";', resolveDir: fileURLToPath(new URL("../../", import.meta.url)), loader: "ts" },
     bundle: true, write: false, format: "iife", globalName: "webClient", platform: "browser",
     define: { "import.meta.env.VITE_API_BASE_URL": "undefined", "process.env.NODE_ENV": '"test"' },
   });
@@ -145,7 +145,7 @@ describe("actual workbench session client and query scope (offline)", () => {
   });
 
   it("user-local redlines, collection IDs, viewed IDs and positioning are isolated without attributing legacy values", () => {
-    const namespaces = ["v2m.bannedWords", "v2media:library-collection-prefs", "v2media:viewed-notes", "v2m.analysis.positioning"];
+    const namespaces = ["v2m.bannedWords", "v2media:library-collection-prefs", "v2media:viewed-notes", "v2m.analysis.positioning", "v2m.workspace.account"];
     const f = fixture(Object.fromEntries(namespaces.map(key => [key, "unattributed legacy value"])));
     f.session(1);
     const a = namespaces.map(key => f.client.captureUserStorage(key));
@@ -164,5 +164,22 @@ describe("actual workbench session client and query scope (offline)", () => {
     f.client.clearSession();
     const anonymous = f.client.captureUserStorage(namespaces[0]);
     expect(anonymous.key).toBeNull(); expect(anonymous.setItem("anonymous value")).toBe(false);
+  });
+
+  it("an archived or unconfirmed writing account never falls back to another active identity", () => {
+    const { client } = fixture();
+    const parse = client.parseWorkspaceAccountSelection;
+    const resolve = client.resolveWorkspaceAccountSelection;
+    const original = { id: 7, archivedAt: null };
+    const other = { id: 8, archivedAt: null };
+    expect(parse("7")).toBe(7);
+    expect(parse("9007199254740992")).toBe("invalid");
+    expect(parse("7junk")).toBe("invalid");
+    expect(resolve(7, [original, other], "success")).toMatchObject({ status: "ready", account: original });
+    expect(resolve(7, [other], "success")).toEqual({ status: "unavailable", account: null });
+    expect(resolve(7, [{ ...original, archivedAt: "2026-10-02" }, other], "success")).toEqual({ status: "unavailable", account: null });
+    expect(resolve(7, [original], "error")).toEqual({ status: "error", account: null });
+    expect(resolve(7, undefined, "pending")).toEqual({ status: "loading", account: null });
+    expect(resolve(parse("null"), [other], "success")).toEqual({ status: "ready", account: null });
   });
 });

@@ -1,5 +1,6 @@
 import { ArrowUpRight, FileText, LibraryBig, NotebookPen, Plus, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AiRun, CollectSource } from "@v2media/shared";
 import { CompositionChart, type CompositionChartSeries } from "@/components/charts/composition-chart";
@@ -10,21 +11,27 @@ import { api, captureSession, isCurrentSession, mediaUrl, SessionChangedError } 
 import { useRuntime } from "@/lib/hooks/use-runtime";
 import { JOB_STATUS_META, SOURCE_LABEL, formatCount, timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { useWorkspaceAccount } from "@/lib/account-context";
+import { useObservation } from "@/lib/hooks/use-observation";
 
 const runName: Record<AiRun["kind"], string> = { analysis: "资料分析", topic_generate: "生成选题", topic_score: "选题深评" };
 const runLabel: Record<AiRun["status"], string> = { queued: "等待处理", running: "处理中", done: "已完成", failed: "需要重试", canceled: "已停止" };
 
 export default function DashboardPage() {
   const navigate = useNavigate(), client = useQueryClient(), toast = useToast(), { readOnly } = useRuntime();
+  const workspaceAccount = useWorkspaceAccount(), { interval } = useObservation();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const overview = useQuery({ queryKey: ["overview"], queryFn: api.overview });
   const drafts = useQuery({ queryKey: ["drafts"], queryFn: api.drafts });
   const jobs = useQuery({ queryKey: ["publish-jobs"], queryFn: api.jobs });
-  const runs = useQuery({ queryKey: ["ai-runs", "dashboard"], queryFn: () => api.aiRuns(), refetchInterval: q => q.state.data?.items.some(r => ["queued", "running"].includes(r.status)) ? 2500 : false });
+  const runs = useQuery({ queryKey: ["ai-runs", "dashboard"], queryFn: () => api.aiRuns(), refetchInterval: q => interval(!!q.state.data?.items.some(r => ["queued", "running"].includes(r.status)), 2500, false, q.state.fetchFailureCount) });
   const create = useMutation({ mutationFn: async () => {
-    const session = captureSession(), draft = await api.createDraft({});
+    if (!workspaceAccount.canCreate) throw new Error("请先确认有效的写作账号或选择通用风格");
+    const session = captureSession(), draft = await api.createDraft({ accountId: workspaceAccount.accountId ?? undefined });
     if (!isCurrentSession(session)) throw new SessionChangedError(); return { session, draft };
-  }, onSuccess: ({ session, draft }) => { if (!isCurrentSession(session)) return; void client.invalidateQueries({ queryKey: ["drafts"] }); navigate(`/drafts/${draft.id}`); },
-  onError: error => { if (!(error instanceof SessionChangedError)) toast.error("新建草稿失败", error instanceof Error ? error.message : undefined); } });
+  }, onSuccess: ({ session, draft }) => { if (!isCurrentSession(session)) return; void client.invalidateQueries({ queryKey: ["drafts"] }); if (mounted.current) navigate(`/drafts/${draft.id}`); },
+  onError: error => { if (mounted.current && !(error instanceof SessionChangedError)) toast.error("新建草稿失败", error instanceof Error ? error.message : undefined); } });
   if (overview.isPending) return <PageLoading label="加载今日工作…" />;
   if (overview.isError) return <PageError error={overview.error} onRetry={overview.refetch} />;
   const stats = overview.data;
@@ -43,7 +50,7 @@ export default function DashboardPage() {
   return <div className="workspace-page space-y-7">
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="workspace-page-title">把下一篇内容准备好</h1><p className="mt-2 text-sm text-muted-foreground">从资料到成稿，再把发布与复盘接起来。</p></div>
-      <Button size="sm" disabled={readOnly || create.isPending} onClick={() => create.mutate()}><Plus className="size-4" />新建草稿</Button>
+      <Button size="sm" disabled={readOnly || !workspaceAccount.canCreate || create.isPending} onClick={() => create.mutate()}><Plus className="size-4" />新建草稿</Button>
     </header>
     <div className="workspace-panel grid grid-cols-2 md:grid-cols-4">
       {counts.map(item => <Link key={item.label} to={item.link} className="workspace-metric transition-colors hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">

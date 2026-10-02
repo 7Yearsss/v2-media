@@ -5,12 +5,14 @@ import { Button } from "@/components/motion/button";
 import { api, captureSession, isCurrentSession } from "@/lib/api";
 import { useRuntime } from "@/lib/hooks/use-runtime";
 import { useToast } from "@/lib/toast";
+import { useObservation } from "@/lib/hooks/use-observation";
 
 const labels = { queued: "等待处理", running: "正在分析", done: "已完成", failed: "分析已停止", canceled: "已取消" };
 export function AiRunStatus({ id, onChange }: { id: number; onChange: () => void }) {
   const session = useMemo(captureSession, []), client = useQueryClient(), toast = useToast(), { readOnly } = useRuntime();
+  const { interval } = useObservation();
   const retryId = useRef<{ attempt: number; id: string } | null>(null), [busy, setBusy] = useState(false);
-  const query = useQuery({ queryKey: ["ai-run", id], queryFn: () => api.aiRun(id, session), refetchInterval: q => q.state.data && ["queued", "running"].includes(q.state.data.status) ? 2000 : false });
+  const query = useQuery({ queryKey: ["ai-run", id], queryFn: () => api.aiRun(id, session), refetchInterval: q => interval(!!q.state.data && ["queued", "running"].includes(q.state.data.status), 2000, false, q.state.fetchFailureCount) });
   const run = query.data;
   const action = async (retry: boolean) => {
     if (busy || readOnly || !run) return; setBusy(true);

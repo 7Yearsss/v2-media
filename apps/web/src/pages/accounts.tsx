@@ -1,5 +1,6 @@
 import { Link2, PenLine, RefreshCcw, Unplug, Users, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ACCOUNT_PERSONA_LIMITS, type HostedAccount } from "@v2media/shared";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
@@ -13,6 +14,7 @@ import { bridge } from "@/lib/bridge";
 import { ACCOUNT_STATUS_META, timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { useRuntime } from "@/lib/hooks/use-runtime";
+import { useObservation } from "@/lib/hooks/use-observation";
 
 function AccountCard({
   account,
@@ -21,6 +23,7 @@ function AccountCard({
   onEditPersona,
   onRestore,
   readOnly,
+  selected,
 }: {
   account: HostedAccount;
   onUnbind: () => void;
@@ -28,11 +31,12 @@ function AccountCard({
   onEditPersona: () => void;
   onRestore: () => void;
   readOnly: boolean;
+  selected?: boolean;
 }) {
   const meta = ACCOUNT_STATUS_META[account.status] ?? ACCOUNT_STATUS_META.unknown!;
   return (
-    <TiltCard max={8} className="h-full">
-      <div className="flex h-full flex-col gap-4 rounded-2xl border border-border bg-card p-5">
+    <TiltCard max={0} className="h-full">
+      <div className={`flex h-full flex-col gap-4 rounded-xl border bg-card p-5 ${selected ? "border-primary ring-1 ring-primary/20" : "border-border"}`}>
         <div className="flex items-start gap-3">
           {account.avatar ? (
             <img
@@ -162,14 +166,16 @@ export default function AccountsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const { online } = useExtensionStatus();
+  const [searchParams] = useSearchParams(), { interval } = useObservation();
+  const requestedAccount = searchParams.get("account");
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [includeArchived, setIncludeArchived] = useState(false);
+  const [includeArchived, setIncludeArchived] = useState(!!requestedAccount);
   const { readOnly } = useRuntime();
 
   const accountsQuery = useQuery({
     queryKey: includeArchived ? ["accounts", "history"] : ["accounts"],
     queryFn: includeArchived ? api.accountsIncludingArchived : api.accounts,
-    refetchInterval: 30_000,
+    refetchInterval: q => interval(false, 2000, 30_000, q.state.fetchFailureCount),
   });
 
   const unbind = useMutation({
@@ -225,7 +231,9 @@ export default function AccountsPage() {
   };
 
   return (
-    <div className="w-full px-6 pb-8 pt-6">
+    <div className="workspace-page">
+      <header className="mb-5"><h1 className="workspace-page-title">让每个账号有自己的表达</h1><p className="mt-2 text-sm text-muted-foreground">管理定位、风格与红线，并核对浏览器里的登录状态。</p></header>
+      {requestedAccount && accountsQuery.isSuccess && !accountsQuery.data.some(account => String(account.id) === requestedAccount) && <p role="alert" className="mb-4 text-sm text-destructive">指定账号无法读取，请从当前账号列表选择。</p>}
       <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" aria-pressed={includeArchived} onClick={() => setIncludeArchived(v => !v)}>{includeArchived ? "隐藏已解绑账号" : "包含已解绑账号"}</Button>
@@ -283,6 +291,7 @@ export default function AccountsPage() {
               onUnbind={() => unbind.mutate(account.id)}
               onRestore={() => restore.mutate(account.id)}
               readOnly={readOnly}
+              selected={String(account.id) === requestedAccount}
               onEditPersona={() => setEditingId(account.id)}
             />
           ))}

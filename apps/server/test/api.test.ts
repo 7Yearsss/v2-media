@@ -464,6 +464,9 @@ describe("topics 选题池", () => {
     }))).json()) as any;
     expect(t.status).toBe("idea");
     expect(t.sourceType).toBe("manual");
+    const detail = await app.request(`/api/topics/${t.id}`, authed(token));
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ id: t.id, title: "露营装备清单" });
     // plannedAt → planned；清空 → idea
     const planned = (await (await app.request(`/api/topics/${t.id}`, authed(token, {
       method: "PATCH", body: JSON.stringify({ plannedAt: Date.now() + 86400_000 }),
@@ -487,6 +490,7 @@ describe("topics 选题池", () => {
     expect(inArchived.items).toHaveLength(1);
     // 越权
     const { token: t2 } = await registerUser(app, "other@x.yz");
+    expect((await app.request(`/api/topics/${t.id}`, authed(t2))).status).toBe(404);
     expect((await app.request(`/api/topics/${t.id}`, authed(t2, { method: "DELETE" }))).status).toBe(404);
   });
 

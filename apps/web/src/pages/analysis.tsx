@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useSearchParams } from "react-router-dom";
 import type { CollectionAnalysis } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
 import { NumberTicker } from "@/components/motion/number-ticker";
@@ -17,13 +18,15 @@ import { TextReveal } from "@/components/motion/text-reveal";
 import { TextShimmer } from "@/components/motion/text-shimmer";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { AnalysisReport } from "@/components/app/analysis-report";
-import { api, captureSession, isCurrentSession } from "@/lib/api";
+import { api, ApiError, captureSession, isCurrentSession } from "@/lib/api";
 import { useRuntime } from "@/lib/hooks/use-runtime";
 import { AiRunStatus } from "@/components/app/ai-run-status";
 import { formatCount, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
 import { captureUserStorage } from "@/lib/user-storage";
+import { useWorkspaceAccount } from "@/lib/account-context";
+import { useObservation } from "@/lib/hooks/use-observation";
 
 type AnalysisMeta = Omit<CollectionAnalysis, "report" | "data">;
 
@@ -329,13 +332,16 @@ function HistoryMenu({
 export default function AnalysisPage() {
   const session = useMemo(captureSession, []);
   const { readOnly } = useRuntime();
+  const workspace = useWorkspaceAccount();
+  const observation = useObservation();
+  const [params, setParams] = useSearchParams();
   const operation = useRef<{ signature: string; id: string } | null>(null);
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [colId, setColId] = useState<number | null>(null);
-  const [active, setActive] = useState<CollectionAnalysis | null>(null);
-  const [accountId, setAccountId] = useState("");
-  const accounts = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
+  const [accountOverride, setAccountOverride] = useState<string | null>(null);
+  const accountId = accountOverride ?? (workspace.selectedAccountId === null ? "" : String(workspace.selectedAccountId));
+  const accountUnknown = workspace.status === "loading" || workspace.status === "error";
+  const accountUnavailable = !!accountId && !workspace.accounts.some(item => item.id === Number(accountId));
   const [positioningStorage] = useState(() => captureUserStorage("v2m.analysis.positioning"));
   // 目标账号定位：可选，填了建议和选题会贴合它；记在本机
   const [positioning, setPositioning] = useState(() => {
@@ -345,74 +351,74 @@ export default function AnalysisPage() {
     setPositioning(v);
     positioningStorage.setItem(v);
   };
-  // 当前选中库的快照：异步返回时用它丢弃过期结果（换库后旧库报告不顶上来）
-  const colIdRef = useRef<number | null>(null);
-  const reportRequest = useRef(0);
-  colIdRef.current = colId;
-
   const cols = useQuery({ queryKey: ["collections"], queryFn: api.collections });
+  const parseId = (key: string) => {
+    const value = params.get(key);
+    if (params.getAll(key).length !== 1 || !value || !/^[1-9]\d*$/.test(value)) return null;
+    const id = Number(value);
+    return Number.isSafeInteger(id) ? id : null;
+  };
+  const requestedColId = parseId("col");
+  const colId = cols.data?.items.some(item => item.id === requestedColId) ? requestedColId : null;
+  const reportId = parseId("report");
+  const invalidAddress = (params.has("col") && (requestedColId === null || (cols.isSuccess && colId === null)))
+    || (params.has("report") && (reportId === null || !params.has("col")));
+  const viewKey = `${params.getAll("col").join(",")}:${params.getAll("report").join(",")}`;
+  const viewRef = useRef(viewKey);
+  viewRef.current = viewKey;
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const pickReport = (cid: number, aid: number | null, replace = false) => setParams(current => {
+    const next = new URLSearchParams(current);
+    next.set("col", String(cid));
+    if (aid === null) next.delete("report"); else next.set("report", String(aid));
+    return next;
+  }, { replace });
   const analyses = useQuery({
     queryKey: ["analyses", colId],
-    queryFn: () => api.collectionAnalyses(colId!),
+    queryFn: () => api.collectionAnalyses(colId!, session),
     enabled: colId != null,
   });
-  // 选中库后，没有正在看的报告就自动打开最近一份已完成的
+  // Only an address without an explicit report may choose the latest history row.
   useEffect(() => {
-    if (active || !colId || loadAnalysis.isPending) return;
+    if (!colId || params.has("report") || invalidAddress || operation.current || !isCurrentSession(session)) return;
     const latest = analyses.data?.items.find(a => a.status === "running") ?? analyses.data?.items[0];
-    if (latest) loadAnalysis.mutate({ cid: colId, aid: latest.id });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analyses.data, colId, active]);
-  const loadAnalysis = useMutation({
-    mutationFn: async ({ cid, aid }: { cid: number; aid: number }) => {
-      const serial = ++reportRequest.current;
-      return { row: await api.collectionAnalysis(cid, aid), serial };
-    },
-    onSuccess: ({ row, serial }) => {
-      if (serial === reportRequest.current && isCurrentSession(session) && row.collectionId === colIdRef.current) setActive(row);
-    },
-    onError: (e) => toast.error("读取报告失败", e instanceof Error ? e.message : undefined),
+    if (latest) pickReport(colId, latest.id, true);
+  }, [analyses.data, colId, params, invalidAddress, session]);
+  const detail = useQuery({
+    queryKey: ["analysis-detail", colId, reportId],
+    queryFn: () => api.collectionAnalysis(colId!, reportId!, session),
+    enabled: colId !== null && reportId !== null && !invalidAddress,
+    refetchInterval: query => observation.interval(query.state.data?.status === "running", 2500, false, query.state.fetchFailureCount),
   });
+  const inaccessibleReport = detail.error instanceof ApiError && detail.error.status === 404;
+  const active = !inaccessibleReport && detail.data?.id === reportId && detail.data.collectionId === colId ? detail.data : null;
   const analyze = useMutation({
-    mutationFn: ({ id, positioning }: { id: number; positioning: string }) => {
-      const signature = JSON.stringify([id, accountId, positioning]);
+    mutationFn: async ({ id, positioning, account, view }: { id: number; positioning: string; account: string; view: string }) => {
+      const signature = JSON.stringify([id, account, positioning]);
       if (operation.current?.signature !== signature) operation.current = { signature, id: crypto.randomUUID() };
-      return api.analyzeCollection(id, { operationId: operation.current.id, accountId: accountId ? Number(accountId) : undefined, positioning: positioning || undefined }, session);
+      return { row: await api.analyzeCollection(id, { operationId: operation.current.id, accountId: account ? Number(account) : undefined, positioning: positioning || undefined }, session), view };
     },
-    onSuccess: (row) => {
+    onSuccess: ({ row, view }) => {
       if (!isCurrentSession(session)) return;
-      reportRequest.current++;
       operation.current = null;
-      // 后台异步跑：先拿到 running 行（已含代码算好的信号图），再轮询到完成
       void queryClient.invalidateQueries({ queryKey: ["analyses", row.collectionId] });
-      if (row.collectionId === colIdRef.current) setActive(row);
+      queryClient.setQueryData(["analysis-detail", row.collectionId, row.id], row);
+      if (mounted.current && viewRef.current === view) pickReport(row.collectionId, row.id);
     },
     onError: (e) => { if (isCurrentSession(session)) toast.error("分析请求未确认", e instanceof Error ? e.message : undefined); },
   });
 
-  // 生成中：每 2.5s 拉一次，直到 done/failed
   const running = active?.status === "running" ? active : null;
-  const poll = useQuery({
-    queryKey: ["analysis-run", running?.collectionId, running?.id],
-    queryFn: () => api.collectionAnalysis(running!.collectionId, running!.id),
-    enabled: !!running,
-    refetchInterval: 2500,
-    gcTime: 0,
-  });
-  const polled = poll.data;
+  const observed = useRef<{ id: number; status: string } | null>(null);
   useEffect(() => {
-    if (!polled || !isCurrentSession(session)) return;
-    if (polled.status === "running") {
-      if (polled.collectionId === colIdRef.current) setActive(cur => cur?.id === polled.id ? polled : cur);
-      return;
-    }
-    void queryClient.invalidateQueries({ queryKey: ["analyses", polled.collectionId] });
-    if (polled.collectionId !== colIdRef.current) return;
-    setActive((cur) => (cur?.id === polled.id ? polled : cur));
-    if (polled.status === "done") toast.success("分析完成");
-    else toast.error("分析失败", polled.error ?? undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [polled]);
+    const previous = observed.current;
+    observed.current = active ? { id: active.id, status: active.status } : null;
+    if (!active || !isCurrentSession(session) || previous?.id !== active.id || previous.status !== "running" || active.status === "running") return;
+    void queryClient.invalidateQueries({ queryKey: ["analyses", active.collectionId] });
+    if (active.status === "done") toast.success("分析完成");
+    else toast.error("分析失败", active.error ?? undefined);
+  }, [active, session, queryClient]);
 
   const colName = useMemo(
     () => cols.data?.items.find((x) => x.id === colId)?.name ?? "",
@@ -425,16 +431,15 @@ export default function AnalysisPage() {
   return (
     <div className="workspace-page flex flex-col gap-5">
       <header><h1 className="workspace-page-title">找到下一篇的依据</h1><p className="mt-2 text-sm text-muted-foreground">选择资料范围与写作账号，把样本里的做法变成有来源的选题。</p></header>
+      {invalidAddress && <p role="alert" className="rounded-lg border border-border p-3 text-xs text-muted-foreground">无法访问指定采集库或报告，地址无效或内容不属于当前用户。<button className="ml-2 text-primary" onClick={() => setParams(current => {
+        const next = new URLSearchParams(current); next.delete("col"); next.delete("report"); return next;
+      }, { replace: true })}>移除地址参数</button></p>}
       {/* 采集库选择 */}
       <div className="flex flex-wrap items-center gap-2">
         {(cols.data?.items ?? []).map((col) => (
           <button
             key={col.id}
-            onClick={() => {
-              setColId(col.id);
-              reportRequest.current++;
-              setActive(null);
-            }}
+            onClick={() => pickReport(col.id, null)}
             className={cn(
               "flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm transition-colors",
               colId === col.id
@@ -455,8 +460,8 @@ export default function AnalysisPage() {
         {colId != null && (
           <Button
             size="sm"
-            disabled={readOnly || analyze.isPending || !!running}
-            onClick={() => analyze.mutate({ id: colId, positioning })}
+            disabled={readOnly || analyze.isPending || !!running || accountUnknown || accountUnavailable}
+            onClick={() => analyze.mutate({ id: colId, positioning, account: accountId, view: viewKey })}
             className="ml-1"
           >
             {analyze.isPending || running ? (
@@ -471,15 +476,17 @@ export default function AnalysisPage() {
           <HistoryMenu
             items={analyses.data!.items}
             activeId={active?.id}
-            onPick={(aid) => loadAnalysis.mutate({ cid: colId, aid })}
+            onPick={(aid) => pickReport(colId, aid)}
           />
         )}
         {colId != null && (
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">目标账号
-            <select aria-label="分析目标账号" value={accountId} onChange={e => { setAccountId(e.target.value); updatePositioning(""); }}
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">本次分析账号
+            <select aria-label="分析目标账号" value={accountId} onChange={e => { setAccountOverride(e.target.value); updatePositioning(""); }}
               className="h-9 rounded-full border border-border bg-card px-3 text-sm text-foreground">
-              <option value="">通用分析</option>{accounts.data?.map(a => <option key={a.id} value={a.id}>{a.nickname || a.xhsUserId}</option>)}
+              <option value="">通用分析</option>{accountUnavailable && <option value={accountId} disabled>原目标账号不可用</option>}
+              {workspace.accounts.map(a => <option key={a.id} value={a.id}>{a.nickname || a.xhsUserId}</option>)}
             </select>
+            {accountOverride !== null && <button type="button" className="text-primary" onClick={() => setAccountOverride(null)}>跟随写作账号</button>}
           </label>
         )}
         {colId != null && (
@@ -493,9 +500,14 @@ export default function AnalysisPage() {
           />
         )}
       </div>
+      {colId !== null && <nav aria-label="分析关联内容" className="flex flex-wrap gap-4 text-xs text-primary">
+        <Link to={`/library?col=${colId}`}>查看本库样本</Link>
+        {active?.data.persona?.accountId && <Link to={`/accounts?account=${active.data.persona.accountId}`}>此报告使用的账号</Link>}
+      </nav>}
+      {colId !== null && (accountUnknown || accountUnavailable) && <p role="alert" className="text-xs text-destructive">{accountUnknown ? "账号状态未知，确认后才能开始新分析。" : "本次分析账号已归档或不可访问，请明确重新选择。"}</p>}
       {active?.aiRunId && <AiRunStatus key={active.aiRunId} id={active.aiRunId} onChange={() => {
         void queryClient.invalidateQueries({ queryKey: ["analyses", active.collectionId] });
-        loadAnalysis.mutate({ cid: active.collectionId, aid: active.id });
+        void queryClient.invalidateQueries({ queryKey: ["analysis-detail", active.collectionId, active.id] });
       }} />}
       {active?.data.persona && <p className="text-xs leading-5 text-muted-foreground">
         此报告使用：{active.data.persona.nickname || "通用风格"}
@@ -508,7 +520,7 @@ export default function AnalysisPage() {
         <div>
           {/* 报告区 */}
           <div className="min-w-0">
-            {analyze.isPending && (
+            {(analyze.isPending || (reportId !== null && detail.isPending && !invalidAddress)) && (
               <div className="flex flex-col items-center gap-3 py-16">
                 <Loader2 className="size-8 animate-spin text-muted-foreground" />
                 <TextShimmer className="text-sm text-muted-foreground">
@@ -516,6 +528,7 @@ export default function AnalysisPage() {
                 </TextShimmer>
               </div>
             )}
+            {detail.isError && <PageError error={detail.error instanceof ApiError && detail.error.status === 404 ? new Error("无法访问指定报告，请核对地址和当前登录用户。") : detail.error} onRetry={() => void detail.refetch()} />}
             {active?.status === "failed" ? (
               <div className="flex flex-col items-start gap-2 rounded-3xl border border-rose-500/30 bg-rose-500/10 p-6">
                 <div className="font-semibold text-rose-600">分析没跑完</div>
@@ -528,7 +541,7 @@ export default function AnalysisPage() {
                 <LegacyView key={active.id} a={active} />
               )
             ) : (
-              !analyze.isPending && (
+              !analyze.isPending && !params.has("report") && !detail.isError && !invalidAddress && (
                 <EmptyState
                   title="选择库后点「开始分析」"
                 />

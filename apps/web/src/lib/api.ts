@@ -247,6 +247,8 @@ export function normalizeOverview(raw: unknown): OverviewStats {
 // ---------- 端点 ----------
 
 export const api = {
+  workspaceTasks: (query: import("@v2media/shared").WorkspaceTasksQuery = {}, session?: SessionContext) =>
+    request<import("@v2media/shared").WorkspaceTasksResponse>("/api/workspace/tasks", { query: { ...query } }, session),
   aiRuns: (query: { kind?: import("@v2media/shared").AiRunKind; status?: import("@v2media/shared").AiRunStatus } = {}, session?: SessionContext) =>
     request<{ items: import("@v2media/shared").AiRun[] }>("/api/ai/runs", { query: { ...query } }, session),
   aiRun: (id: number, session?: SessionContext) => request<import("@v2media/shared").AiRun>(`/api/ai/runs/${id}`, {}, session),
@@ -320,10 +322,10 @@ export const api = {
     request<void>(`/api/collections/${id}`, { method: "DELETE" }),
   analyzeCollection: (id: number, opts: CollectionAnalyzeRequest = {}, session?: SessionContext) =>
     request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST", body: opts }, session),
-  collectionAnalyses: (id: number) =>
-    request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`),
-  collectionAnalysis: (id: number, aid: number) =>
-    request<CollectionAnalysis>(`/api/collections/${id}/analyses/${aid}`),
+  collectionAnalyses: (id: number, session?: SessionContext) =>
+    request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`, {}, session),
+  collectionAnalysis: (id: number, aid: number, session?: SessionContext) =>
+    request<CollectionAnalysis>(`/api/collections/${id}/analyses/${aid}`, {}, session),
 
   note: (id: number) => request<NoteDetail>(`/api/notes/${id}`),
   deleteNote: (id: number) =>
@@ -365,8 +367,8 @@ export const api = {
     request<DraftJobResponse>(`/api/drafts/${id}/cover`, { method: "POST", body }, session),
   retryGeneration: (id: number, session?: SessionContext) =>
     request<DraftJobResponse>(`/api/drafts/${id}/generate/retry`, { method: "POST" }, session),
-  createDraft: (body: DraftCreateRequest = {}) =>
-    request<Draft>("/api/drafts", { method: "POST", body }),
+  createDraft: (body: DraftCreateRequest = {}, session?: SessionContext) =>
+    request<Draft>("/api/drafts", { method: "POST", body }, session),
   updateDraft: (id: number, body: DraftUpdateRequest, session?: SessionContext) =>
     request<Draft>(`/api/drafts/${id}`, { method: "PATCH", body }, session),
   deleteDraft: (id: number, session?: SessionContext) =>
@@ -383,6 +385,7 @@ export const api = {
     request<{ items: Topic[] }>("/api/topics", {
       query: { status: status || undefined },
     }),
+  topic: (id: number, session?: SessionContext) => request<Topic>(`/api/topics/${id}`, {}, session),
   createTopic: (body: TopicCreateRequest, session?: SessionContext) =>
     request<Topic>("/api/topics", { method: "POST", body }, session),
   updateTopic: (id: number, body: TopicUpdateRequest) =>

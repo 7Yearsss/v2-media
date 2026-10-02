@@ -17,6 +17,8 @@ React 19 + Vite + Tailwind CSS v4 + shadcn 风格基座 + beUI 组件（已 vend
 
 ## 页面 → 组件映射
 
+R4：左侧收拢为今日/资料/创作/发布/复盘五工作区，资料与创作的二级页面在顶栏下出现；管理区保留账号与插件。顶栏下常驻「创作默认账号」，明确只作用于新动作。任务中心使用 480px 右抽屉与紧凑行，需关注与进行中分别呈现，手机满宽；未知发布只给核对入口。内容关系用真实来源的小型链接串，准备发布仍进入确认表单。参见 [`r4-content-workspace-plan.md`](r4-content-workspace-plan.md)。
+
 | 页面 | 结构 | 关键组件 |
 |---|---|---|
 | 骨架 | 左侧栏（animated-sidebar）+ 顶栏（面包屑 + ⌘K + 通知铃铛 + 头像） | animated-sidebar, command-palette, notification-stack, animated-toast-stack, theme-toggle |

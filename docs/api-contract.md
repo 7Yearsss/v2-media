@@ -37,6 +37,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/ai/titles | `{title,content,count}` → `{titles[]}` |
 | POST | /api/ai/tags | `{title,content,count}` → `{tags[]}` |
 | GET | /api/topics?status= | 选题池列表 `{items:Topic[]}`（联查 collectionName/accountNickname/sourceNoteTitle） |
+| GET | /api/topics/:id | 当前用户的具体选题与关联展示字段；非法 ID 400、不存在/跨用户 404，供深链恢复 |
 | POST | /api/topics | `TopicCreateRequest` → `Topic`（带 plannedAt 则 status=planned；sourceType 按来源自动判定） |
 | PATCH | /api/topics/:id | `TopicUpdateRequest`；plannedAt 设置→planned / 清空→idea；drafted、published 由系统流转，手动改 → 400 |
 | DELETE | /api/topics/:id | |
@@ -54,6 +55,18 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/publish/jobs/:id/cancel | |
 | POST | /api/publish/jobs/:id/retry | `{operationId:UUID}` 原版本重试；同一操作重复返回同一新任务；不接受当前稿替代参数 |
 | GET | /api/overview | 仪表盘计数 |
+| GET | /api/workspace/tasks?filter=&accountId= | R4 集中只读任务观测；`filter=active\|attention\|all`，账号缺省=全部，详见下节 |
+
+## 工作区与集中任务（R4）
+
+- `WorkspaceTask` / `WorkspaceTasksResponse` 在 `packages/shared/src/workspace-tasks.ts`。聚合本用户 `ai_runs`、素材/成稿/封面/复盘/核对/指标/账号快照 jobs、发布与关键词采集；一个 SQL 快照观测，不续租、回收或回写状态。关联对象与账号各自再校验 userId，不返回 payload、冻结输入、提供方错误、凭据或租约标识。
+- filter 为 active/attention/all，账号参数为正整数，本用户归档账号仍可观察历史，跨用户/不存在 404。每个来源/状态组分别保留最近 40 项，返回精确 counts、ranges.total/returned/truncated，已完成历史不能挤掉活动/异常。全部范围没有分页承诺，较早任务回原领域页查看。
+- 发布 running 租约过期派生 `state=unknown/rawStatus=running`，不能据此判断未发布或自动重发。其他领域的过期状态只提示执行器恢复，不在观察请求中更改。下一时间表示排期、退避或有效期，不是准点执行承诺。
+- refreshAfterMs：有 running/已到期 queued 为 5000，只有未来排期 queued 为 30000，纯终态/未知/暂停需人工处理时 null。抽屉只有打开、可见且在线时读取和轮询，失败停止自动重复；可手动重读。操作只跳到原领域页面，不增加第二套取消/重试规则。
+- 全局创作默认账号按 userId 存储，只对新草稿、借鉴草稿、新选题与 AI 分析提供默认值。支持明确通用风格；归档/不可访问或查询错误保留原选择与未知状态，不能擅自替换账号。切换不会更新已有关联对象或历史人设；发布按原草稿优先预填，用户仍要核对目标。
+- 深链：`/analysis?col=&report=`、`/topics?topic=&status=`、`/drafts/:id`、`/publish?job=`、`/collection-tasks?task=`、`/accounts?account=`。资料过滤含 keyword/col/source/tag/range/sort/note，洞察含 account/horizon/private/from/to/offset；详情返回保留原 URL 范围。参数不替代服务端归属检查，非法/跨用户对象显示无法访问。
+- 草稿准备发布先等待原编辑会话保存并读取当前草稿；期间暂停编辑，离页/切稿/换授权的迟到结果不导航。只打开 `/publish?new=1&draft=&account=`，不创建任务。关闭后新建清除旧预填；提交仍使用 persona/text/images 版本并由确认卡发起。复盘实验通过 new/title/angle/account 等预填手工选题，确认后保存，不写伪造 analysisSource 或已验证评分。
+- 页面按 route lazy 拆包，稳定 loader 的 lazy 类型在模块缓存，避免 Suspense 导航反复挂起。正常切稿复用编辑器；只有明确重试才替换类型。失败提供重新加载/刷新应用，不自动刷新。浏览器 ESM 缓存可能继续保留失败，明确刷新能恢复；编辑会话仍按 R1 留存。
 
 ## 持久 AI 分析、选题与深评（R3）
 

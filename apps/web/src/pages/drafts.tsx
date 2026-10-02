@@ -4,11 +4,12 @@ import {
   Loader2,
   PenLine,
   Plus,
+  SendHorizontal,
   Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   applyAllBannedFixes,
@@ -42,14 +43,20 @@ import { useBannedWords } from "@/lib/hooks/use-banned-words";
 import { timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { useWorkspaceAccount } from "@/lib/account-context";
+import { ContentLinks } from "@/components/app/content-links";
 
 export default function DraftsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const requestedReturn = (location.state as { libraryReturn?: unknown } | null)?.libraryReturn;
+  const libraryReturn = typeof requestedReturn === "string" && requestedReturn.startsWith("/library?") && requestedReturn.length <= 4096 ? requestedReturn : null;
   const params = useParams<{ id?: string }>();
   const selectedId = params.id ? Number(params.id) : null;
   const toast = useToast();
   const queryClient = useQueryClient();
   const { readOnly } = useRuntime();
+  const workspaceAccount = useWorkspaceAccount();
   const [includeArchived, setIncludeArchived] = useState(false);
   const session = useMemo(() => captureSession(), []);
   const editor = useMemo(() => new DraftEditSession({
@@ -68,6 +75,8 @@ export default function DraftsPage() {
 
   const draftsQuery = useQuery({ queryKey: includeArchived ? ["drafts", "history"] : ["drafts"], queryFn: includeArchived ? api.draftsIncludingArchived : api.drafts });
   const selectedDetail = useQuery({ queryKey: ["draft-media", selectedId], queryFn: () => api.draft(selectedId!, session), enabled: selectedId !== null });
+  const topicsQuery = useQuery({ queryKey: ["topics", ""], queryFn: () => api.topics(), enabled: selectedId !== null });
+  const publications = useQuery({ queryKey: ["publish-jobs"], queryFn: api.jobs, enabled: selectedId !== null });
   const drafts = useMemo(() => draftsQuery.data ?? [], [draftsQuery.data]);
   const selected = useMemo(
     () => {
@@ -113,6 +122,9 @@ export default function DraftsPage() {
   const savedAt = editView?.savedAt ? new Date(editView.savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : null;
   const timerRef = useRef<number | undefined>(undefined);
   const editingIdRef = useRef<number | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const [preparingPublish, setPreparingPublish] = useState(false);
   const archivingRef = useRef<number | null>(null);
   const showEdit = useCallback((view: DraftEditView) => {
     setEditView(view); setTitle(view.fields.title); setContent(view.fields.content); setTags(view.fields.tags);
@@ -204,13 +216,16 @@ export default function DraftsPage() {
   };
 
   const create = useMutation({
-    mutationFn: () => api.createDraft({ title: "", content: "" }),
-    onSuccess: (draft) => {
-      invalidate();
-      navigate(`/drafts/${draft.id}`);
+    mutationFn: () => {
+      if (!workspaceAccount.canCreate) throw new Error("请先确认有效的写作账号或选择通用风格");
+      return api.createDraft({ title: "", content: "", accountId: workspaceAccount.accountId ?? undefined });
     },
-    onError: (err) =>
-      toast.error("创建失败", err instanceof Error ? err.message : undefined),
+    onSuccess: (draft) => {
+      if (!isCurrentSession(session)) return;
+      invalidate();
+      if (mounted.current) navigate(`/drafts/${draft.id}`);
+    },
+    onError: (err) => { if (mounted.current && isCurrentSession(session)) toast.error("创建失败", err instanceof Error ? err.message : undefined); },
   });
 
   const remove = useMutation({
@@ -323,7 +338,7 @@ export default function DraftsPage() {
   );
 
   return (
-    <div className="grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
+    <div inert={preparingPublish || undefined} aria-busy={preparingPublish} className="grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
       {/* 左栏：草稿队列（滑动删除） */}
       <aside className="flex max-h-[240px] min-h-0 flex-col border-b border-border bg-[var(--workspace-rail)] lg:max-h-[calc(100dvh-96px)] lg:border-b-0 lg:border-r xl:max-h-none">
         <div className="flex min-h-14 items-center justify-between border-b border-border px-4 py-2.5">
@@ -332,7 +347,7 @@ export default function DraftsPage() {
             size="sm"
             className="rounded-md"
             variant="ghost"
-            disabled={create.isPending || readOnly}
+            disabled={create.isPending || readOnly || !workspaceAccount.canCreate}
             onClick={() => create.mutate()}
           >
             <Plus className="size-4" />
@@ -424,6 +439,21 @@ export default function DraftsPage() {
                 </span>
               </div>
               <Button size="sm" className="rounded-md" variant="ghost" disabled={readOnly || remove.isPending} onClick={() => remove.mutate(selected.id)}>归档草稿</Button>
+              <Button size="sm" className="rounded-md" disabled={preparingPublish || readOnly || !title.trim() || !images.length || images.some(image => !image.url) || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || saveState === "saving" || saveState === "conflict"} onClick={() => void (async () => {
+                const draftId = selected.id;
+                setPreparingPublish(true);
+                try {
+                if (!await beforeGenerate() || !mounted.current || !isCurrentSession(session) || editingIdRef.current !== draftId) return;
+                const persisted = await api.draft(draftId, session);
+                if (!mounted.current || !isCurrentSession(session) || editingIdRef.current !== draftId) return;
+                queryClient.setQueryData(["draft-media", draftId], persisted);
+                await queryClient.invalidateQueries({ queryKey: ["drafts"] });
+                if (!mounted.current || !isCurrentSession(session) || editingIdRef.current !== draftId) return;
+                const target = persisted.accountId;
+                navigate(`/publish?new=1&draft=${draftId}${target ? `&account=${target}` : ""}`);
+                } catch (error) { if (mounted.current && isCurrentSession(session)) toast.error("无法准备发布", error instanceof Error ? error.message : undefined); }
+                finally { if (mounted.current && isCurrentSession(session)) setPreparingPublish(false); }
+              })()}><SendHorizontal className="size-3.5" />{preparingPublish ? "正在准备…" : "准备发布"}</Button>
               {selected.status !== "published" ? (
                 <Button
                   size="sm"
@@ -439,6 +469,14 @@ export default function DraftsPage() {
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-7 sm:px-7 xl:px-6">
               <div className="mx-auto w-full max-w-[720px] space-y-5">
+              <ContentLinks current="当前草稿" items={[
+                ...(selected.collectedNoteId ? [{ label: "来源笔记", to: libraryReturn ?? `/library?note=${selected.collectedNoteId}` }] : []),
+                ...(topicsQuery.data?.items.filter(topic => topic.draftId === selected.id).flatMap(topic => [
+                  { label: `选题：${topic.title}`, to: `/topics?topic=${topic.id}` },
+                  ...(topic.analysisSource ? [{ label: "来源分析", to: `/analysis?col=${topic.analysisSource.collectionId}&report=${topic.analysisSource.analysisId}` }] : []),
+                ]) ?? []),
+                ...(publications.data?.filter(job => job.draftId === selected.id).slice(0, 3).map(job => ({ label: `发布 #${job.id}`, to: `/publish?job=${job.id}` })) ?? []),
+              ]} />
               {editView?.recovered && saveState !== "saved" && <p className="text-xs text-amber-600">已恢复本地编辑，保存成功前请保留这些改动。</p>}
               {editView?.error && <div role="alert" className="space-y-2 rounded-xl border border-amber-400/40 p-3 text-xs">
                 <p>{editView.error}</p>

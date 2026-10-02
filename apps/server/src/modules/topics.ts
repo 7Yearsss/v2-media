@@ -116,6 +116,19 @@ export function topicsModule(deps: Deps) {
     });
   });
 
+  app.get("/:id", async c => {
+    const userId = c.get("userId"), id = Number(c.req.param("id"));
+    if (!Number.isSafeInteger(id) || id <= 0) return c.json({ error: "bad topic id" }, 400);
+    const [row] = await deps.db.select(listSelect).from(topics)
+      .leftJoin(collections, and(eq(topics.collectionId, collections.id), eq(collections.userId, userId)))
+      .leftJoin(hostedAccounts, and(eq(topics.accountId, hostedAccounts.id), eq(hostedAccounts.userId, userId)))
+      .leftJoin(collectedNotes, and(eq(topics.sourceNoteId, collectedNotes.id), eq(collectedNotes.userId, userId)))
+      .where(and(eq(topics.id, id), eq(topics.userId, userId))).limit(1);
+    return row ? c.json({ ...row.topic, collectionName: row.collectionName ?? undefined,
+      accountNickname: row.accountNickname ?? undefined, sourceNoteTitle: row.sourceNoteTitle ?? undefined })
+      : c.json({ error: "topic not found" }, 404);
+  });
+
   app.post("/", async (c) => {
     const userId = c.get("userId");
     const parsed = createSchema.safeParse(await c.req.json().catch(() => null));

@@ -37,6 +37,14 @@ npm workspaces，TypeScript 全栈：
 - 提示词在 `src/lib/analysis-prompts.ts`，原则：最短 + 说明原因，只为评测失败加内容；评分器 `src/lib/analysis-grader.ts`，真模型评测 `npx tsx apps/server/scripts/eval-analysis.ts`。
 - `AI_ANALYSIS_MODEL` 可单独指定分析用模型（空=`AI_MODEL`）；慢的推理模型会很久，选响应快的。
 
+## 工作区上下文（R4）
+
+- 前端五工作区保持原有 URL；当前对象与研究/洞察筛选存 URL。`WorkspaceAccountProvider` 只为新动作提供默认账号，先检查 `canCreate`；失效选择保留并要求用户明确选择，不能在切换上下文时 PATCH 已有草稿或历史任务。
+- 内容关系只用本用户 API 实际返回的 ID，不从标题或相邻 ID 猜测。复盘实验预填手工选题，由用户确认，不伪造 `analysisSource`。
+- 草稿准备发布先保存原编辑会话，再读取当前版本；异步结果检查授权、mounted 与当前对象。发布表单有自己的打开代次，旧 ACK 只能刷新原用户数据，不能关闭新表单或把已离开的页面导航回来。
+- `RoutePage` 的 lazy 类型按稳定 loader 在模块缓存；不要只在可挂起的 render/useMemo 内新建 lazy，导航会反复挂起。显式重试才换类型，正常切稿保留 R1 编辑器。
+- `useObservation` 在隐藏/离线停止短轮询，活动/终态区别处理；`GET /api/workspace/tasks` 只观测，不续租/回收/改状态。集中任务的 unknown 发布必须人工核对，不自动重发；截断范围要明示。
+
 ## 生产部署
 
 - 线上： https://xhs.v2api.top → nginx → 127.0.0.1:3000（systemd `v2-media`，目录 `~/apps/v2-media`，Postgres 走 `v2media-postgres` docker on 127.0.0.1:5433）

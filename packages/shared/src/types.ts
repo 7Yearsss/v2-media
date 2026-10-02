@@ -325,6 +325,7 @@ export interface AccountPersonaUpdateRequest {
 
 /** 服务端存的内容库条目。 */
 export interface CollectedNote {
+  collectionId?: number | null;
   authorAvatar?: string;
   id: number;
   noteId: string;

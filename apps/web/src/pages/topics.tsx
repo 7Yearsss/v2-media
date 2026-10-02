@@ -10,7 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AiRun, Collection, HostedAccount, Topic, TopicStatus } from "@v2media/shared";
 import { AnimatedBadge, type AnimatedBadgeStatus } from "@/components/motion/animated-badge";
@@ -25,14 +25,35 @@ import {
   SelectValue,
 } from "@/components/motion/select";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
-import { api, captureSession, isCurrentSession } from "@/lib/api";
+import { api, ApiError, captureSession, isCurrentSession } from "@/lib/api";
 import { AiOperationIds, isActiveAiRun, latestTopicRun, topicRunPollInterval } from "@/lib/topic-run-flow";
 import { useRuntime } from "@/lib/hooks/use-runtime";
 import { fmtDateTime, timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { useWorkspaceAccount } from "@/lib/account-context";
+import { useObservation } from "@/lib/hooks/use-observation";
 
 type TopicRow = Topic;
+
+function positiveId(value: string | null): number | null {
+  if (!value || !/^[1-9]\d*$/.test(value)) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : null;
+}
+
+function useMounted() {
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  return mounted;
+}
+
+interface TopicPrefill {
+  title: string;
+  angle: string;
+  account?: string;
+  experiment: boolean;
+}
 
 const STATUS_META: Record<TopicStatus, { label: string; badge: AnimatedBadgeStatus }> = {
   idea: { label: "想法", badge: "neutral" },
@@ -89,25 +110,41 @@ function NewTopicDrawer({
   collections,
   accounts,
   onCreated,
+  prefill,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   collections: Collection[];
   accounts: HostedAccount[];
   onCreated: () => void;
+  prefill?: TopicPrefill;
 }) {
   const toast = useToast();
   const session = useMemo(captureSession, []);
+  const mounted = useMounted();
   const { readOnly } = useRuntime();
+  const workspace = useWorkspaceAccount();
   const [title, setTitle] = useState("");
   const [angle, setAngle] = useState("");
   const [collectionId, setCollectionId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [plannedAt, setPlannedAt] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      setTitle(prefill?.title ?? "");
+      setAngle(prefill?.angle ?? "");
+      const initialAccount = prefill?.account ?? (workspace.selectedAccountId === null ? "" : String(workspace.selectedAccountId));
+      setAccountId(initialAccount === "" || positiveId(initialAccount) ? initialAccount : "invalid");
+    }
+    wasOpen.current = open;
+  }, [open, prefill, workspace.selectedAccountId]);
+  const accountUnavailable = !!accountId && !accounts.some(item => item.id === Number(accountId));
+  const accountUnknown = workspace.status === "loading" || workspace.status === "error";
 
   const submit = async () => {
-    if (!title.trim() || submitting || readOnly) return;
+    if (!title.trim() || submitting || readOnly || accountUnavailable || accountUnknown) return;
     setSubmitting(true);
     try {
       const planned = plannedAt ? new Date(plannedAt).getTime() : undefined;
@@ -118,7 +155,7 @@ function NewTopicDrawer({
         accountId: accountId ? Number(accountId) : undefined,
         plannedAt: planned && Number.isFinite(planned) ? planned : undefined,
       }, session);
-      if (!isCurrentSession(session)) return;
+      if (!isCurrentSession(session) || !mounted.current) return;
       toast.success("选题已加入选题池");
       onCreated();
       onOpenChange(false);
@@ -144,6 +181,7 @@ function NewTopicDrawer({
           </p>
         </div>
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+          {prefill?.experiment && <p className="rounded-lg border border-border bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">来自复盘的手工选题，确认后保存。以下文字可编辑，不作为已验证的分析来源。</p>}
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">选题标题</p>
             <Input value={title} onChange={setTitle} placeholder="例：新手露营装备避坑清单" />
@@ -180,6 +218,8 @@ function NewTopicDrawer({
                 <SelectValue placeholder="不指定" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="">通用风格</SelectItem>
+                {accountUnavailable && <SelectItem value={accountId}>原目标账号不可用，请重新选择</SelectItem>}
                 {accounts.map((a) => (
                   <SelectItem key={a.id} value={String(a.id)}>
                     {a.nickname || `账号 #${a.id}`}
@@ -187,6 +227,7 @@ function NewTopicDrawer({
                 ))}
               </SelectContent>
             </Select>
+            {(accountUnknown || accountUnavailable) && <p role="alert" className="mt-2 text-xs text-destructive">{accountUnknown ? "账号状态尚未确认，暂不能保存。" : "目标账号已归档或不可访问，请明确重新选择。"}</p>}
           </div>
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">计划发布时间（可选）</p>
@@ -194,7 +235,7 @@ function NewTopicDrawer({
           </div>
         </div>
         <div className="border-t border-border p-4">
-          <Button className="w-full" disabled={!title.trim() || submitting || readOnly} onClick={submit}>
+          <Button className="w-full" disabled={!title.trim() || submitting || readOnly || accountUnavailable || accountUnknown} onClick={submit}>
             {submitting ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
             加入选题池
           </Button>
@@ -220,15 +261,24 @@ function AiTopicsDrawer({
 }) {
   const toast = useToast();
   const session = useMemo(captureSession, []);
+  const mounted = useMounted();
   const operations = useRef(new AiOperationIds());
   const { readOnly } = useRuntime();
+  const workspace = useWorkspaceAccount();
   const [collectionId, setCollectionId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [count, setCount] = useState(5);
   const [submitting, setSubmitting] = useState(false);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open && !wasOpen.current) setAccountId(workspace.selectedAccountId === null ? "" : String(workspace.selectedAccountId));
+    wasOpen.current = open;
+  }, [open, workspace.selectedAccountId]);
+  const accountUnavailable = !!accountId && !accounts.some(item => item.id === Number(accountId));
+  const accountUnknown = workspace.status === "loading" || workspace.status === "error";
 
   const submit = async () => {
-    if (!collectionId || submitting || readOnly) return;
+    if (!collectionId || submitting || readOnly || accountUnavailable || accountUnknown) return;
     setSubmitting(true);
     const key = JSON.stringify({ collectionId, count, accountId });
     try {
@@ -238,7 +288,7 @@ function AiTopicsDrawer({
         accountId: accountId ? Number(accountId) : undefined,
         operationId: operations.current.get(key),
       }, session);
-      if (!isCurrentSession(session)) return;
+      if (!isCurrentSession(session) || !mounted.current) return;
       operations.current.accepted(key);
       if (res.status === "done") toast.success("选题已生成");
       else if (isActiveAiRun(res)) toast.success("选题生成已排队", "进度保存在任务记录，刷新页面后可继续查看");
@@ -284,6 +334,8 @@ function AiTopicsDrawer({
                 <SelectValue placeholder="不指定" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="">通用风格</SelectItem>
+                {accountUnavailable && <SelectItem value={accountId}>原目标账号不可用，请重新选择</SelectItem>}
                 {accounts.map((a) => (
                   <SelectItem key={a.id} value={String(a.id)}>
                     {a.nickname || `账号 #${a.id}`}
@@ -291,6 +343,7 @@ function AiTopicsDrawer({
                 ))}
               </SelectContent>
             </Select>
+            {(accountUnknown || accountUnavailable) && <p role="alert" className="mt-2 text-xs text-destructive">{accountUnknown ? "账号状态尚未确认，暂不能生成。" : "目标账号已归档或不可访问，请明确重新选择。"}</p>}
           </div>
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">生成数量</p>
@@ -309,7 +362,7 @@ function AiTopicsDrawer({
           </div>
         </div>
         <div className="border-t border-border p-4">
-          <Button className="w-full" disabled={!collectionId || submitting || readOnly} onClick={submit}>
+          <Button className="w-full" disabled={!collectionId || submitting || readOnly || accountUnavailable || accountUnknown} onClick={submit}>
             {submitting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
             开始生成
           </Button>
@@ -371,6 +424,7 @@ function TopicDetailDrawer({
 }) {
   const toast = useToast();
   const session = useMemo(captureSession, []);
+  const mounted = useMounted();
   const operations = useRef(new AiOperationIds());
   const { readOnly } = useRuntime();
   const navigate = useNavigate();
@@ -405,7 +459,7 @@ function TopicDetailDrawer({
     setBusy(true);
     try {
       const res = await api.topicToDraft(topic.id, { ai }, session);
-      if (!isCurrentSession(session)) return;
+      if (!isCurrentSession(session) || !mounted.current) return;
       toast.success(res.jobId ? "开始成稿和封面生成" : "已转入草稿工坊", res.draft.title || undefined);
       onChanged();
       navigate(`/drafts/${res.draft.id}`);
@@ -436,6 +490,14 @@ function TopicDetailDrawer({
             </p>
           </div>
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
+            <nav aria-label="选题关联内容" className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-primary">
+              {topic.collectionId && <Link to={`/library?col=${topic.collectionId}`}>来源采集库</Link>}
+              {topic.sourceNoteId && <Link to={`/library?note=${topic.sourceNoteId}`}>来源笔记</Link>}
+              {topic.analysisSource && <Link to={`/analysis?col=${topic.analysisSource.collectionId}&report=${topic.analysisSource.analysisId}`}>来源分析报告</Link>}
+              {topic.accountId && <Link to={`/accounts?account=${topic.accountId}`}>目标账号</Link>}
+              {topic.draftId && <Link to={`/drafts/${topic.draftId}`}>已关联草稿</Link>}
+              {topic.publishJobId && <Link to={`/publish?job=${topic.publishJobId}`}>发布任务</Link>}
+            </nav>
             {topic.angle && (
               <div>
                 <p className="mb-1.5 text-xs font-medium text-muted-foreground">切入角度</p>
@@ -503,10 +565,40 @@ export default function TopicsPage() {
   const queryClient = useQueryClient();
   const session = useMemo(captureSession, []);
   const { readOnly } = useRuntime();
-  const [status, setStatus] = useState("");
+  const observation = useObservation();
+  const [params, setParams] = useSearchParams();
+  const rawStatus = params.get("status") ?? "";
+  const statusValid = params.getAll("status").length <= 1 && STATUS_TABS.some(tab => tab.value === rawStatus);
+  const status = statusValid ? rawStatus : "";
+  const topicId = params.getAll("topic").length === 1 ? positiveId(params.get("topic")) : null;
+  const topicRequested = params.has("topic");
   const [newOpen, setNewOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [selected, setSelected] = useState<TopicRow | null>(null);
+  const prefill = useMemo<TopicPrefill | undefined>(() => params.get("new") === "1" ? {
+    title: (params.get("title") ?? "").slice(0, 512),
+    angle: (params.get("angle") ?? "").slice(0, 4000),
+    account: params.has("account") ? (params.getAll("account").length === 1 && positiveId(params.get("account")) ? params.get("account")! : "invalid") : undefined,
+    experiment: params.has("experimentFrom"),
+  } : undefined, [params]);
+  useEffect(() => { if (prefill) setNewOpen(true); }, [prefill]);
+  const setFilter = (next: string) => setParams(current => {
+    const updated = new URLSearchParams(current);
+    if (next) updated.set("status", next); else updated.delete("status");
+    return updated;
+  });
+  const selectTopic = (id: number | null) => setParams(current => {
+    const updated = new URLSearchParams(current);
+    if (id !== null) updated.set("topic", String(id)); else updated.delete("topic");
+    return updated;
+  });
+  const closeNew = (open: boolean) => {
+    setNewOpen(open);
+    if (!open && prefill) setParams(current => {
+      const updated = new URLSearchParams(current);
+      for (const key of ["new", "title", "angle", "account", "experimentFrom", "report"]) updated.delete(key);
+      return updated;
+    }, { replace: true });
+  };
 
   const topicsQuery = useQuery({
     queryKey: ["topics", status],
@@ -514,19 +606,27 @@ export default function TopicsPage() {
   });
   const collectionsQuery = useQuery({ queryKey: ["collections"], queryFn: api.collections });
   const accountsQuery = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
+  const topicQuery = useQuery({ queryKey: ["topic", topicId],
+    queryFn: () => api.topic(topicId!, session), enabled: topicId !== null });
+  const inaccessibleTopic = topicQuery.error instanceof ApiError && topicQuery.error.status === 404;
+  const selected = !inaccessibleTopic && topicQuery.data?.id === topicId ? topicQuery.data : null;
 
   const generationRuns = useQuery({ queryKey: ["ai-runs", "topic_generate"],
     queryFn: () => api.aiRuns({ kind: "topic_generate" }, session),
-    refetchInterval: query => topicRunPollInterval(query.state.data?.items) });
+    refetchInterval: query => observation.interval(topicRunPollInterval(query.state.data?.items) !== false, 2000, false, query.state.fetchFailureCount) });
   const scoreRuns = useQuery({ queryKey: ["ai-runs", "topic_score"],
     queryFn: () => api.aiRuns({ kind: "topic_score" }, session),
-    refetchInterval: query => topicRunPollInterval(query.state.data?.items) });
+    refetchInterval: query => observation.interval(topicRunPollInterval(query.state.data?.items) !== false, 2000, false, query.state.fetchFailureCount) });
   const runs = useMemo(() => [...(generationRuns.data?.items ?? []), ...(scoreRuns.data?.items ?? [])].sort((a, b) => b.id - a.id), [generationRuns.data, scoreRuns.data]);
   const completed = runs.filter(run => run.status === "done").map(run => `${run.id}:${run.attempt}`).join(",");
-  useEffect(() => { if (completed) void queryClient.invalidateQueries({ queryKey: ["topics"] }); }, [completed, queryClient]);
+  useEffect(() => { if (completed) {
+    void queryClient.invalidateQueries({ queryKey: ["topics"] });
+    void queryClient.invalidateQueries({ queryKey: ["topic"] });
+  } }, [completed, queryClient]);
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ["topics"] });
+    void queryClient.invalidateQueries({ queryKey: ["topic"] });
     void queryClient.invalidateQueries({ queryKey: ["ai-runs"] });
   };
 
@@ -556,7 +656,7 @@ export default function TopicsPage() {
         {STATUS_TABS.map((t) => (
           <button
             key={t.value}
-            onClick={() => setStatus(t.value)}
+            onClick={() => setFilter(t.value)}
             className={cn(
               "rounded-lg px-3 py-1.5 text-xs transition-colors",
               status === t.value
@@ -578,6 +678,10 @@ export default function TopicsPage() {
           </Button>
         </div>
       </div>
+
+      {!statusValid && <p role="alert" className="rounded-lg border border-border p-3 text-xs text-muted-foreground">选题筛选参数无效。<button className="ml-2 text-primary" onClick={() => setFilter("")}>查看全部</button></p>}
+      {topicRequested && (topicId === null || topicQuery.isError) && <p role="alert" className="rounded-lg border border-border p-3 text-xs text-muted-foreground">{topicId === null || (topicQuery.error instanceof ApiError && topicQuery.error.status === 404) ? "无法访问这条选题，地址无效或选题不属于当前用户。" : "指定选题暂时无法读取，结果未知；可重试读取。"}<button className="ml-2 text-primary" onClick={() => selectTopic(null)}>移除地址参数</button>{topicId !== null && topicQuery.isError && <button className="ml-2 text-primary" onClick={() => void topicQuery.refetch()}>重试</button>}</p>}
+      {topicId !== null && topicQuery.isPending && <p role="status" className="text-xs text-muted-foreground">正在读取指定选题…</p>}
 
       {(generationRuns.isError || scoreRuns.isError) && <p role="alert" className="rounded-xl border border-border p-3 text-xs text-muted-foreground">任务记录暂时无法读取，结果未知；连接恢复后刷新查看。</p>}
       {!!runs.length && <section className="space-y-2" aria-label="AI 任务记录">
@@ -602,7 +706,7 @@ export default function TopicsPage() {
           {items.map((t) => (
             <button
               key={t.id}
-              onClick={() => setSelected(t)}
+              onClick={() => selectTopic(t.id)}
               className="group block w-full px-5 py-4 text-left transition-colors hover:bg-muted/30"
             >
               <div className="flex items-start justify-between gap-3">
@@ -666,11 +770,13 @@ export default function TopicsPage() {
       )}
 
       <NewTopicDrawer
+        key={prefill ? JSON.stringify(prefill) : "manual"}
         open={newOpen}
-        onOpenChange={setNewOpen}
+        onOpenChange={closeNew}
         collections={collections}
         accounts={accounts}
         onCreated={refresh}
+        prefill={prefill}
       />
       <AiTopicsDrawer
         open={aiOpen}
@@ -681,8 +787,8 @@ export default function TopicsPage() {
       />
       <TopicDetailDrawer
         key={selected?.id ?? "closed"}
-        topic={items.find(topic => topic.id === selected?.id) ?? selected}
-        onClose={() => setSelected(null)}
+        topic={selected}
+        onClose={() => selectTopic(null)}
         onChanged={refresh}
         runs={runs}
       />
