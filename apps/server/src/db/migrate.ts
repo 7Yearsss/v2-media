@@ -26,6 +26,30 @@ export const migrations: readonly SchemaMigration[] = [
     ALTER TABLE note_metrics ADD CONSTRAINT note_metrics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE RESTRICT;
     CREATE UNIQUE INDEX hosted_accounts_identity ON hosted_accounts(user_id, platform, sub_type, xhs_user_id);
   ` },
+  { version: 3, name: "durable-ai-runs", statements: `
+    ALTER TABLE hosted_accounts ADD COLUMN execution_revision integer NOT NULL DEFAULT 0;
+    ALTER TABLE collection_analyses ADD COLUMN ai_run_id integer;
+    CREATE TABLE ai_runs (
+      id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id), operation_id varchar(36) NOT NULL,
+      kind varchar(32) NOT NULL, target_type varchar(16) NOT NULL, target_id integer NOT NULL,
+      request_hash varchar(64) NOT NULL, input_hash varchar(64) NOT NULL, frozen_input jsonb NOT NULL,
+      model text NOT NULL, prompt_version text NOT NULL, status varchar(16) NOT NULL DEFAULT 'queued',
+      stage varchar(64) NOT NULL DEFAULT 'queued', progress jsonb, result jsonb, error_code varchar(32), error_message text,
+      attempt integer NOT NULL DEFAULT 0, max_attempts integer NOT NULL DEFAULT 3, lease_id varchar(36), lease_until timestamp,
+      started_at timestamp, next_attempt_at timestamp, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now(), finished_at timestamp,
+      CONSTRAINT ai_runs_kind CHECK (kind IN ('analysis','topic_generate','topic_score')),
+      CONSTRAINT ai_runs_status CHECK (status IN ('queued','running','done','failed','canceled')),
+      CONSTRAINT ai_runs_attempt CHECK (attempt >= 0 AND max_attempts >= 1)
+    );
+    CREATE UNIQUE INDEX ai_runs_user_operation ON ai_runs(user_id, operation_id);
+    CREATE INDEX ai_runs_pending ON ai_runs(status, next_attempt_at, id);
+    CREATE TABLE ai_run_commands (
+      id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id), operation_id varchar(36) NOT NULL,
+      run_id integer NOT NULL REFERENCES ai_runs(id) ON DELETE RESTRICT, action varchar(16) NOT NULL DEFAULT 'retry',
+      created_at timestamp NOT NULL DEFAULT now()
+    );
+    CREATE UNIQUE INDEX ai_run_commands_user_operation ON ai_run_commands(user_id, operation_id);
+  ` },
 ];
 export const EXPECTED_SCHEMA_VERSION = migrations.at(-1)!.version;
 export const migrationChecksum = (migration: SchemaMigration) => createHash("sha256").update(JSON.stringify({
@@ -71,8 +95,10 @@ export async function assertSchemaCurrent(db: Db) {
   const policy = (await db.execute(sql`SELECT
     EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND tablename='hosted_accounts' AND indexname='hosted_accounts_identity' AND indexdef LIKE 'CREATE UNIQUE INDEX% (user_id, platform, sub_type, xhs_user_id)') AS identity_unique,
     (SELECT count(*) FROM pg_constraint WHERE connamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema())
-      AND conname IN ('publish_jobs_draft_id_fkey','publish_jobs_account_id_fkey','account_snapshots_account_id_fkey','media_assets_draft_id_fkey','postmortem_reports_publish_job_id_fkey','note_metrics_publish_job_id_fkey') AND confdeltype='r')=6 AS history_restrict`) as Rows<{ identity_unique: boolean; history_restrict: boolean }>).rows[0];
-  if (!policy?.identity_unique || !policy.history_restrict) throw new Error("schema history/identity constraints are missing; refusing startup");
+      AND conname IN ('publish_jobs_draft_id_fkey','publish_jobs_account_id_fkey','account_snapshots_account_id_fkey','media_assets_draft_id_fkey','postmortem_reports_publish_job_id_fkey','note_metrics_publish_job_id_fkey') AND confdeltype='r')=6 AS history_restrict,
+    (SELECT count(*) FROM pg_indexes WHERE schemaname=current_schema() AND indexname IN ('ai_runs_user_operation','ai_run_commands_user_operation')
+      AND indexdef LIKE 'CREATE UNIQUE INDEX% (user_id, operation_id)')=2 AS ai_operation_unique`) as Rows<{ identity_unique: boolean; history_restrict: boolean; ai_operation_unique: boolean }>).rows[0];
+  if (!policy?.identity_unique || !policy.history_restrict || !policy.ai_operation_unique) throw new Error("schema history/identity/AI operation constraints are missing; refusing startup");
   return status;
 }
 

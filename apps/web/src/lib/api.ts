@@ -247,6 +247,13 @@ export function normalizeOverview(raw: unknown): OverviewStats {
 // ---------- 端点 ----------
 
 export const api = {
+  aiRuns: (query: { kind?: import("@v2media/shared").AiRunKind; status?: import("@v2media/shared").AiRunStatus } = {}, session?: SessionContext) =>
+    request<{ items: import("@v2media/shared").AiRun[] }>("/api/ai/runs", { query: { ...query } }, session),
+  aiRun: (id: number, session?: SessionContext) => request<import("@v2media/shared").AiRun>(`/api/ai/runs/${id}`, {}, session),
+  retryAiRun: (id: number, body: import("@v2media/shared").AiRunRetryRequest, session?: SessionContext) =>
+    request<import("@v2media/shared").AiRun>(`/api/ai/runs/${id}/retry`, { method: "POST", body }, session),
+  cancelAiRun: (id: number, session?: SessionContext) =>
+    request<import("@v2media/shared").AiRun>(`/api/ai/runs/${id}/cancel`, { method: "POST" }, session),
   runtime: () => request<import("@v2media/shared").ServerRuntimeStatus>("/api/runtime"),
   collectionTasks: () => request<{ items: CollectionTask[] }>("/api/collection-tasks"),
   collectionTask: (id: number, offset = 0) => request<CollectionTaskDetail>(`/api/collection-tasks/${id}`, { query: { offset } }),
@@ -311,8 +318,8 @@ export const api = {
     request<Collection>(`/api/collections/${id}`, { method: "PATCH", body: { name } }),
   deleteCollection: (id: number) =>
     request<void>(`/api/collections/${id}`, { method: "DELETE" }),
-  analyzeCollection: (id: number, opts: CollectionAnalyzeRequest = {}) =>
-    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST", body: opts }),
+  analyzeCollection: (id: number, opts: CollectionAnalyzeRequest = {}, session?: SessionContext) =>
+    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST", body: opts }, session),
   collectionAnalyses: (id: number) =>
     request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`),
   collectionAnalysis: (id: number, aid: number) =>
@@ -384,13 +391,13 @@ export const api = {
     request<void>(`/api/topics/${id}`, { method: "DELETE" }),
   topicToDraft: (id: number, opts?: TopicToDraftRequest, session?: SessionContext) =>
     request<TopicToDraftResponse>(`/api/topics/${id}/to-draft`, { method: "POST", body: opts }, session),
-  aiTopics: (body: AiTopicsRequest) =>
-    request<AiTopicsResponse>("/api/ai/topics", { method: "POST", body }),
-  aiTopicScore: (body: AiTopicScoreRequest) =>
-    request<{ topic: Topic; verdict: string; advice: string }>("/api/ai/topic-score", {
+  aiTopics: (body: AiTopicsRequest, session?: SessionContext) =>
+    request<AiTopicsResponse>("/api/ai/topics", { method: "POST", body }, session),
+  aiTopicScore: (body: AiTopicScoreRequest, session?: SessionContext) =>
+    request<import("@v2media/shared").AiRun>("/api/ai/topic-score", {
       method: "POST",
       body,
-    }),
+    }, session),
 
   jobs: () => request<PublishJob[]>("/api/publish/jobs"),
   createJob: (body: PublishJobCreateRequest) =>

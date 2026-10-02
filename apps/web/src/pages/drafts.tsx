@@ -283,13 +283,12 @@ export default function DraftsPage() {
           type="button"
           onClick={() => navigate(`/drafts/${d.id}`)}
           className={cn(
-            "relative flex w-full items-center gap-3 px-3 py-2.5 text-left outline-none",
-            "transition-colors hover:bg-muted/40",
-            // 外层已经是卡片，选中只用左侧竖条标记，别再套一层底色方块
-            active && "before:absolute before:inset-y-2.5 before:left-0 before:w-[3px] before:rounded-full before:bg-primary",
+            "relative flex w-full items-center gap-2.5 rounded-lg px-3 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40",
+            "transition-colors hover:bg-muted/60",
+            active && "bg-card before:absolute before:inset-y-3 before:left-0 before:w-[2px] before:rounded-full before:bg-primary",
           )}
         >
-          <span className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-xl bg-muted text-muted-foreground">
+          <span className="relative grid h-10 w-8 shrink-0 place-items-center overflow-hidden rounded-md bg-muted text-muted-foreground">
             <FileText className="size-4" />
             {d.images[0]?.url && (
               <img
@@ -303,14 +302,14 @@ export default function DraftsPage() {
           <span className="min-w-0 flex-1">
             <span
               className={cn(
-                "block truncate text-sm",
+                "block truncate text-[13px] leading-5",
                 active ? "font-semibold" : "font-medium",
                 "text-foreground",
               )}
             >
               {d.title || "未命名草稿"}
             </span>
-            <span className="block truncate text-xs text-muted-foreground">
+            <span className="mt-0.5 block truncate text-[11px] leading-4 text-muted-foreground">
               {d.archivedAt ? "已归档 · " : ""}{d.content ? d.content.slice(0, 40) : "（空正文）"}
             </span>
           </span>
@@ -324,13 +323,14 @@ export default function DraftsPage() {
   );
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)_380px]">
+    <div className="grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
       {/* 左栏：草稿队列（滑动删除） */}
-      <aside className="flex min-h-0 flex-col border-b border-border lg:border-b-0 lg:border-r">
-        <div className="flex items-center justify-between border-b border-border px-4 py-3">
-          <p className="text-sm font-semibold text-foreground">草稿队列</p>
+      <aside className="flex max-h-[240px] min-h-0 flex-col border-b border-border bg-[var(--workspace-rail)] lg:max-h-[calc(100dvh-96px)] lg:border-b-0 lg:border-r xl:max-h-none">
+        <div className="flex min-h-14 items-center justify-between border-b border-border px-4 py-2.5">
+          <p className="text-[13px] font-semibold text-foreground">草稿队列</p>
           <Button
             size="sm"
+            className="rounded-md"
             variant="ghost"
             disabled={create.isPending || readOnly}
             onClick={() => create.mutate()}
@@ -339,8 +339,8 @@ export default function DraftsPage() {
             新建
           </Button>
         </div>
-        <div className="border-b border-border px-4 py-2"><button type="button" aria-pressed={includeArchived} onClick={() => setIncludeArchived(v => !v)} className="text-xs text-muted-foreground underline">{includeArchived ? "隐藏归档草稿" : "包含归档草稿"}</button></div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        <div className="border-b border-border px-4 py-2"><button type="button" aria-pressed={includeArchived} onClick={() => setIncludeArchived(v => !v)} className="text-[11px] text-muted-foreground transition-colors hover:text-foreground">{includeArchived ? "隐藏归档草稿" : "包含归档草稿"}</button></div>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
           {draftsQuery.isPending ? (
             <PageLoading label="加载草稿…" />
           ) : draftsQuery.isError ? (
@@ -370,24 +370,24 @@ export default function DraftsPage() {
                 if (action.id === "delete") remove.mutate(Number(item.id));
               }}
               actionWidth={64}
-              classNames={{ item: "overflow-hidden rounded-xl" }}
+              classNames={{ root: "gap-1", item: "overflow-hidden rounded-lg bg-[var(--workspace-rail)]", surface: "min-h-0 rounded-lg border-0 bg-[var(--workspace-rail)] p-0 shadow-none" }}
             />
           )}
         </div>
       </aside>
 
       {/* 中栏：编辑器 */}
-      <section className="flex min-h-0 min-w-0 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
+      <section className="flex min-h-[560px] min-w-0 flex-col border-b border-border bg-card md:min-h-[620px] xl:min-h-0 xl:border-b-0 xl:border-r">
         {selected ? (
-          selected.archivedAt ? <div className="space-y-4 overflow-y-auto p-6">
+          selected.archivedAt ? <div className="mx-auto w-full max-w-[720px] space-y-4 overflow-y-auto px-5 py-7 sm:px-7">
             <p className="text-xs text-muted-foreground">已归档 · 发布历史、指标、复盘和素材保留</p>
             <h2 className="text-xl font-semibold">{selected.title || "未命名草稿"}</h2>
             <p className="whitespace-pre-wrap text-sm leading-7">{selected.content}</p>
             <p className="text-xs text-muted-foreground">{selected.tags.map(t => `#${t}`).join(" ")}</p>
             <Button size="sm" disabled={restore.isPending || readOnly} onClick={() => restore.mutate(selected.id)}>恢复草稿</Button>
           </div> : <>
-            <div className="flex items-center justify-between border-b border-border px-5 py-3">
-              <div className="flex items-center gap-2">
+            <div className="flex min-h-14 flex-wrap items-center gap-2 border-b border-border px-5 py-2.5">
+              <div className="flex min-w-0 flex-1 basis-full flex-wrap items-center gap-2 sm:basis-auto">
                 <AnimatedBadge
                   size="sm"
                   status={
@@ -423,10 +423,11 @@ export default function DraftsPage() {
                   {saveState === "conflict" && <span className="text-destructive">版本冲突，本地改动已保留</span>}
                 </span>
               </div>
-              <Button size="sm" variant="ghost" disabled={readOnly || remove.isPending} onClick={() => remove.mutate(selected.id)}>归档草稿</Button>
+              <Button size="sm" className="rounded-md" variant="ghost" disabled={readOnly || remove.isPending} onClick={() => remove.mutate(selected.id)}>归档草稿</Button>
               {selected.status !== "published" ? (
                 <Button
                   size="sm"
+                  className="rounded-md"
                   variant={selected.status === "ready" ? "secondary" : "outline"}
                   disabled={readOnly || toggleReady.isPending || saveState !== "saved" || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || (selected.status !== "ready" && (!images.length || images.some(i => !i.url)))}
                   onClick={() => toggleReady.mutate()}
@@ -436,7 +437,8 @@ export default function DraftsPage() {
               ) : null}
             </div>
 
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-8 py-6">
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-7 sm:px-7 xl:px-6">
+              <div className="mx-auto w-full max-w-[720px] space-y-5">
               {editView?.recovered && saveState !== "saved" && <p className="text-xs text-amber-600">已恢复本地编辑，保存成功前请保留这些改动。</p>}
               {editView?.error && <div role="alert" className="space-y-2 rounded-xl border border-amber-400/40 p-3 text-xs">
                 <p>{editView.error}</p>
@@ -455,7 +457,7 @@ export default function DraftsPage() {
                 onChange={(e) => update({ title: e.target.value })}
                 placeholder="填写标题，最多 20 字"
                 aria-label="标题"
-                className="w-full bg-transparent px-1 text-2xl font-semibold leading-9 outline-none placeholder:text-muted-foreground/40"
+                className="w-full bg-transparent px-1 text-[22px] font-semibold leading-8 tracking-tight outline-none placeholder:text-muted-foreground/45"
               />
 
               <RiskTextarea
@@ -469,7 +471,7 @@ export default function DraftsPage() {
                 textareaRef={contentRef}
               />
 
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-border/60 pt-3 text-[11px] text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-border pt-3 text-[11px] text-muted-foreground">
                 <span className={cn([...title].length > DRAFT_LIMITS.title && "font-medium text-rose-500")}>
                   标题 {[...title].length}/{DRAFT_LIMITS.title}
                 </span>
@@ -495,7 +497,7 @@ export default function DraftsPage() {
               </div>
 
               {showWords && (
-                <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-muted/50 px-3.5 py-3 text-xs">
+                <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted/60 px-3.5 py-3 text-xs">
                   {customWords.map((w) => (
                     <span key={w} className="flex items-center gap-1 rounded-full bg-card px-2.5 py-1 ring-1 ring-border">
                       {w}
@@ -522,7 +524,7 @@ export default function DraftsPage() {
               )}
 
               {riskOpen && (banned.length > 0 || limits.length > 0) && (
-                <div className="divide-y divide-border/60 overflow-hidden rounded-2xl border border-border text-xs">
+                <div className="divide-y divide-border overflow-hidden rounded-lg border border-border text-xs">
                   {limits.map((l) => (
                     <div key={l.field} className="flex items-center gap-2 px-3.5 py-2.5 font-medium text-rose-500">
                       <AlertTriangle className="size-3.5 shrink-0" />
@@ -580,7 +582,7 @@ export default function DraftsPage() {
                   {tags.map((t) => (
                     <span
                       key={t}
-                      className="group inline-flex items-center gap-1 rounded-full bg-primary/10 py-1 pl-2.5 pr-1.5 text-xs text-primary"
+                      className="group inline-flex items-center gap-1 rounded-md bg-muted py-1 pl-2.5 pr-1.5 text-xs text-foreground"
                     >
                       #{t}
                       <button
@@ -615,6 +617,7 @@ export default function DraftsPage() {
               {!readOnly && <DraftImages key={selected.id} draftId={selected.id} onDraftChange={syncGeneratedDraft} onImagesChange={(id, next) => {
                 if (editingIdRef.current === id) setImages(next);
               }} />}
+              </div>
             </div>
           </>
         ) : (
@@ -638,13 +641,14 @@ export default function DraftsPage() {
       </section>
 
       {/* 右栏：小红书卡片实时预览 + AI 助手 */}
-      <aside className="min-h-0 overflow-y-auto bg-muted/30 p-4">
-        <div className="space-y-4">
-          <div>
-            <p className="mb-2 text-xs font-medium text-muted-foreground">
+      <aside className="min-h-0 overflow-y-auto bg-background p-4 lg:col-span-2 xl:col-span-1">
+        <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-1">
+          <div className="mx-auto w-full max-w-[280px] xl:max-w-none">
+            <p className="mb-3 text-[11px] font-medium text-muted-foreground">
               小红书卡片预览
             </p>
             <XhsNotePreview
+              className="rounded-xl shadow-none"
               title={title}
               content={content}
               tags={tags}

@@ -1,18 +1,18 @@
 # v2-media 前端设计方向
 
-> 基准：结构抄 **Buffer 2026**（左侧栏 + 账号上下文），内容库抄 **Taplio Viral Posts**（卡片流 + 一键 Rewrite/Queue），编辑器抄 **Typefully**（编辑+预览分栏），动效质感对齐 **Linear**。
+> 2026-10-02 视觉主参考改为 **Typefully**：紧凑导航、连续草稿队列、正文与预览分栏。Buffer 新导航（官方 Beta 文档）用于分组参考；内容研究仍参考 Taplio 的素材动作。详细证据、尺寸、颜色与实施边界见 [`research/visual-reference-2026-10-02.md`](research/visual-reference-2026-10-02.md)。现有业务独立实现，未复用竞品代码、字体或品牌素材。
 
 ## 技术基座
 
-React 19 + Vite + Tailwind CSS v4 + shadcn 风格基座 + beUI 动效组件（已 vendor 在 `src/components/beui/`，来自 mcp.beui.dev）。不用 antd。
+React 19 + Vite + Tailwind CSS v4 + shadcn 风格基座 + beUI 组件（已 vendor 在 `src/components/{motion,agents,charts,blocks}`，来自 mcp.beui.dev）。不用 antd。
 
 ## 设计语言
 
 内容库支持网格 / 列表切换，选择保存在浏览器本地 `v2media:library-view`，默认网格。列表使用 80px 紧凑行和单列虚拟滚动，宽屏显示封面标题、作者、点赞/收藏/评论、最近采集时间、原笔记发布时间及送入草稿；容器不足 900px 时作者与两种时间合并到标题下，仍展示三个互动数。互动与时间均可点击列头双向排序；网格及窄屏使用工具栏排序菜单。发布时间缺失显示「未采到」，不能拿采集时间代替。切换视图复用筛选、分页与详情选择；桌面打开详情后列表继续可用。
 
 - 浅色为主 + 完整暗色模式（`theme-toggle` 用 View Transition）
-- 低饱和中性色底 + 一个品牌强调色（小红书红可取但压暗一点，如 `#E2442F`）
-- 卡片化内容流、大量留白、圆角 12-16px、克制的 spring 动效（beUI 自带）
+- 冷灰底 `#F7F8FA`、白色面板、主文字 `#20242C`、次文字 `#747B88`、边界 `#E6E8ED`、小红书红 `#D94038`；暗色 `#15171C/#1C1F26`
+- 工作流使用连续队列与克制边界，资料库保留真实封面；面板圆角 12px、操作圆角 6–8px。导航 13px、正文 14–15px、页面标题 24px。去除首页卡片进入/数字滚动/倾斜装饰，保留有用途的状态反馈
 - 中文界面，字体用系统栈
 
 ## 页面 → 组件映射
@@ -23,7 +23,7 @@ React 19 + Vite + Tailwind CSS v4 + shadcn 风格基座 + beUI 动效组件（�
 | 账号矩阵 | 托管账号卡片网格：头像/昵称/在线状态点/最后心跳 | tilt-card, animated-badge |
 | 内容库 | **infinite-masonry 瀑布流**笔记卡片（封面+标题+作者+互动数），顶部 morphing-search + 筛选 tabs + multi-select 标签 | infinite-masonry, morphing-search, tabs, multi-select, tilt-card |
 | 笔记详情 | 桌面左右并排：内容库继续可操作，详情独立滚动；窄屏在内容区显示详情 | library-note-detail, button |
-| 草稿工坊 | 三栏：左=草稿队列列表，中=编辑器（标题+正文+图片排序），右=小红书卡片实时预览 + AI 助手 | prompt-input, streaming-response, agent-activity, file-upload, swipeable-list |
+| 草稿工坊 | ≥1280px 三栏：232px 草稿队列、弹性正文（max 720px）、300px 预览与 AI；1024–1279px 两栏工具下置，窄屏垂直堆叠。保留账号、人设、保存状态、封面与图序 | prompt-input, file-upload, swipeable-list |
 | 发布中心 | jobs 表格：状态徽章/重试/取消；新建发布弹窗选草稿+账号+定时 | table, animated-badge, approval-card, availability-scheduler |
 | 数据洞察 | 采集量趋势、Top 笔记、互动分布 | composition-chart, bump-chart, number, heat-calendar |
 | 空态/加载 | 每页都要有 | loader, not-found |

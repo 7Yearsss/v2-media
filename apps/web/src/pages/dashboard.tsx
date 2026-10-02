@@ -1,194 +1,77 @@
-import {
-  ArrowRight,
-  CircleCheck,
-  LibraryBig,
-  NotebookPen,
-  Users,
-} from "lucide-react";
-import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { motion } from "motion/react";
-import {
-  CompositionChart,
-  type CompositionChartSeries,
-} from "@/components/charts/composition-chart";
-import { NumberTicker } from "@/components/motion/number-ticker";
+import { ArrowUpRight, FileText, LibraryBig, NotebookPen, Plus, Sparkles } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AiRun, CollectSource } from "@v2media/shared";
+import { CompositionChart, type CompositionChartSeries } from "@/components/charts/composition-chart";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
+import { Button } from "@/components/motion/button";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
-import type { CollectSource } from "@v2media/shared";
-import { api } from "@/lib/api";
-import { formatCount, SOURCE_LABEL } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import { api, captureSession, isCurrentSession, mediaUrl, SessionChangedError } from "@/lib/api";
+import { useRuntime } from "@/lib/hooks/use-runtime";
+import { JOB_STATUS_META, SOURCE_LABEL, formatCount, timeAgo } from "@/lib/format";
+import { useToast } from "@/lib/toast";
 
-const CARD_SPRING = {
-  type: "spring",
-  stiffness: 300,
-  damping: 30,
-  mass: 0.8,
-} as const;
+const runName: Record<AiRun["kind"], string> = { analysis: "资料分析", topic_generate: "生成选题", topic_score: "选题深评" };
+const runLabel: Record<AiRun["status"], string> = { queued: "等待处理", running: "处理中", done: "已完成", failed: "需要重试", canceled: "已停止" };
 
 export default function DashboardPage() {
+  const navigate = useNavigate(), client = useQueryClient(), toast = useToast(), { readOnly } = useRuntime();
   const overview = useQuery({ queryKey: ["overview"], queryFn: api.overview });
+  const drafts = useQuery({ queryKey: ["drafts"], queryFn: api.drafts });
   const jobs = useQuery({ queryKey: ["publish-jobs"], queryFn: api.jobs });
-
-  if (overview.isPending) return <PageLoading label="加载仪表盘…" />;
-  if (overview.isError)
-    return <PageError error={overview.error} onRetry={overview.refetch} />;
-
+  const runs = useQuery({ queryKey: ["ai-runs", "dashboard"], queryFn: () => api.aiRuns(), refetchInterval: q => q.state.data?.items.some(r => ["queued", "running"].includes(r.status)) ? 2500 : false });
+  const create = useMutation({ mutationFn: async () => {
+    const session = captureSession(), draft = await api.createDraft({});
+    if (!isCurrentSession(session)) throw new SessionChangedError(); return { session, draft };
+  }, onSuccess: ({ session, draft }) => { if (!isCurrentSession(session)) return; void client.invalidateQueries({ queryKey: ["drafts"] }); navigate(`/drafts/${draft.id}`); },
+  onError: error => { if (!(error instanceof SessionChangedError)) toast.error("新建草稿失败", error instanceof Error ? error.message : undefined); } });
+  if (overview.isPending) return <PageLoading label="加载今日工作…" />;
+  if (overview.isError) return <PageError error={overview.error} onRetry={overview.refetch} />;
   const stats = overview.data;
-
-  // 契约未定义 overview 的成功率字段时，从任务列表本地兜底计算。
-  const doneJobs = (jobs.data ?? []).filter((j) => j.status === "done").length;
-  const finishedJobs = (jobs.data ?? []).filter(
-    (j) => j.status === "done" || j.status === "failed",
-  ).length;
-  const successRate =
-    stats.publishSuccessRate ??
-    (finishedJobs > 0 ? (doneJobs / finishedJobs) * 100 : null);
-
-  const cards = [
-    {
-      label: "内容库笔记",
-      value: stats.notes,
-      icon: LibraryBig,
-      to: "/library",
-      suffix: "",
-    },
-    {
-      label: "草稿",
-      value: stats.drafts,
-      icon: NotebookPen,
-      to: "/drafts",
-      suffix: "",
-    },
-    {
-      label: "托管账号",
-      value: stats.accounts,
-      icon: Users,
-      to: "/accounts",
-      suffix: "",
-    },
-    {
-      label: "发布成功率",
-      value: successRate ?? 0,
-      icon: CircleCheck,
-      to: "/publish",
-      suffix: "%",
-      formatter: (v: number) => `${v.toFixed(0)}%`,
-      empty: successRate === null,
-    },
+  const pending = (jobs.data ?? []).filter(job => ["pending", "running", "failed"].includes(job.status));
+  const activeRuns = (runs.data?.items ?? []).filter(run => ["queued", "running", "failed"].includes(run.status));
+  const recentDrafts = drafts.data?.slice(0, 5) ?? [];
+  const counts = [
+    { label: "素材笔记", value: stats.notes, link: "/library" },
+    { label: "创作草稿", value: stats.drafts, link: "/drafts" },
+    { label: "托管账号", value: stats.accounts, link: "/accounts" },
+    { label: "待处理发布", value: jobs.isSuccess ? pending.length : null, link: "/publish" },
   ];
-
-  const periods = stats.trend.map((t, i) => t.label || `D${i + 1}`);
-  const SOURCE_COLORS: Record<string, string> = {
-    search: "#e2442f",
-    homefeed: "#f59e0b",
-    collect_page: "#0d9488",
-    like_page: "#8b5cf6",
-    user_posted: "#38bdf8",
-    detail: "#a1a1aa",
-  };
-  const series: CompositionChartSeries[] =
-    stats.trendBySource.length > 0
-      ? stats.trendBySource.map((s, i) => ({
-          id: s.source,
-          name: SOURCE_LABEL[s.source as CollectSource] ?? s.source,
-          color:
-            SOURCE_COLORS[s.source] ??
-            ["#e2442f", "#f59e0b", "#0d9488", "#8b5cf6"][i % 4],
-          values: s.values,
-        }))
-      : stats.trend.length > 0
-        ? [
-            {
-              id: "collect",
-              name: "采集量",
-              color: "#e2442f",
-              values: stats.trend.map((t) => t.count),
-            },
-          ]
-        : [];
-
-  return (
-    <div className="w-full px-6 pb-8 pt-6">
-      <div className="mb-4 flex items-center justify-end">
-        {jobs.data && jobs.data.length > 0 ? (
-          <AnimatedBadge size="sm" status="info">
-            共 {jobs.data.length} 个发布任务
-          </AnimatedBadge>
-        ) : null}
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        {cards.map((card, i) => (
-          <motion.div
-            key={card.label}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ ...CARD_SPRING, delay: i * 0.05 }}
-          >
-            <Link
-              to={card.to}
-              className={cn(
-                "group block rounded-2xl border border-border bg-card p-5 outline-none transition-colors",
-                "hover:border-foreground/20 focus-visible:ring-2 focus-visible:ring-ring",
-              )}
-            >
-              <div className="flex items-center justify-between">
-                <card.icon className="size-4 text-muted-foreground" />
-                <ArrowRight className="size-3.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
-              </div>
-              <p className="mt-4 text-3xl font-semibold tabular-nums tracking-tight text-foreground">
-                {card.empty ? (
-                  <span className="text-muted-foreground">—</span>
-                ) : card.formatter ? (
-                  <NumberTicker
-                    value={card.value}
-                    format={card.formatter}
-                    className="tabular-nums"
-                  />
-                ) : (
-                  <NumberTicker
-                    value={card.value}
-                    format={(v) => formatCount(v)}
-                    className="tabular-nums"
-                  />
-                )}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">{card.label}</p>
-            </Link>
-          </motion.div>
-        ))}
-      </div>
-
-      <div className="mt-6 rounded-3xl border border-border bg-card p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-foreground">
-              近 7 天采集趋势
-            </h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              插件上报入库的笔记数量
-            </p>
-          </div>
-        </div>
-        {series.length > 0 ? (
-          <CompositionChart
-            view="area"
-            series={series}
-            periods={periods}
-            label="近 7 天采集趋势"
-            formatValue={(v) => `${formatCount(v)} 条`}
-            className="w-full"
-          />
-        ) : (
-          <EmptyState
-            title="暂无采集数据"
-            description="安装浏览器插件并在小红书页面浏览后，采集趋势会显示在这里"
-            className="py-10"
-          />
-        )}
-      </div>
+  const palette: Record<string, string> = { search: "#d94038", homefeed: "#dfaa59", collect_page: "#6b9b8d", like_page: "#9988bf", user_posted: "#7c9fbe", detail: "#9ca4b1" };
+  const series: CompositionChartSeries[] = stats.trendBySource.length ? stats.trendBySource.map(source => ({ id: source.source, name: SOURCE_LABEL[source.source as CollectSource] ?? source.source, color: palette[source.source] ?? "#9ca4b1", values: source.values }))
+    : stats.trend.length ? [{ id: "collect", name: "采集量", color: "#d94038", values: stats.trend.map(p => p.count) }] : [];
+  return <div className="workspace-page space-y-7">
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div><h1 className="workspace-page-title">把下一篇内容准备好</h1><p className="mt-2 text-sm text-muted-foreground">从资料到成稿，再把发布与复盘接起来。</p></div>
+      <Button size="sm" disabled={readOnly || create.isPending} onClick={() => create.mutate()}><Plus className="size-4" />新建草稿</Button>
+    </header>
+    <div className="workspace-panel grid grid-cols-2 md:grid-cols-4">
+      {counts.map(item => <Link key={item.label} to={item.link} className="workspace-metric transition-colors hover:bg-muted/40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring">
+        <p className="text-xs text-muted-foreground">{item.label}</p><p className="mt-2 text-2xl font-semibold tabular-nums tracking-tight">{item.value === null ? "—" : formatCount(item.value)}</p>
+      </Link>)}
     </div>
-  );
+    <div className="grid gap-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,1fr)]">
+      <section className="workspace-panel overflow-hidden">
+        <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="workspace-section-title">继续创作</h2><Link to="/drafts" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">全部草稿<ArrowUpRight className="size-3.5" /></Link></div>
+        {drafts.isPending ? <PageLoading label="读取草稿…" /> : drafts.isError ? <PageError error={drafts.error} onRetry={drafts.refetch} /> : recentDrafts.length ? <div className="divide-y divide-border">
+          {recentDrafts.map(draft => <Link key={draft.id} to={`/drafts/${draft.id}`} className="group flex min-w-0 items-center gap-4 px-5 py-4 transition-colors hover:bg-muted/30">
+            <div className="grid h-14 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-muted text-muted-foreground">{draft.images[0]?.url ? <img className="size-full object-cover" src={mediaUrl(draft.images[0].url)} alt="" /> : <FileText className="size-5" />}</div>
+            <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{draft.title || "未命名草稿"}</p><p className="mt-1 truncate text-xs text-muted-foreground">{draft.content || "从一个想法开始写"}</p></div>
+            <div className="shrink-0 text-right"><span className="text-[11px] text-muted-foreground">{draft.status === "ready" ? "待确认发布" : draft.status === "published" ? "已有发布记录" : "草稿"}</span><p className="mt-1 text-[11px] text-muted-foreground">{timeAgo(draft.updatedAt)}</p></div>
+          </Link>)}
+        </div> : <EmptyState icon={NotebookPen} title="写下第一个想法" description="把素材送入草稿，或直接开始写一篇。" action={<Button size="sm" variant="outline" disabled={readOnly || create.isPending} onClick={() => create.mutate()}>新建草稿</Button>} className="py-12" />}
+      </section>
+      <section className="workspace-panel overflow-hidden">
+        <div className="border-b border-border px-5 py-4"><h2 className="workspace-section-title">需要关注</h2><p className="mt-1 text-xs text-muted-foreground">等待执行、正在处理与需要重试的任务。</p></div>
+        {jobs.isError || runs.isError ? <PageError error={jobs.error ?? runs.error} onRetry={() => { void jobs.refetch(); void runs.refetch(); }} /> : jobs.isPending || runs.isPending ? <PageLoading label="读取任务…" /> : activeRuns.length || pending.length ? <div className="divide-y divide-border">
+          {activeRuns.slice(0, 3).map(run => <Link key={`ai-${run.id}`} to={run.kind === "analysis" ? "/analysis" : "/topics"} className="flex items-start gap-3 px-5 py-4 hover:bg-muted/30"><Sparkles className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><p className="text-sm">{runName[run.kind]}</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{run.errorMessage || (run.status === "queued" ? "任务已保存，等待处理" : "关闭页面后仍会继续处理")}</p></div><AnimatedBadge size="sm" status={run.status === "failed" ? "danger" : "neutral"}>{runLabel[run.status]}</AnimatedBadge></Link>)}
+          {pending.slice(0, 3).map(job => <Link key={`publish-${job.id}`} to="/publish" className="flex items-start gap-3 px-5 py-4 hover:bg-muted/30"><div className="min-w-0 flex-1"><p className="truncate text-sm">{job.draftSnapshot?.title || `发布任务 #${job.id}`}</p><p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{job.error || (job.status === "running" ? "等待插件结果与站点核对" : "浏览器在线且登录目标账号后执行")}</p></div><AnimatedBadge size="sm" status={JOB_STATUS_META[job.status].status}>{JOB_STATUS_META[job.status].label}</AnimatedBadge></Link>)}
+        </div> : <div className="px-5 py-8"><p className="text-sm font-medium">当前没有需要处理的任务</p><p className="mt-2 text-xs leading-5 text-muted-foreground">可以继续写稿，或去资料库找下一篇的参考。</p></div>}
+      </section>
+    </div>
+    <section className="workspace-panel p-5">
+      <div className="mb-5 flex items-center justify-between"><div><h2 className="workspace-section-title">资料库在积累什么</h2><p className="mt-1 text-xs text-muted-foreground">近 7 天插件采集入库的笔记。</p></div><Link to="/library" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"><LibraryBig className="size-3.5" />查看资料</Link></div>
+      {series.length ? <CompositionChart view="area" series={series} periods={stats.trend.map((p, i) => p.label || `D${i + 1}`)} label="近7天采集趋势" formatValue={v => `${formatCount(v)} 条`} /> : <EmptyState title="还没有采集趋势" description="在小红书采集资料后，这里会显示真实入库记录。" className="py-8" />}
+    </section>
+  </div>;
 }

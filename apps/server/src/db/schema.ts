@@ -1,5 +1,5 @@
-import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight, CollectionTaskRules, NoteCard, TopicAnalysisSource } from "@v2media/shared";
-import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import type { AccountPersonaSnapshot, AiRunKind, AiRunProgress, AiRunResult, AiRunStatus, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight, CollectionTaskRules, NoteCard, TopicAnalysisSource } from "@v2media/shared";
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -26,6 +26,8 @@ export const hostedAccounts = pgTable("hosted_accounts", {
   styleNotes: text("style_notes").notNull().default(""),
   redlines: text("redlines").notNull().default(""),
   personaVersion: integer("persona_version").notNull().default(0),
+  /** Lifecycle fence: restoring an archived account never authorizes old model results. */
+  executionRevision: integer("execution_revision").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 }, (t) => [uniqueIndex("hosted_accounts_identity").on(t.userId, t.platform, t.subType, t.xhsUserId)]);
 
@@ -40,6 +42,7 @@ export const collections = pgTable("collections", {
 /** AI 分析结果：对某个采集库的一轮分析快照（库被删时随库删除）。 */
 export const collectionAnalyses = pgTable("collection_analyses", {
   id: serial("id").primaryKey(),
+  aiRunId: integer("ai_run_id"),
   userId: integer("user_id").notNull().references(() => users.id),
   collectionId: integer("collection_id").notNull().references(() => collections.id, { onDelete: "cascade" }),
   noteCount: integer("note_count").notNull().default(0),
@@ -52,6 +55,7 @@ export const collectionAnalyses = pgTable("collection_analyses", {
       persona?: AccountPersonaSnapshot | null;
       visual?: AnalysisVisualItem[];
       progress?: AnalysisProgress;
+      warnings?: string[];
     }>()
     .notNull(),
   /** running=后台还在跑 / done / failed。老数据默认 done。 */
@@ -299,3 +303,40 @@ export const collectionTaskItems = pgTable("collection_task_items", {
   platformComments: integer("platform_comments"), capturedComments: integer("captured_comments").notNull().default(0), capturedReplies: integer("captured_replies").notNull().default(0),
   commentCoverage: varchar("comment_coverage", { length: 16 }).notNull().default("not_requested"),
 }, t => [uniqueIndex("collection_task_items_note").on(t.taskId, t.noteId)]);
+
+/** Independent, durable model execution. Mutable/deletable source rows are validated by adapters. */
+export const aiRuns = pgTable("ai_runs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  operationId: varchar("operation_id", { length: 36 }).notNull(),
+  kind: varchar("kind", { length: 32 }).$type<AiRunKind>().notNull(),
+  targetType: varchar("target_type", { length: 16 }).$type<"analysis" | "collection" | "topic">().notNull(),
+  targetId: integer("target_id").notNull(),
+  requestHash: varchar("request_hash", { length: 64 }).notNull(),
+  inputHash: varchar("input_hash", { length: 64 }).notNull(),
+  frozenInput: jsonb("frozen_input").$type<unknown>().notNull(),
+  model: text("model").notNull(),
+  promptVersion: text("prompt_version").notNull(),
+  status: varchar("status", { length: 16 }).$type<AiRunStatus>().notNull().default("queued"),
+  stage: varchar("stage", { length: 64 }).notNull().default("queued"),
+  progress: jsonb("progress").$type<AiRunProgress>(),
+  result: jsonb("result").$type<AiRunResult>(),
+  errorCode: varchar("error_code", { length: 32 }),
+  errorMessage: text("error_message"),
+  attempt: integer("attempt").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  leaseId: varchar("lease_id", { length: 36 }),
+  leaseUntil: timestamp("lease_until"),
+  startedAt: timestamp("started_at"),
+  nextAttemptAt: timestamp("next_attempt_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+}, t => [uniqueIndex("ai_runs_user_operation").on(t.userId, t.operationId), index("ai_runs_pending").on(t.status, t.nextAttemptAt, t.id)]);
+
+/** A successful manual retry command remains acknowledged after the retry itself ends. */
+export const aiRunCommands = pgTable("ai_run_commands", {
+  id: serial("id").primaryKey(), userId: integer("user_id").notNull().references(() => users.id),
+  operationId: varchar("operation_id", { length: 36 }).notNull(), runId: integer("run_id").notNull().references(() => aiRuns.id, { onDelete: "restrict" }),
+  action: varchar("action", { length: 16 }).notNull().default("retry"), createdAt: timestamp("created_at").notNull().defaultNow(),
+}, t => [uniqueIndex("ai_run_commands_user_operation").on(t.userId, t.operationId)]);

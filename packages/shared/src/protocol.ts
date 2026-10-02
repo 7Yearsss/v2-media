@@ -157,7 +157,7 @@ export interface PublishJobCreateRequest {
 }
 /** POST /api/publish/jobs/:id/retry: one stable ID for retries of the same command. */
 export interface PublishJobRetryRequest { operationId: string }
-export interface CollectionAnalyzeRequest { accountId?: number; positioning?: string; withVideo?: boolean }
+export interface CollectionAnalyzeRequest { operationId?: string; accountId?: number; positioning?: string; withVideo?: boolean }
 
 /** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。xhsUserId 供插件比对当前浏览器登录的托管账号。 */
 export interface PendingPublishJobsResponse {
@@ -209,16 +209,16 @@ export interface TopicToDraftResponse {
 
 /** POST /api/ai/topics —— 对采集库爆款笔记生成选题建议并直接入池（status=idea）。 */
 export interface AiTopicsRequest {
+  operationId?: string;
   collectionId: number;
   count?: number;
   accountId?: number;
 }
-export interface AiTopicsResponse {
-  items: Topic[];
-}
+export type AiTopicsResponse = import("./ai-runs").AiRun;
 
 /** POST /api/ai/topic-score —— 单条选题七维深评，回写 score/scoreDetail。 */
 export interface AiTopicScoreRequest {
+  operationId?: string;
   topicId: number;
 }
 

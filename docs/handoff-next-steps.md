@@ -4,6 +4,8 @@
 
 2026-10-02 架构复审后的 R0 `8873195`、R1 `a789d6c` 已完成；详见各自验收文档。R2 在 `codex/r2-history-runtime` 实现可恢复归档/历史证据、账号身份唯一、只读模式和版本迁移，已补真实 PostgreSQL 16.15 的双连接锁超时/回滚/重复预检/权限验证，详见 [`r2-history-runtime-verification.md`](r2-history-runtime-verification.md)。生产仍未迁移或部署，角色/密钥/旧身份预检与实际脱敏副本升级需部署前核对。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R3–R6 推进；真实 XHS/R2/模型联合验收仍属 R5，生产测试痕迹保持原样。
 
+R3 已在 `codex/r3-ai-runs-visual-refresh` 实现分析/选题生成/深评持久 AI run、冻结输入/模型/完整提示词、attempt 租约和事务结果；schema 版本 3，前两项已应用迁移未改。另完成以 Typefully 公开演示为主参考的导航、首页、草稿与选题视觉首批调整。详见 [`r3-ai-runs-visual-verification.md`](r3-ai-runs-visual-verification.md) 与 [`research/visual-reference-2026-10-02.md`](research/visual-reference-2026-10-02.md)。完整 R4 五工作区、常驻托管账号、内容关系、任务抽屉、路由拆包与 URL/轮询策略仍待推进；没有部署生产。
+
 ## 现状（一句话）
 
 「插件采集 → 内容库 → AI 分析 → 选题 → AI 成稿 → 插件发布」已端到端跑通一次（PR #27，仅自己可见发布成功）。真实 readback 与首条指标已验证；T1 图片上传、T2 自动封面和 T3 账号人设已在功能分支实现，尚待部署后的真实 AI/R2/私密发布验收。

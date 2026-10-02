@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import type { Deps } from "../src/context";
 import { assertReadonlyRole, createDb, postgresConnectionOptions, type Db } from "../src/db";
-import { assertSchemaCurrent, duplicateAccountIdentities, migrate, migrationChecksum, migrationStatus, migrations } from "../src/db/migrate";
+import { assertSchemaCurrent, duplicateAccountIdentities, migrate, migrationChecksum, migrationStatus, migrations, EXPECTED_SCHEMA_VERSION } from "../src/db/migrate";
 import * as schema from "../src/db/schema";
 import { runDraftJobs, startDraftWorker } from "../src/lib/draft-jobs";
 import { runMediaJobs, startMediaWorker } from "../src/lib/media-jobs";
@@ -46,8 +46,8 @@ describe("explicit runtime policy", () => {
       expect(response.status, `${method} ${path}`).toBe(403); expect(await response.json()).toMatchObject({ code: "runtime_readonly" });
     }
     expect((await app.request("/api/drafts", authed(user.token))).status).toBe(200);
-    expect(await (await app.request("/health")).json()).toMatchObject({ runtimeMode: "production-readonly", schemaVersion: 2 });
-    expect(await (await app.request("/api/runtime")).json()).toMatchObject({ runtimeMode: "production-readonly", schemaVersion: 2 });
+    expect(await (await app.request("/health")).json()).toMatchObject({ runtimeMode: "production-readonly", schemaVersion: EXPECTED_SCHEMA_VERSION });
+    expect(await (await app.request("/api/runtime")).json()).toMatchObject({ runtimeMode: "production-readonly", schemaVersion: EXPECTED_SCHEMA_VERSION });
   });
 
   it("readonly stale observation does not persist status or reap attribution leases", async () => {
@@ -84,7 +84,7 @@ describe("explicit runtime policy", () => {
     await db.execute(sql`GRANT USAGE ON SCHEMA public TO r2_readonly`);
     await db.execute(sql`GRANT SELECT ON ALL TABLES IN SCHEMA public TO r2_readonly`);
     await db.execute(sql`SET ROLE r2_readonly`); await db.execute(sql`SET default_transaction_read_only=on`);
-    await expect(assertReadonlyRole(db)).resolves.toBeUndefined(); await expect(assertSchemaCurrent(db)).resolves.toMatchObject({ expectedVersion: 2 });
+    await expect(assertReadonlyRole(db)).resolves.toBeUndefined(); await expect(assertSchemaCurrent(db)).resolves.toMatchObject({ expectedVersion: EXPECTED_SCHEMA_VERSION });
     await expect(db.execute(sql`UPDATE users SET email='blocked'`)).rejects.toThrow();
     await db.execute(sql`SET default_transaction_read_only=off`);
     await expect(db.execute(sql`UPDATE users SET email='still-blocked'`)).rejects.toThrow();
@@ -137,7 +137,7 @@ describe("versioned schema migrations", () => {
     const db = memory(); expect((await migrationStatus(db)).applied).toHaveLength(0);
     await expect(assertSchemaCurrent(db)).rejects.toThrow("explicit db:migrate"); await migrate(db);
     const before = await migrationStatus(db); await migrate(db); expect(await migrationStatus(db)).toEqual(before);
-    expect((await assertSchemaCurrent(db)).applied).toHaveLength(2);
+    expect((await assertSchemaCurrent(db)).applied).toHaveLength(migrations.length);
     await db.execute(sql`UPDATE schema_migrations SET checksum='wrong' WHERE version=1`);
     await expect(assertSchemaCurrent(db)).rejects.toThrow("ledger mismatch"); await expect(migrate(db)).rejects.toThrow("ledger mismatch");
   });
@@ -145,6 +145,22 @@ describe("versioned schema migrations", () => {
   it("missing physical schema cannot hide behind a valid ledger", async () => {
     const db = memory(); await migrate(db); await db.execute(sql`ALTER TABLE drafts DROP COLUMN archived_at`);
     await expect(assertSchemaCurrent(db)).rejects.toThrow("schema column missing: drafts.archived_at");
+  });
+
+  it("durable AI migration preserves legacy running evidence and verifies operation fences", async () => {
+    const db = memory(); await migrate(db, { migrations: migrations.slice(0, 2) });
+    await db.execute(sql`INSERT INTO users(id,email,password_hash) VALUES(1,'ai-legacy@isolated.test','hash')`);
+    await db.execute(sql`INSERT INTO hosted_accounts(id,user_id,xhs_user_id) VALUES(1,1,'ai-legacy')`);
+    await db.execute(sql`INSERT INTO collections(id,user_id,name) VALUES(1,1,'legacy source')`);
+    await db.execute(sql`INSERT INTO collection_analyses(id,user_id,collection_id,status,data,report) VALUES(1,1,1,'running','{}','legacy evidence')`);
+    const before = await rows(db, sql`SELECT id,user_id,collection_id,status,data,report,created_at FROM collection_analyses`);
+    await migrate(db); await assertSchemaCurrent(db);
+    expect(await rows(db, sql`SELECT id,user_id,collection_id,status,data,report,created_at FROM collection_analyses`)).toEqual(before);
+    expect(await rows(db, sql`SELECT ai_run_id FROM collection_analyses`)).toEqual([{ ai_run_id: null }]);
+    expect(await rows(db, sql`SELECT execution_revision FROM hosted_accounts`)).toEqual([{ execution_revision: 0 }]);
+    expect(await rows(db, sql`SELECT id FROM ai_runs`)).toEqual([]);
+    await db.execute(sql`DROP INDEX ai_run_commands_user_operation`);
+    await expect(assertSchemaCurrent(db)).rejects.toThrow("AI operation constraints");
   });
 
   it("legacy upgrade preserves publication, metric and account evidence and changes only schema", async () => {
@@ -174,9 +190,9 @@ describe("versioned schema migrations", () => {
 
   it("failed statement rolls schema and ledger back together; readonly cannot migrate", async () => {
     const db = memory(); await migrate(db);
-    await expect(migrate(db, { migrations: [...migrations, { version: 3, name: "failure-probe", statements: "CREATE TABLE r2_failure_probe(id integer); SELECT missing_r2_probe_function();" }] })).rejects.toThrow();
+    await expect(migrate(db, { migrations: [...migrations, { version: EXPECTED_SCHEMA_VERSION + 1, name: "failure-probe", statements: "CREATE TABLE r2_failure_probe(id integer); SELECT missing_r2_probe_function();" }] })).rejects.toThrow();
     expect(await rows(db, sql`SELECT table_name FROM information_schema.tables WHERE table_name='r2_failure_probe'`)).toHaveLength(0);
-    expect((await migrationStatus(db)).applied).toHaveLength(2);
+    expect((await migrationStatus(db)).applied).toHaveLength(migrations.length);
     await expect(migrate(db, { runtimeMode: "production-readonly" })).rejects.toThrow("refuses schema migrations");
   });
 });

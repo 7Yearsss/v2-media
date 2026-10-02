@@ -24,7 +24,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/collections | `{name}` → `Collection`（同名幂等返回已有） |
 | PATCH | /api/collections/:id | `{name}` 改名 |
 | DELETE | /api/collections/:id | 删库（笔记 collection_id SET NULL 回未分组） |
-| POST | /api/collections/:id/analyze | 对该库互动 top40 笔记跑 AI 爆款分析 → `CollectionAnalysis`（`data.stats`=服务端算的确定性统计、`data.insight`=AI 结构化洞察/`report`=原文兜底；空库 400） |
+| POST | /api/collections/:id/analyze | `{operationId?,accountId?,positioning?,withVideo?}` → 202 `CollectionAnalysis(status=running,aiRunId)`，事务排持久 AI 任务；空库 400 |
 | GET | /api/collections/:id/analyses | 该库历史报告列表（不含 report 全文） |
 | GET | /api/collections/:id/analyses/:aid | 报告全文 |
 | GET | /api/notes/export?collectionId=&keyword=&source=&tag= | 导出筛选结果为 CSV（UTF-8 BOM，Excel 直开；筛选参数与列表同语义，`none`=未分组，缺省=全部；公式前缀自动转义） |
@@ -41,8 +41,12 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | PATCH | /api/topics/:id | `TopicUpdateRequest`；plannedAt 设置→planned / 清空→idea；drafted、published 由系统流转，手动改 → 400 |
 | DELETE | /api/topics/:id | |
 | POST | /api/topics/:id/to-draft | 手写转草稿 201；`{ai:true,positioning?}` 异步成稿 202+`{draft,topic,jobId}`，后台自动出封面；已有 draftId 幂等返回 200，不覆盖 |
-| POST | /api/ai/topics | `{collectionId,count?≤10,accountId?}` → `{items:Topic[]}`：库内互动 Top30 → AI 生成选题+七维明细，服务端加权出 score 后落池 |
-| POST | /api/ai/topic-score | `{topicId}` → `{topic,verdict,advice}`：单条深评并回写 score/scoreDetail |
+| POST | /api/ai/topics | `{collectionId,count?≤10,accountId?,operationId?}` → 202 `AiRun`，冻结库内互动 Top30 后异步生成、评分并入池 |
+| POST | /api/ai/topic-score | `{topicId,operationId?}` → 202 `AiRun`，冻结原选题版本后异步深评，服务端加权并校验版本再回写 |
+| GET | /api/ai/runs?kind=&status= | 当前用户最近 50 个 `{items:AiRun[]}`，可按 kind/status 筛选 |
+| GET | /api/ai/runs/:id | 当前用户公共任务状态 `AiRun`；不返回原始输入、凭据或租约 |
+| POST | /api/ai/runs/:id/retry | `{operationId:UUID}` → 202 `AiRun`，重试失败任务的原冻结输入；重试命令幂等 |
+| POST | /api/ai/runs/:id/cancel | → `AiRun`，停止 queued/running；已 canceled 幂等，done/failed 返回 409 |
 | GET | /api/media/proxy?url= | 白名单 HTTPS 媒体代理，补 Referer；未启用 R2 时仍保存源链接，代理不代表永久转存 |
 | GET | /api/media/objects/(img\|vid\|avatar\|upload\|cover)/<hash> | 启用 R2 后的对象；采集转存和用户图片上传由后台异步处理 |
 | POST | /api/publish/jobs | `{draftId,accountId,scheduledAt?,visibility?}` → `PublishJob` |
@@ -50,6 +54,19 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/publish/jobs/:id/cancel | |
 | POST | /api/publish/jobs/:id/retry | `{operationId:UUID}` 原版本重试；同一操作重复返回同一新任务；不接受当前稿替代参数 |
 | GET | /api/overview | 仪表盘计数 |
+
+## 持久 AI 分析、选题与深评（R3）
+
+- 共享类型在 `packages/shared/src/ai-runs.ts`。`AiRun` 为 `{id,kind,targetType,targetId,model,promptVersion,status,stage,progress,attempt,maxAttempts,result,errorCode,errorMessage,nextAttemptAt,createdAt,updatedAt,finishedAt}`；kind 为 analysis/topic_generate/topic_score，status 为 queued/running/done/failed/canceled。progress 为 `{steps:string[],at:ISO时间}` 或 null，时间字段为 ISO/null。公共状态不含 userId、operationId、原始样本/提示词、提供方凭据、leaseId/leaseUntil。跨用户或不存在 404，非法 ID/筛选/载荷 400。
+- 分析创建在一个事务中保存确定性 `data.stats`/signals 与 running 报告、冻结输入、AI run，再通过 `CollectionAnalysis.aiRunId` 关联。POST 首次返回 202 `CollectionAnalysis`；同操作重放时 running 仍 202，done/failed 返回 200 原报告。历史详情仍使用 `/collections/:id/analyses/:aid`。选题生成/评分 POST 返回 202 公共 `AiRun`，不等待模型，不返回旧同步 `{items}` / `{topic,verdict,advice}`；生成数量默认 5、范围 1–10。
+- 三个创建接口可带 UUID operationId；省略兼容服务端生成新操作，客户端应保留 ID 直到确认响应。同 userId/operationId、同 kind 与规范化请求幂等返回原任务；重复不读取新样本或改成新人设，同 ID 改请求/类型 409。分析原库或原报告已删除时返回 404/409，不创建替代报告。失败后重试原任务用 retry，新资料或新选题方向使用新的创建操作。
+- 排队时保存完整输入快照及哈希：分析候选池/样本/代码信号/人设/定位/视频开关、分析与视觉模型和四类系统提示词；选题生成保存 Top30 笔记 ID、标题、实采互动、标签/正文节选、库名与人设；深评保存选题材料字段及原数据库更新时间。后续 worker/恢复/原任务重试复用该输入。账号仍需属于本用户且活跃；归档增加内部执行代次，立即恢复也不能授权旧结果。选题生成/评分还检查人设版本及原来源存在/归属，来源移库、原选题改变或归档均使旧 run 停止，不能写到新内容上。
+- `src/lib/ai-runs.ts` worker 每 2s 尝试认领，数据库锁与 SKIP LOCKED 支持独立进程；单 worker 串行。租约 120s，每 20s 续租，单 attempt 上限 12min，attempt 单调递增。进程中断/租约过期由 worker 回收，初始最多 3 次，按 30s/60s 退避；临时模型失败/超时同样有界恢复。无效结构输出立即 failed，不自动补齐七维或制造默认 50 分。新 run GET 只读取，不能靠页面轮询续租或触发恢复。
+- 进度与领域提交检查 user/run/attempt/租约。成功输出的报告写入、选题批量插入或深评 CAS 与 run done 在同一事务；失败回滚全部领域结果。模型迟到、旧 attempt、已取消或失效目标不能覆盖新结果。生成必须返回完整七维 traffic/fit/diff/monetization/evergreen/cost/risk，各有限数值 1–10；服务端按既有权重计算综合分。整批任一选题非法则全部失败，不部分入池。公共 result 分别为 `{analysisId,collectionId}`、`{collectionId,topicIds,count}`、`{topicId,score,verdict,advice}`；原正文与七维细项继续从报告/选题接口读取。
+- retry 必传 UUID operationId，仅 failed 可重新排队；已 queued 的确认兼容返回原任务。重试仍是同一 run，attempt 不清零，本次最多再尝试 3 次；目标已失效 409，原冻结输入不被当前内容替换。`ai_run_commands` 在同一事务保存成功重试命令；同 user/命令 ID 补报返回**当前** run 状态，即使已经 done/failed 也不再次排队，同 ID 换目标 409。客户端 lost ACK 时保留本次 attempt 的命令 ID；观察到另一 attempt 失败后，新的明确重试用新 ID。
+- cancel 仅停止 queued/running 并撤销租约；同任务再次 cancel 幂等，done/failed 不可取消，canceled 不可 retry。分析领域报告显示 failed/“本次分析已停止”，确切 canceled/target_obsolete 原因从 run 读取。停止不承诺撤回已发给模型服务的请求；返回后不再接受其领域结果。错误使用 ai_failed/ai_timeout/invalid_output/worker_interrupted/target_obsolete/canceled 等固定分类与安全文案，不透传提供方原始错误或秘密。
+- 工作台刷新后重新读服务器任务；只对 queued/running 轮询，终态停止。恢复同库运行/失败报告、历史切换与重试保持报告请求代次，旧请求不能覆盖后来选择；换授权仍遵守 R1 epoch，只读连接禁用创建/重试/停止和报告入池/成稿按钮。
+- schema 版本 3 `durable-ai-runs` 追加 ai_runs、ai_run_commands、分析指针和账号内部执行代次，不改已应用的 1/2 版本或 checksum。旧 done/failed 报告原样保留；旧无 aiRunId 的 running 报告没有冻结任务，沿用超过 12min 的失败兼容处理（只读连接仅派生展示，不写库），不会自动转成新任务。生产先显式迁移并检查，再启动 worker；生产只读模式不启动 AI worker。成稿/封面/复盘等原 jobs 接口继续沿用各自契约，rewrite/titles/tags 仍保持原请求响应。
 
 ## 历史归档与运行模式（R2）
 
@@ -68,8 +85,8 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 - `AccountPersonaSnapshot` 为 `{accountId,nickname,version,positioning,styleNotes,redlines}`。选题生成/评分、成稿、分析、发布分别保存调用时的快照，后续编辑人设不会改写历史。无账号且无人设时使用通用风格。
 - `Draft` 增加可空 `accountId`（写作账号）与 `personaSnapshot`（成稿时人设）。创建/PATCH 可以指定或清空 accountId；校验归属，更换写作账号增加 textVersion，防止迟到 AI 覆盖。首次新增此列时，从同用户最近关联选题继承账号；之后明确清空不被启动迁移回填。
 - PATCH title/content/tags/accountId 必须带非负整数 `textVersion`；缺版本 428、旧版本 409，锁草稿后比较再写。图片继续用独立 imagesVersion；文字与图片在同一请求时两个版本都校验。就绪状态等仅元数据可省略文字版本。客户端按 userId/draftId/编辑窗口持久保存待写 patch 与基础版本；切稿、刷新、断网保留 dirty/error，409 明确保留本地并展示服务器版本，只有用户选择才按最新版本重存或采用服务器文字。迟到 ACK 不丢掉等待期间的新编辑。
-- `/api/ai/rewrite|titles|tags` 可接收 `draftId`、可空 `accountId`：省略账号继承草稿写作账号，明确 null 使用通用风格；即使同时提供原始 title/content，draftId 仍校验归属。每次读取当前人设，注入改写、标题、标签提示词。选题生成/评分使用选题目标账号；评分中途换账号时拒绝旧结果回写（409）。
-- `POST /api/collections/:id/analyze` 可接收 `{accountId?,positioning?,withVideo?}`，定位最多 1000 字符。定位覆盖只影响本次定位，账号风格/红线仍保留。报告 `data.persona` 保存快照，注入假设与深度复核，客观视觉描述不随人设改写。
+- `/api/ai/rewrite|titles|tags` 可接收 `draftId`、可空 `accountId`：省略账号继承草稿写作账号，明确 null 使用通用风格；即使同时提供原始 title/content，draftId 仍校验归属。每次读取当前人设，注入改写、标题、标签提示词。选题生成/评分使用选题目标账号；评分中途换账号时旧 run 置 canceled/target_obsolete，不回写评分，重新评分须创建新操作。
+- `POST /api/collections/:id/analyze` 可接收 `{operationId?,accountId?,positioning?,withVideo?}`，定位最多 1000 字符。定位覆盖只影响本次定位，账号风格/红线仍保留。报告 `data.persona` 保存快照，注入假设与深度复核，客观视觉描述不随人设改写。
 - `to-draft {ai:true,positioning?}` 冻结目标账号三字段，定位覆盖语义同分析；任务执行前后检查写作账号和文字版本。成稿重试读取当前写作账号人设；原定位覆盖仅在仍是原账号时复用。
 - 分析建议入池可提交 `analysisId` + `analysisIdeaIndex`（同时给出）。服务端从本用户 done 报告核验库/建议/引用和报告目标账号，缺省继承目标、显式错目标 409，生成不可伪造的 `Topic.analysisSource`（报告/库/索引/本次定位/报告人设）；不接收客户端历史快照。成稿使用具体来源报告的证据与当前目标三字段，仍是原账号时沿用本次定位；明确换目标不沿用旧定位。来源报告删除、引用删除/移库、目标解绑不能静默降级为通用稿，须重新选择有效来源/目标。旧报告人设与来源快照不改写。
 - `POST /api/publish/jobs` 可增加 `personaVersion`，过期返回 409；创建时锁实际目标账号与草稿，并冻结 `PublishJob.personaSnapshot` 与正文图集快照。旧客户端省略版本仍兼容。发布页展示目标账号红线与成稿账号不一致提示；自然语言红线是提示词/人工自查上下文，确定性违禁词校验仍沿用已有机制。

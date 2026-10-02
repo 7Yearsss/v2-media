@@ -4,7 +4,7 @@ import type { CollectionAnalysis, HostedAccount, Topic } from "@v2media/shared";
 import { topicFromAnalysis } from "../../web/src/lib/analysis-topic-flow";
 import { collectedNotes, collectionAnalyses, drafts, jobs, topics } from "../src/db/schema";
 import { runDraftJobs } from "../src/lib/draft-jobs";
-import { authed, makeApp, registerUser } from "./helpers";
+import { authed, drainAiRuns, makeApp, registerUser } from "./helpers";
 
 const insight = JSON.stringify({
   summary: "先列准备清单", findings: [{ claim: "分区准备", evidence: ["#1 点赞100"], boundary: "只有一篇样本", todo: "列准备清单", confidence: "low", refs: [1] }],
@@ -41,6 +41,7 @@ async function fixture() {
   const analyze = async (account?: HostedAccount, positioning?: string) => {
     const response = await request(`/api/collections/${col.id}/analyze`, { accountId: account?.id, positioning });
     expect(response.status).toBe(202);
+    await drainAiRuns(f.deps);
     let report = await response.json() as CollectionAnalysis;
     for (let i = 0; i < 80 && report.status === "running"; i++) {
       await new Promise(resolve => setTimeout(resolve, 10));

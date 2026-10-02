@@ -10,6 +10,7 @@ import { api, captureSession, isCurrentSession, SessionChangedError } from "@/li
 import { topicFromAnalysis } from "@/lib/analysis-topic-flow";
 import { formatCount } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 import { cn } from "@/lib/utils";
 
 /* ───────── 版式零件 ───────── */
@@ -366,6 +367,7 @@ function VideoTimeline({ items, colId }: { items: AnalysisVisualItem[]; colId: n
 
 export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onTopicAdded?: () => void }) {
   const running = a.status === "running";
+  const { readOnly } = useRuntime();
   const toast = useToast();
   const { stats, insight } = a.data;
   const sig = stats.signals!;
@@ -383,6 +385,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
     isCurrentSession(session) && activeAnalysis.current === analysisId;
   const addTopic = useMutation({
     mutationFn: async ({ i, session, analysis }: { i: number; session: ReturnType<typeof captureSession>; analysis: CollectionAnalysis }) => {
+      if (readOnly) throw new Error("当前连接仅允许查看");
       const t = await api.createTopic(topicFromAnalysis(analysis, i), session);
       if (isActive(session, analysis.id)) topicIds.current.set(i, t.id);
       return { i, session, analysisId: analysis.id };
@@ -399,6 +402,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
   });
   // 选题 → AI 成稿 → 跳到草稿页（还没入池的先入池，保留来源关联）
   const writeDraft = async (i: number) => {
+    if (readOnly) return;
     const session = captureSession();
     const analysis = a;
     setWritingIdx(i);
@@ -420,6 +424,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
     }
   };
   const addAll = async () => {
+    if (readOnly) return;
     const session = captureSession();
     const analysis = a;
     let failures = 0;
@@ -438,6 +443,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
     <article className="max-w-6xl space-y-10 pb-16">
       {/* 判词：整页最大的字 */}
       <header>
+        {a.data.warnings?.map(warning => <p key={warning} className="mb-3 text-xs leading-5 text-amber-700 dark:text-amber-300">{warning}</p>)}
         {insight?.summary ? (
           <h1 className="max-w-[22em] text-[34px] font-bold leading-[1.28] tracking-tight">{insight.summary}</h1>
         ) : running ? (
@@ -526,7 +532,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
           aside={
             <button
               onClick={() => void addAll()}
-              disabled={addTopic.isPending || added.size === insight.ideas.length}
+              disabled={readOnly || addTopic.isPending || added.size === insight.ideas.length}
               className="text-sm text-muted-foreground underline decoration-border underline-offset-4 transition-colors hover:text-primary hover:decoration-primary disabled:opacity-40"
             >
               全部入选题池
@@ -545,14 +551,14 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => addTopic.mutate({ i, session: captureSession(), analysis: a })}
-                    disabled={added.has(i) || addTopic.isPending}
+                    disabled={readOnly || added.has(i) || addTopic.isPending}
                     className="flex h-9 items-center gap-1.5 rounded-full border border-border px-4 text-sm transition-colors hover:border-foreground/40 disabled:opacity-50"
                   >
                     {added.has(i) ? "已在选题池" : (<><Plus className="size-3.5" />入选题池</>)}
                   </button>
                   <button
                     onClick={() => void writeDraft(i)}
-                    disabled={writingIdx === i}
+                    disabled={readOnly || writingIdx === i}
                     className="flex h-9 items-center gap-1.5 rounded-full bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-60"
                   >
                     {writingIdx === i ? <Loader2 className="size-3.5 animate-spin" /> : <PenLine className="size-3.5" />}

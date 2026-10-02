@@ -17,7 +17,9 @@ import { TextReveal } from "@/components/motion/text-reveal";
 import { TextShimmer } from "@/components/motion/text-shimmer";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { AnalysisReport } from "@/components/app/analysis-report";
-import { api } from "@/lib/api";
+import { api, captureSession, isCurrentSession } from "@/lib/api";
+import { useRuntime } from "@/lib/hooks/use-runtime";
+import { AiRunStatus } from "@/components/app/ai-run-status";
 import { formatCount, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
@@ -325,6 +327,9 @@ function HistoryMenu({
 }
 
 export default function AnalysisPage() {
+  const session = useMemo(captureSession, []);
+  const { readOnly } = useRuntime();
+  const operation = useRef<{ signature: string; id: string } | null>(null);
   const toast = useToast();
   const queryClient = useQueryClient();
   const [colId, setColId] = useState<number | null>(null);
@@ -342,6 +347,7 @@ export default function AnalysisPage() {
   };
   // 当前选中库的快照：异步返回时用它丢弃过期结果（换库后旧库报告不顶上来）
   const colIdRef = useRef<number | null>(null);
+  const reportRequest = useRef(0);
   colIdRef.current = colId;
 
   const cols = useQuery({ queryKey: ["collections"], queryFn: api.collections });
@@ -353,27 +359,35 @@ export default function AnalysisPage() {
   // 选中库后，没有正在看的报告就自动打开最近一份已完成的
   useEffect(() => {
     if (active || !colId || loadAnalysis.isPending) return;
-    const latest = analyses.data?.items.find((a) => a.status === "done");
+    const latest = analyses.data?.items.find(a => a.status === "running") ?? analyses.data?.items[0];
     if (latest) loadAnalysis.mutate({ cid: colId, aid: latest.id });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [analyses.data, colId, active]);
   const loadAnalysis = useMutation({
-    mutationFn: ({ cid, aid }: { cid: number; aid: number }) =>
-      api.collectionAnalysis(cid, aid),
-    onSuccess: (row) => {
-      if (row.collectionId === colIdRef.current) setActive(row);
+    mutationFn: async ({ cid, aid }: { cid: number; aid: number }) => {
+      const serial = ++reportRequest.current;
+      return { row: await api.collectionAnalysis(cid, aid), serial };
+    },
+    onSuccess: ({ row, serial }) => {
+      if (serial === reportRequest.current && isCurrentSession(session) && row.collectionId === colIdRef.current) setActive(row);
     },
     onError: (e) => toast.error("读取报告失败", e instanceof Error ? e.message : undefined),
   });
   const analyze = useMutation({
-    mutationFn: ({ id, positioning }: { id: number; positioning: string }) =>
-      api.analyzeCollection(id, { accountId: accountId ? Number(accountId) : undefined, positioning: positioning || undefined }),
+    mutationFn: ({ id, positioning }: { id: number; positioning: string }) => {
+      const signature = JSON.stringify([id, accountId, positioning]);
+      if (operation.current?.signature !== signature) operation.current = { signature, id: crypto.randomUUID() };
+      return api.analyzeCollection(id, { operationId: operation.current.id, accountId: accountId ? Number(accountId) : undefined, positioning: positioning || undefined }, session);
+    },
     onSuccess: (row) => {
+      if (!isCurrentSession(session)) return;
+      reportRequest.current++;
+      operation.current = null;
       // 后台异步跑：先拿到 running 行（已含代码算好的信号图），再轮询到完成
       void queryClient.invalidateQueries({ queryKey: ["analyses", row.collectionId] });
       if (row.collectionId === colIdRef.current) setActive(row);
     },
-    onError: (e) => toast.error("分析失败", e instanceof Error ? e.message : undefined),
+    onError: (e) => { if (isCurrentSession(session)) toast.error("分析请求未确认", e instanceof Error ? e.message : undefined); },
   });
 
   // 生成中：每 2.5s 拉一次，直到 done/failed
@@ -387,7 +401,11 @@ export default function AnalysisPage() {
   });
   const polled = poll.data;
   useEffect(() => {
-    if (!polled || polled.status === "running") return;
+    if (!polled || !isCurrentSession(session)) return;
+    if (polled.status === "running") {
+      if (polled.collectionId === colIdRef.current) setActive(cur => cur?.id === polled.id ? polled : cur);
+      return;
+    }
     void queryClient.invalidateQueries({ queryKey: ["analyses", polled.collectionId] });
     if (polled.collectionId !== colIdRef.current) return;
     setActive((cur) => (cur?.id === polled.id ? polled : cur));
@@ -405,7 +423,8 @@ export default function AnalysisPage() {
   if (cols.isError) return <PageError error={cols.error} onRetry={() => void cols.refetch()} />;
 
   return (
-    <div className="flex flex-col gap-5 px-6 pb-8 pt-6">
+    <div className="workspace-page flex flex-col gap-5">
+      <header><h1 className="workspace-page-title">找到下一篇的依据</h1><p className="mt-2 text-sm text-muted-foreground">选择资料范围与写作账号，把样本里的做法变成有来源的选题。</p></header>
       {/* 采集库选择 */}
       <div className="flex flex-wrap items-center gap-2">
         {(cols.data?.items ?? []).map((col) => (
@@ -413,6 +432,7 @@ export default function AnalysisPage() {
             key={col.id}
             onClick={() => {
               setColId(col.id);
+              reportRequest.current++;
               setActive(null);
             }}
             className={cn(
@@ -435,7 +455,7 @@ export default function AnalysisPage() {
         {colId != null && (
           <Button
             size="sm"
-            disabled={analyze.isPending || !!running}
+            disabled={readOnly || analyze.isPending || !!running}
             onClick={() => analyze.mutate({ id: colId, positioning })}
             className="ml-1"
           >
@@ -473,6 +493,10 @@ export default function AnalysisPage() {
           />
         )}
       </div>
+      {active?.aiRunId && <AiRunStatus key={active.aiRunId} id={active.aiRunId} onChange={() => {
+        void queryClient.invalidateQueries({ queryKey: ["analyses", active.collectionId] });
+        loadAnalysis.mutate({ cid: active.collectionId, aid: active.id });
+      }} />}
       {active?.data.persona && <p className="text-xs leading-5 text-muted-foreground">
         此报告使用：{active.data.persona.nickname || "通用风格"}
         {active.data.persona.positioning ? ` · ${active.data.persona.positioning}` : ""}

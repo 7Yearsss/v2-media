@@ -250,6 +250,7 @@ export interface AnalysisVideoBreakdown {
 
 /** AI 分析结果：对一个采集库跑出的一轮分析快照。 */
 export interface CollectionAnalysis {
+  aiRunId?: number | null;
   id: number;
   collectionId: number;
   /** 本轮分析覆盖的笔记数。 */
@@ -261,6 +262,7 @@ export interface CollectionAnalysis {
     positioning?: string;
     persona?: AccountPersonaSnapshot | null;
     visual?: AnalysisVisualItem[];
+    warnings?: string[];
     /** 生成中的进度（done 后移除）。 */
     progress?: AnalysisProgress;
   };
@@ -470,6 +472,9 @@ export interface TopicAnalysisSource {
 }
 
 export interface Topic {
+  scoreMethod?: string | null;
+  scoreModel?: string | null;
+  scoredAt?: string | null;
   analysisSource?: TopicAnalysisSource | null;
   id: number;
   personaSnapshot?: AccountPersonaSnapshot | null;

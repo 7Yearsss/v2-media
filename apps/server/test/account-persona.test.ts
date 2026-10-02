@@ -5,7 +5,7 @@ import { hostedAccounts, jobs, topics } from "../src/db/schema";
 import { runDraftJobs } from "../src/lib/draft-jobs";
 import { personaForPrompt } from "../src/lib/account-persona";
 import { migrate } from "../src/db/migrate";
-import { authed, editDraft, makeApp, registerUser } from "./helpers";
+import { authed, drainAiRuns, editDraft, makeApp, registerUser } from "./helpers";
 
 const details = { traffic: 8, fit: 8, diff: 7, monetization: 5, evergreen: 6, cost: 8, risk: 9 };
 const report = JSON.stringify({
@@ -72,11 +72,14 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     const f = await fixture();
     for (const a of [f.a, f.b]) {
       const res = await f.app.request("/api/ai/topics", authed(f.token, { method: "POST", body: JSON.stringify({ collectionId: f.col.id, count: 1, accountId: a.id }) }));
-      expect(res.status).toBe(201);
-      const topic = (await res.json() as any).items[0];
+      expect(res.status).toBe(202);
+      await drainAiRuns(f.deps);
+      const generated = await (await f.app.request("/api/topics", authed(f.token))).json() as any;
+      const topic = generated.items.find((row: any) => row.accountId === a.id);
       expect(topic.personaSnapshot).toMatchObject({ accountId: a.id, styleNotes: a.styleNotes, redlines: a.redlines });
       const scored = await f.app.request("/api/ai/topic-score", authed(f.token, { method: "POST", body: JSON.stringify({ topicId: topic.id }) }));
-      expect(scored.status).toBe(200);
+      expect(scored.status).toBe(202);
+      await drainAiRuns(f.deps);
     }
     const calls = textCalls(f.complete);
     expect(calls[0]).toContain("家庭备餐"); expect(calls[0]).toContain("短句、清单"); expect(calls[0]).not.toContain("露营装备");
@@ -126,6 +129,7 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     expect(res.status).toBe(202);
     let row = await res.json() as any;
     await f.save(f.a, { styleNotes: "新风格" });
+    await drainAiRuns(f.deps);
     for (let i = 0; i < 80 && row.status === "running"; i++) {
       await new Promise(r => setTimeout(r, 25));
       row = await (await f.app.request("/api/collections/" + f.col.id + "/analyses/" + row.id, authed(f.token))).json();
@@ -161,9 +165,13 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     const hold = new Promise<void>(r => { release = r; }), begin = new Promise<void>(r => { started = r; });
     f.complete.mockImplementationOnce(async () => { started(); await hold; return JSON.stringify({ scoreDetail: details, verdict: "做", advice: "先分区" }); });
     const pending = f.app.request("/api/ai/topic-score", authed(f.token, { method: "POST", body: JSON.stringify({ topicId: topic.id }) }));
+    const run = await (await pending).json() as any;
+    const worker = drainAiRuns(f.deps);
     await begin;
     await f.app.request("/api/topics/" + topic.id, authed(f.token, { method: "PATCH", body: JSON.stringify({ accountId: f.b.id }) }));
-    release(); expect((await pending).status).toBe(409);
+    release(); await worker;
+    const canceled = await (await f.app.request(`/api/ai/runs/${run.id}`, authed(f.token))).json() as any;
+    expect(canceled.status).toBe("canceled");
     const [current] = await f.db.select().from(topics).where(eq(topics.id, topic.id));
     expect(current!.score).toBeNull();
     expect(personaForPrompt(null)).toBe("");
@@ -194,6 +202,10 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     await f.db.update(topics).set({ draftId: draft.id }).where(eq(topics.id, topic.id));
     await f.db.execute(sql`ALTER TABLE drafts DROP COLUMN account_id`);
     // Simulate a pre-ledger legacy database, not a corrupted current-version schema.
+    await f.db.execute(sql`DROP TABLE ai_run_commands`);
+    await f.db.execute(sql`DROP TABLE ai_runs`);
+    await f.db.execute(sql`ALTER TABLE hosted_accounts DROP COLUMN execution_revision`);
+    await f.db.execute(sql`ALTER TABLE collection_analyses DROP COLUMN ai_run_id`);
     await f.db.execute(sql`DROP TABLE schema_migrations`);
     await f.db.execute(sql`DROP INDEX hosted_accounts_identity`);
     await migrate(f.db);

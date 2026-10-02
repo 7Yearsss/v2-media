@@ -75,7 +75,7 @@ try {
     await assertSchemaCurrent(contenderDb);
     const after = await snapshot(contender);
     assert.deepEqual({ ...after, ledger: before.ledger, archivedColumn: before.archivedColumn }, before, "successful migration preserves business evidence");
-    assert.deepEqual(after.ledger.map(row => row.version), [1, 2]);
+    assert.deepEqual(after.ledger.map(row => row.version), migrations.map(row => row.version));
     assert.equal(after.archivedColumn, true);
     scenarios.push({ name: "two-backend lock timeout and retry", blockerPid, contenderPid, elapsedMs, timeoutSqlState: "55P03", ledgerUnchangedOnTimeout: true, businessRowsPreserved: true });
   } finally {

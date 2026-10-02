@@ -6,6 +6,7 @@ import { cors } from "hono/cors";
 import type { Deps } from "./context";
 import { accountsModule } from "./modules/accounts";
 import { aiModule } from "./modules/ai";
+import { aiRunsModule } from "./modules/ai-runs";
 import { authMiddleware, authModule } from "./modules/auth";
 import { collectionsModule } from "./modules/collections";
 import { draftsModule } from "./modules/drafts";
@@ -51,6 +52,7 @@ export function createApp(deps: Deps) {
   secured.route("/drafts", draftsModule(deps));
   secured.route("/drafts", draftGenerationModule(deps));
   secured.route("/ai", aiModule(deps));
+  secured.route("/ai", aiRunsModule(deps));
   secured.route("/ai", postmortemModule(deps));
   secured.route("/insights", insightsModule(deps));
   secured.route("/publish", publishModule(deps));

@@ -7,6 +7,7 @@ import { HYPOTHESIS_SYSTEM, REPORT_SYSTEM, VIDEO_SYSTEM, VISION_SYSTEM } from ".
 import { engagementOf, signalsForPrompt } from "./analysis-signals";
 import { isUsableInsight, parseInsight } from "./insight-parse";
 import { personaForPrompt } from "./account-persona";
+import { AiRunObsolete } from "./ai-runs";
 
 /** 分析需要的笔记字段（路由查库后传入）。ref = 候选池里的互动排名，AI 只引用编号。 */
 export interface RunNote {
@@ -26,6 +27,8 @@ export interface RunNote {
   shares: number;
   tags: string[];
   content: string;
+  /** Frozen content already contains the exact normalized excerpt used by the prompt. */
+  contentForPrompt?: boolean;
   hasDetail: boolean;
   publishedAt: Date | null;
   sourceKeyword: string;
@@ -33,6 +36,8 @@ export interface RunNote {
 }
 
 export interface RunInput {
+  models?: { analysis: string; vision: string };
+  prompts?: { hypothesis: string; report: string; video: string; vision: string };
   colName: string;
   positioning: string;
   persona?: AccountPersonaSnapshot | null;
@@ -46,6 +51,8 @@ export interface RunInput {
   withVideo?: boolean;
   /** 进入新阶段时回调（写进度，页面轮询展示）；失败不影响分析。 */
   onStage?: (stage: AnalysisStage, steps: AnalysisStage[]) => Promise<void> | void;
+  /** Worker-only cancellation/lease fence; never part of a stored JSON snapshot. */
+  assertActive?: () => Promise<void>;
 }
 
 const HIT_VISUAL = 8;
@@ -63,12 +70,16 @@ const topComments = (raw: unknown[], n = 3): Array<{ content: string; likes: num
     .sort((a, b) => b.likes - a.likes)
     .slice(0, n);
 
+/** Freeze precisely what this pipeline sends, without raw comments/replies or platform fields. */
+export const analysisPromptComments = (raw: unknown[]) => topComments(raw, 3);
+
 /** 去掉 #话题[话题]# 标记，剩下作者真正写的话。 */
 const bodyText = (s: string) =>
   s
     .replace(/#[^#\s]+?(\[话题\])?#?/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+export const analysisPromptBody = (text: string) => bodyText(text).slice(0, 500);
 
 const bigrams = (s: string) => {
   const cs = [...s.replace(/\s/g, "")];
@@ -105,27 +116,32 @@ export function contrastPairs(pool: RunNote[], hitCount: number, max = 6) {
 }
 
 /** 读封面：让多模态模型看图，描述封面类型/图上文字/点击理由。失败不影响主流程。 */
-async function describeCovers(deps: Deps, targets: RunNote[]): Promise<Map<number, { kind: string; text: string; hook: string }>> {
+async function describeCovers(deps: Deps, targets: RunNote[], input: RunInput): Promise<Map<number, { kind: string; text: string; hook: string }>> {
   const out = new Map<number, { kind: string; text: string; hook: string }>();
   const parts: AiPart[] = [{ type: "text", text: "按编号逐张描述下面的封面。" }];
   let n = 0;
   for (const t of targets) {
+    await input.assertActive?.();
     if (!/^https?:\/\//.test(t.cover)) continue;
     try {
       const res = await fetch(t.cover, { signal: AbortSignal.timeout(15_000) });
+      await input.assertActive?.();
       const ct = res.headers.get("content-type") ?? "";
       if (!res.ok || !ct.startsWith("image/")) continue;
       const buf = Buffer.from(await res.arrayBuffer());
+      await input.assertActive?.();
       if (buf.length > IMG_MAX_BYTES) continue;
       parts.push({ type: "text", text: `编号 ${t.ref}` });
       parts.push({ type: "image_url", image_url: { url: `data:${ct};base64,${buf.toString("base64")}` } });
       n++;
-    } catch {
+    } catch (error) {
+      if (error instanceof AiRunObsolete) throw error;
       /* 取不到就跳过这张 */
     }
   }
   if (!n) return out;
-  const text = await deps.ai.complete(VISION_SYSTEM, parts, { model: env.aiVisionModel || env.aiAnalysisModel });
+  await input.assertActive?.();
+  const text = await deps.ai.complete(input.prompts?.vision ?? VISION_SYSTEM, parts, { model: input.models?.vision ?? (env.aiVisionModel || env.aiAnalysisModel) });
   for (const line of text.split("\n")) {
     const m = line.match(/\{.*\}/);
     if (!m) continue;
@@ -141,21 +157,24 @@ async function describeCovers(deps: Deps, targets: RunNote[]): Promise<Map<numbe
 }
 
 /** 拆视频：只看已转存到我们 R2 的爆款视频，逐条并行；单条失败不影响其他。 */
-async function describeVideos(deps: Deps, targets: RunNote[]): Promise<Map<number, AnalysisVideoBreakdown>> {
+async function describeVideos(deps: Deps, targets: RunNote[], input: RunInput): Promise<Map<number, AnalysisVideoBreakdown>> {
   const out = new Map<number, AnalysisVideoBreakdown>();
   await Promise.all(
     targets.map(async (t) => {
+      await input.assertActive?.();
       try {
         const res = await fetch(t.videoUrl!, { signal: AbortSignal.timeout(60_000) });
+        await input.assertActive?.();
         if (!res.ok) return;
         const buf = Buffer.from(await res.arrayBuffer());
+        await input.assertActive?.();
         if (buf.length > VIDEO_MAX_BYTES) return;
         // R2 对象的 content-type 是 octet-stream，网关要 video/mp4 才当视频处理
         const parts: AiPart[] = [
           { type: "text", text: "拆解这条视频。" },
           { type: "image_url", image_url: { url: `data:video/mp4;base64,${buf.toString("base64")}` } },
         ];
-        const text = await deps.ai.complete(VIDEO_SYSTEM, parts, { model: env.aiVisionModel || env.aiAnalysisModel });
+        const text = await deps.ai.complete(input.prompts?.video ?? VIDEO_SYSTEM, parts, { model: input.models?.vision ?? (env.aiVisionModel || env.aiAnalysisModel) });
         const m = text.match(/\{[\s\S]*\}/);
         if (!m) return;
         const j = JSON.parse(m[0]);
@@ -172,6 +191,7 @@ async function describeVideos(deps: Deps, targets: RunNote[]): Promise<Map<numbe
           ...(t.videoDurationMs ? { durationSec: Math.round(t.videoDurationMs / 1000) } : {}),
         });
       } catch (e) {
+        if (e instanceof AiRunObsolete) throw e;
         console.warn(`analyze video #${t.ref} failed:`, e instanceof Error ? e.message : e);
       }
     }),
@@ -193,9 +213,11 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     ? ["signals", "covers", "videos", "hypotheses", "report"]
     : ["signals", "covers", "hypotheses", "report"];
   const stage = async (s: AnalysisStage) => {
+    await input.assertActive?.();
     try {
       await input.onStage?.(s, steps);
-    } catch {
+    } catch (error) {
+      if (error instanceof AiRunObsolete) throw error;
       /* 进度只是展示，写失败别拖垮分析 */
     }
   };
@@ -208,8 +230,9 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
   const uniq = targets.filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)));
   let covers = new Map<number, { kind: string; text: string; hook: string }>();
   try {
-    covers = await describeCovers(deps, uniq);
+    covers = await describeCovers(deps, uniq, input);
   } catch (e) {
+    if (e instanceof AiRunObsolete) throw e;
     console.warn("analyze vision failed:", e instanceof Error ? e.message : e);
   }
   // 拆视频默认关：慢（每条 ~1 分钟 + 下载十几 MB）、只覆盖少数笔记，收益远小于封面/正文/评论。需要时再开。
@@ -218,7 +241,10 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     .filter((n) => n.type === "video" && n.videoUrl?.includes("/objects/vid/") && (n.videoSize ?? 0) <= VIDEO_MAX_BYTES)
     .slice(0, VIDEO_MAX_COUNT);
   if (videoTargets.length) await stage("videos");
-  const videos = videoTargets.length ? await describeVideos(deps, videoTargets).catch(() => new Map<number, AnalysisVideoBreakdown>()) : new Map<number, AnalysisVideoBreakdown>();
+  const videos = videoTargets.length ? await describeVideos(deps, videoTargets, input).catch(error => {
+    if (error instanceof AiRunObsolete) throw error;
+    return new Map<number, AnalysisVideoBreakdown>();
+  }) : new Map<number, AnalysisVideoBreakdown>();
   const visual: AnalysisVisualItem[] = uniq
     .filter((n) => covers.has(n.ref))
     .map((n) => ({ ref: n.ref, id: n.id, title: n.title, cover: n.cover, ...covers.get(n.ref)!, hit: hitSet.has(n.id), engagement: eng(n), ...(videos.has(n.ref) ? { video: videos.get(n.ref)! } : {}) }));
@@ -228,7 +254,7 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     const days = dayAge(n, now);
     const cm = topComments(n.commentsData);
     const cv = covers.get(n.ref);
-    const body = bodyText(n.content).slice(0, hitSet.has(n.id) ? 500 : 120);
+    const body = (n.contentForPrompt ? n.content : analysisPromptBody(n.content)).slice(0, hitSet.has(n.id) ? 500 : 120);
     return JSON.stringify({
       编号: `#${n.ref}`,
       标题: n.title,
@@ -278,20 +304,20 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     .join("\n\n");
 
   // 分析要稳：温度低一点，两次输出差异才小
-  const model = { model: env.aiAnalysisModel, temperature: 0.3 };
+  const model = { model: input.models?.analysis ?? env.aiAnalysisModel, temperature: 0.3 };
   const t0 = Date.now();
   await stage("hypotheses");
-  const hypotheses = await deps.ai.complete(HYPOTHESIS_SYSTEM, context, model);
+  const hypotheses = await deps.ai.complete(input.prompts?.hypothesis ?? HYPOTHESIS_SYSTEM, context, model);
   if (process.env.ANALYSIS_DEBUG) console.info(`【假设】\n${hypotheses}`);
   const t1 = Date.now();
   await stage("report");
   const reportInput = `${reviewContext}\n\n【上一步假设】\n${hypotheses}`;
-  let report = await deps.ai.complete(REPORT_SYSTEM, reportInput, { ...model, json: true });
+  let report = await deps.ai.complete(input.prompts?.report ?? REPORT_SYSTEM, reportInput, { ...model, json: true });
   // 模型偶尔把思考草稿（英文占位 JSON）当终稿：质量不合格就让它重写一次
   if (!isUsableInsight(parseInsight(report))) {
     console.warn("analyze report unusable, retrying once");
     const retry = await deps.ai.complete(
-      REPORT_SYSTEM,
+      input.prompts?.report ?? REPORT_SYSTEM,
       `${reportInput}\n\n上一次的输出不能用：必须只输出一个 JSON，所有内容用中文，结论要引用上面的真实数据。请重新输出。`,
       { ...model, json: true },
     );

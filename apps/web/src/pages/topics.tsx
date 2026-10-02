@@ -9,10 +9,10 @@ import {
   Target,
   Trash2,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Collection, HostedAccount, Topic, TopicStatus } from "@v2media/shared";
+import type { AiRun, Collection, HostedAccount, Topic, TopicStatus } from "@v2media/shared";
 import { AnimatedBadge, type AnimatedBadgeStatus } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
 import { Drawer } from "@/components/motion/drawer";
@@ -25,7 +25,9 @@ import {
   SelectValue,
 } from "@/components/motion/select";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
-import { api } from "@/lib/api";
+import { api, captureSession, isCurrentSession } from "@/lib/api";
+import { AiOperationIds, isActiveAiRun, latestTopicRun, topicRunPollInterval } from "@/lib/topic-run-flow";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 import { fmtDateTime, timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -95,6 +97,8 @@ function NewTopicDrawer({
   onCreated: () => void;
 }) {
   const toast = useToast();
+  const session = useMemo(captureSession, []);
+  const { readOnly } = useRuntime();
   const [title, setTitle] = useState("");
   const [angle, setAngle] = useState("");
   const [collectionId, setCollectionId] = useState("");
@@ -103,7 +107,7 @@ function NewTopicDrawer({
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
-    if (!title.trim() || submitting) return;
+    if (!title.trim() || submitting || readOnly) return;
     setSubmitting(true);
     try {
       const planned = plannedAt ? new Date(plannedAt).getTime() : undefined;
@@ -113,7 +117,8 @@ function NewTopicDrawer({
         collectionId: collectionId ? Number(collectionId) : undefined,
         accountId: accountId ? Number(accountId) : undefined,
         plannedAt: planned && Number.isFinite(planned) ? planned : undefined,
-      });
+      }, session);
+      if (!isCurrentSession(session)) return;
       toast.success("选题已加入选题池");
       onCreated();
       onOpenChange(false);
@@ -123,7 +128,7 @@ function NewTopicDrawer({
       setAccountId("");
       setPlannedAt("");
     } catch (err) {
-      toast.error("创建失败", err instanceof Error ? err.message : undefined);
+      if (isCurrentSession(session)) toast.error("创建失败", err instanceof Error ? err.message : undefined);
     } finally {
       setSubmitting(false);
     }
@@ -189,7 +194,7 @@ function NewTopicDrawer({
           </div>
         </div>
         <div className="border-t border-border p-4">
-          <Button className="w-full" disabled={!title.trim() || submitting} onClick={submit}>
+          <Button className="w-full" disabled={!title.trim() || submitting || readOnly} onClick={submit}>
             {submitting ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
             加入选题池
           </Button>
@@ -214,25 +219,34 @@ function AiTopicsDrawer({
   onCreated: () => void;
 }) {
   const toast = useToast();
+  const session = useMemo(captureSession, []);
+  const operations = useRef(new AiOperationIds());
+  const { readOnly } = useRuntime();
   const [collectionId, setCollectionId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [count, setCount] = useState(5);
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async () => {
-    if (!collectionId || submitting) return;
+    if (!collectionId || submitting || readOnly) return;
     setSubmitting(true);
+    const key = JSON.stringify({ collectionId, count, accountId });
     try {
       const res = await api.aiTopics({
         collectionId: Number(collectionId),
         count,
         accountId: accountId ? Number(accountId) : undefined,
-      });
-      toast.success(`已生成 ${res.items.length} 个选题`, "已按七维口径评分入池");
+        operationId: operations.current.get(key),
+      }, session);
+      if (!isCurrentSession(session)) return;
+      operations.current.accepted(key);
+      if (res.status === "done") toast.success("选题已生成");
+      else if (isActiveAiRun(res)) toast.success("选题生成已排队", "进度保存在任务记录，刷新页面后可继续查看");
+      else toast.info(res.status === "failed" ? "原选题任务已失败" : "原选题任务已停止", res.errorMessage ?? "请在任务记录中查看结果");
       onCreated();
       onOpenChange(false);
     } catch (err) {
-      toast.error("生成失败", err instanceof Error ? err.message : undefined);
+      if (isCurrentSession(session)) toast.error("提交失败", err instanceof Error ? err.message : undefined);
     } finally {
       setSubmitting(false);
     }
@@ -295,9 +309,9 @@ function AiTopicsDrawer({
           </div>
         </div>
         <div className="border-t border-border p-4">
-          <Button className="w-full" disabled={!collectionId || submitting} onClick={submit}>
+          <Button className="w-full" disabled={!collectionId || submitting || readOnly} onClick={submit}>
             {submitting ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-            生成选题
+            开始生成
           </Button>
         </div>
       </div>
@@ -306,56 +320,97 @@ function AiTopicsDrawer({
 }
 
 /** 选题详情抽屉：评分雷达（横条）+ 深评 + 操作。 */
+function AiRunNotice({ run, onChanged }: { run: AiRun; onChanged: () => void }) {
+  const toast = useToast();
+  const session = useMemo(captureSession, []);
+  const operations = useRef(new AiOperationIds());
+  const { readOnly } = useRuntime();
+  const [busy, setBusy] = useState(false);
+  const labels = { queued: run.nextAttemptAt ? "等待恢复" : "排队中", running: "进行中", done: "已完成", failed: "失败", canceled: "已停止" };
+  const control = async (action: "retry" | "cancel") => {
+    if (busy || readOnly) return;
+    setBusy(true);
+    try {
+      const key = `retry:${run.id}:${run.attempt}`;
+      if (action === "retry") await api.retryAiRun(run.id, { operationId: operations.current.get(key) }, session);
+      else await api.cancelAiRun(run.id, session);
+      if (!isCurrentSession(session)) return;
+      onChanged();
+    } catch (error) {
+      if (isCurrentSession(session)) toast.error("任务操作失败", error instanceof Error ? error.message : undefined);
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="rounded-xl border border-border bg-background p-3 text-xs" role="status">
+      <div className="flex flex-wrap items-center gap-2">
+        {isActiveAiRun(run) && <Loader2 className="size-3.5 animate-spin text-primary" />}
+        <span className="font-medium">{run.kind === "topic_generate" ? "选题生成" : "选题深评"} · {labels[run.status]}</span>
+        <span className="text-muted-foreground">#{run.id} · {run.attempt ? `第 ${run.attempt} 次执行` : "等待开始"}</span>
+        {!readOnly && <span className="ml-auto flex items-center gap-2">
+          {run.status === "failed" && <button className="text-primary disabled:opacity-50" disabled={busy} onClick={() => void control("retry")}>重试原任务</button>}
+          {isActiveAiRun(run) && <button className="text-muted-foreground disabled:opacity-50" disabled={busy} onClick={() => void control("cancel")}>取消</button>}
+        </span>}
+      </div>
+      {run.errorMessage && <p className="mt-2 leading-5 text-muted-foreground">{run.errorMessage}</p>}
+      {isActiveAiRun(run) && run.progress?.steps?.length ? <p className="mt-2 leading-5 text-muted-foreground">{run.progress.steps.at(-1)}</p> : null}
+      {run.status === "done" && run.result && "count" in run.result && <p className="mt-2 text-muted-foreground">已生成 {run.result.count} 个选题并写入选题池</p>}
+    </div>
+  );
+}
+
 function TopicDetailDrawer({
   topic,
   onClose,
   onChanged,
+  runs,
 }: {
   topic: TopicRow | null;
   onClose: () => void;
   onChanged: () => void;
+  runs: AiRun[];
 }) {
   const toast = useToast();
+  const session = useMemo(captureSession, []);
+  const operations = useRef(new AiOperationIds());
+  const { readOnly } = useRuntime();
   const navigate = useNavigate();
   const [scoring, setScoring] = useState(false);
-  const [verdict, setVerdict] = useState("");
-  const [advice, setAdvice] = useState("");
+  const scoreRun = topic ? latestTopicRun(runs, "topic_score", topic.id) : undefined;
+  const scoreResult = scoreRun?.status === "done" && scoreRun.result && "verdict" in scoreRun.result
+    && topic?.scoreMethod && topic.score === scoreRun.result.score ? scoreRun.result : null;
+  const verdict = scoreResult?.verdict ?? "";
+  const advice = scoreResult?.advice ?? "";
   const [busy, setBusy] = useState(false);
 
-  // 切选题时清掉上一条的深评结果
-  const [lastId, setLastId] = useState<number | null>(null);
-  const currentTopicId = topic?.id ?? null;
-  if (currentTopicId !== lastId) {
-    setLastId(currentTopicId);
-    setVerdict("");
-    setAdvice("");
-  }
-
   const runScore = async () => {
-    if (!topic || scoring) return;
+    if (!topic || scoring || readOnly || (scoreRun && isActiveAiRun(scoreRun))) return;
     setScoring(true);
     try {
-      const res = await api.aiTopicScore({ topicId: topic.id });
-      setVerdict(res.verdict);
-      setAdvice(res.advice);
+      const key = `score:${topic.id}:${topic.updatedAt}`;
+      const run = await api.aiTopicScore({ topicId: topic.id, operationId: operations.current.get(key) }, session);
+      if (!isCurrentSession(session)) return;
+      operations.current.accepted(key);
+      if (isActiveAiRun(run)) toast.success("深评已排队", "可关闭抽屉，完成后评分自动更新");
+      else toast.info(run.status === "done" ? "原深评任务已完成" : "原深评任务已停止", run.errorMessage ?? undefined);
       onChanged();
     } catch (err) {
-      toast.error("深评失败", err instanceof Error ? err.message : undefined);
+      if (isCurrentSession(session)) toast.error("深评提交失败", err instanceof Error ? err.message : undefined);
     } finally {
       setScoring(false);
     }
   };
 
   const toDraft = async (ai = true) => {
-    if (!topic || busy) return;
+    if (!topic || busy || readOnly || topic.status === "archived") return;
     setBusy(true);
     try {
-      const res = await api.topicToDraft(topic.id, { ai });
+      const res = await api.topicToDraft(topic.id, { ai }, session);
+      if (!isCurrentSession(session)) return;
       toast.success(res.jobId ? "开始成稿和封面生成" : "已转入草稿工坊", res.draft.title || undefined);
       onChanged();
       navigate(`/drafts/${res.draft.id}`);
     } catch (err) {
-      toast.error("转草稿失败", err instanceof Error ? err.message : undefined);
+      if (isCurrentSession(session)) toast.error("转草稿失败", err instanceof Error ? err.message : undefined);
     } finally {
       setBusy(false);
     }
@@ -410,6 +465,7 @@ function TopicDetailDrawer({
                 </div>
               ))}
             </div>
+            {scoreRun && <AiRunNotice run={scoreRun} onChanged={onChanged} />}
             {(verdict || advice) && (
               <div className="rounded-2xl border border-border bg-card p-4">
                 <p className="mb-1 text-xs font-medium text-muted-foreground">
@@ -426,13 +482,13 @@ function TopicDetailDrawer({
             )}
           </div>
           <div className="space-y-2 border-t border-border p-4">
-            <Button className="w-full" onClick={() => void toDraft(true)} disabled={busy || topic.status === "published"}>
+            <Button className="w-full" onClick={() => void toDraft(true)} disabled={busy || readOnly || topic.status === "published" || topic.status === "archived"}>
               {busy ? <Loader2 className="size-4 animate-spin" /> : <NotebookPen className="size-4" />}
               {topic.draftId ? "打开已关联草稿" : "一键成稿 · 自动带封面"}
             </Button>
-            {!topic.draftId && <Button variant="ghost" className="w-full" onClick={() => void toDraft(false)} disabled={busy}>转入草稿自行编辑</Button>}
-            <Button variant="ghost" className="w-full" onClick={runScore} disabled={scoring}>
-              {scoring ? <Loader2 className="size-4 animate-spin" /> : <Target className="size-4" />}
+            {!topic.draftId && <Button variant="ghost" className="w-full" onClick={() => void toDraft(false)} disabled={busy || readOnly || topic.status === "archived"}>转入草稿自行编辑</Button>}
+            <Button variant="ghost" className="w-full" onClick={runScore} disabled={scoring || readOnly || topic.status === "archived" || !!(scoreRun && isActiveAiRun(scoreRun))}>
+              {scoring || (scoreRun && isActiveAiRun(scoreRun)) ? <Loader2 className="size-4 animate-spin" /> : <Target className="size-4" />}
               {topic.score == null ? "AI 深评（七维）" : "重新深评"}
             </Button>
           </div>
@@ -445,6 +501,8 @@ function TopicDetailDrawer({
 export default function TopicsPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const session = useMemo(captureSession, []);
+  const { readOnly } = useRuntime();
   const [status, setStatus] = useState("");
   const [newOpen, setNewOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
@@ -457,7 +515,20 @@ export default function TopicsPage() {
   const collectionsQuery = useQuery({ queryKey: ["collections"], queryFn: api.collections });
   const accountsQuery = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["topics"] });
+  const generationRuns = useQuery({ queryKey: ["ai-runs", "topic_generate"],
+    queryFn: () => api.aiRuns({ kind: "topic_generate" }, session),
+    refetchInterval: query => topicRunPollInterval(query.state.data?.items) });
+  const scoreRuns = useQuery({ queryKey: ["ai-runs", "topic_score"],
+    queryFn: () => api.aiRuns({ kind: "topic_score" }, session),
+    refetchInterval: query => topicRunPollInterval(query.state.data?.items) });
+  const runs = useMemo(() => [...(generationRuns.data?.items ?? []), ...(scoreRuns.data?.items ?? [])].sort((a, b) => b.id - a.id), [generationRuns.data, scoreRuns.data]);
+  const completed = runs.filter(run => run.status === "done").map(run => `${run.id}:${run.attempt}`).join(",");
+  useEffect(() => { if (completed) void queryClient.invalidateQueries({ queryKey: ["topics"] }); }, [completed, queryClient]);
+
+  const refresh = () => {
+    void queryClient.invalidateQueries({ queryKey: ["topics"] });
+    void queryClient.invalidateQueries({ queryKey: ["ai-runs"] });
+  };
 
   const archiveMut = useMutation({
     mutationFn: (t: TopicRow) =>
@@ -479,14 +550,15 @@ export default function TopicsPage() {
   if (topicsQuery.isError) return <PageError error={topicsQuery.error} />;
 
   return (
-    <div className="w-full space-y-4 px-6 pb-8 pt-6">
+    <div className="workspace-page space-y-5">
+      <header><h1 className="workspace-page-title">为下一篇选个方向</h1><p className="mt-2 text-sm text-muted-foreground">把灵感、样本依据和账号匹配放在一起，再决定先写哪一篇。</p></header>
       <div className="flex flex-wrap items-center gap-2">
         {STATUS_TABS.map((t) => (
           <button
             key={t.value}
             onClick={() => setStatus(t.value)}
             className={cn(
-              "rounded-full px-3.5 py-1.5 text-sm transition-colors",
+              "rounded-lg px-3 py-1.5 text-xs transition-colors",
               status === t.value
                 ? "bg-primary text-primary-foreground"
                 : "bg-muted text-muted-foreground hover:bg-muted/70",
@@ -496,16 +568,22 @@ export default function TopicsPage() {
           </button>
         ))}
         <div className="ml-auto flex gap-2">
-          <Button variant="ghost" onClick={() => setAiOpen(true)} disabled={!collections.length}>
+          <Button size="sm" variant="outline" onClick={() => setAiOpen(true)} disabled={!collections.length || readOnly}>
             <Sparkles className="size-4" />
             AI 生成选题
           </Button>
-          <Button onClick={() => setNewOpen(true)}>
+          <Button size="sm" onClick={() => setNewOpen(true)} disabled={readOnly}>
             <Plus className="size-4" />
             新建选题
           </Button>
         </div>
       </div>
+
+      {(generationRuns.isError || scoreRuns.isError) && <p role="alert" className="rounded-xl border border-border p-3 text-xs text-muted-foreground">任务记录暂时无法读取，结果未知；连接恢复后刷新查看。</p>}
+      {!!runs.length && <section className="space-y-2" aria-label="AI 任务记录">
+        <p className="text-xs font-medium text-muted-foreground">AI 任务 · 进度保存在服务器，可离开页面后继续查看</p>
+        {runs.filter((run, index) => isActiveAiRun(run) || index < 3).map(run => <AiRunNotice key={run.id} run={run} onChanged={refresh} />)}
+      </section>}
 
       {!items.length ? (
         <EmptyState
@@ -513,19 +591,19 @@ export default function TopicsPage() {
           title={status ? "这个状态下还没有选题" : "选题池还是空的"}
           description="手填一个方向，或让 AI 从采集库里的爆款帮你生成"
           action={
-            <Button variant="ghost" onClick={() => setAiOpen(true)} disabled={!collections.length}>
+            <Button variant="ghost" onClick={() => setAiOpen(true)} disabled={!collections.length || readOnly}>
               <Sparkles className="size-4" />
               AI 生成选题
             </Button>
           }
         />
       ) : (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3">
+        <div className="workspace-panel divide-y divide-border overflow-hidden">
           {items.map((t) => (
             <button
               key={t.id}
               onClick={() => setSelected(t)}
-              className="group rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/40"
+              className="group block w-full px-5 py-4 text-left transition-colors hover:bg-muted/30"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -553,7 +631,7 @@ export default function TopicsPage() {
                     {fmtDateTime(t.plannedAt)}
                   </span>
                 )}
-                <span className="ml-auto flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                {!readOnly && <span className="ml-auto flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
                   <span
                     role="button"
                     tabIndex={0}
@@ -580,7 +658,7 @@ export default function TopicsPage() {
                   >
                     <Trash2 className="size-3.5" />
                   </span>
-                </span>
+                </span>}
               </div>
             </button>
           ))}
@@ -602,9 +680,11 @@ export default function TopicsPage() {
         onCreated={refresh}
       />
       <TopicDetailDrawer
-        topic={selected}
+        key={selected?.id ?? "closed"}
+        topic={items.find(topic => topic.id === selected?.id) ?? selected}
         onClose={() => setSelected(null)}
         onChanged={refresh}
+        runs={runs}
       />
     </div>
   );

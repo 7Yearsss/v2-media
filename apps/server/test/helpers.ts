@@ -9,6 +9,15 @@ import type { Db } from "../src/db";
 import { migrate } from "../src/db/migrate";
 import * as schema from "../src/db/schema";
 import type { AiClient } from "../src/modules/ai";
+import { createAiRunHandlers } from "../src/lib/ai-run-handlers";
+import { runAiJobs } from "../src/lib/ai-runs";
+
+/** Tests advance the independently queued worker explicitly; requests never spawn work. */
+export async function drainAiRuns(deps: Deps, limit = 20) {
+  const handlers = createAiRunHandlers(deps);
+  for (let n = 0; n < limit; n++) if (!await runAiJobs(deps, handlers)) return;
+  throw new Error("AI test drain exceeded its bounded job limit");
+}
 
 export async function makeApp(ai?: AiClient) {
   const db = drizzle(new PGlite(), { schema }) as unknown as Db;

@@ -198,15 +198,16 @@ export function AiPanel({
   };
 
   return (
-    <div className="rounded-3xl border border-border bg-card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Sparkles className="size-4 text-primary" />
-        <p className="text-sm font-semibold text-foreground">AI 助手</p>
+    <div className="workspace-panel min-w-0 self-start p-3.5">
+      <div className="mb-3 flex items-center gap-2 border-b border-border pb-3">
+        <Sparkles className="size-3.5 text-muted-foreground" />
+        <p className="text-[13px] font-semibold text-foreground">AI 助手</p>
       </div>
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         <Button
           size="sm"
+          className="h-8 rounded-md px-2.5"
           variant="outline"
           disabled={busy}
           onClick={() => void startRewrite()}
@@ -216,6 +217,7 @@ export function AiPanel({
         </Button>
         <Button
           size="sm"
+          className="h-8 rounded-md px-2.5"
           variant="outline"
           disabled={busy}
           onClick={() => void startTitles()}
@@ -225,6 +227,7 @@ export function AiPanel({
         </Button>
         <Button
           size="sm"
+          className="h-8 rounded-md px-2.5"
           variant="outline"
           disabled={busy}
           onClick={() => void startTags()}
@@ -239,9 +242,9 @@ export function AiPanel({
           {runs.map((run) => (
             <div
               key={run.id}
-              className="rounded-2xl border border-border bg-muted/40 p-3"
+              className="rounded-lg border border-border bg-background p-3"
             >
-              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
                 {run.label}
               </p>
               {run.kind === "rewrite" ? (
@@ -277,7 +280,7 @@ export function AiPanel({
                   {(run.tags ?? []).map((t) => (
                     <span
                       key={t}
-                      className="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
+                      className="rounded-md bg-muted px-2.5 py-1 text-xs text-foreground"
                     >
                       #{t}
                     </span>
@@ -305,6 +308,7 @@ export function AiPanel({
       )}
 
       <PromptInput
+        className="rounded-lg"
         value={prompt}
         onValueChange={setPrompt}
         placeholder="对正文的改写要求，回车发送…"

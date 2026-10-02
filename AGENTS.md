@@ -13,7 +13,7 @@ npm workspaces，TypeScript 全栈：
 ## 约定
 
 - 平台差异（XHS 是第一个）只写在自己的适配目录里；数据按 user_id 隔离
-- 慢操作（AI 调用、素材下载）进 server 的 jobs 机制，不在请求里同步等外部服务
+- 慢操作（AI 调用、素材下载）进 server 的持久任务机制，不在请求里同步等外部服务；分析/选题/深评使用 `ai_runs`，素材/成稿/封面等继续使用 `jobs`
 - 页面数据解析用 `@v2media/shared/xhs-parse` 的纯函数，不要把小红书原始字段泄漏到业务代码
 - 插件在站点页面注入 UI 一律用 Shadow DOM 浮层，不改站点 DOM
 - secrets 只走 .env / UI 入库，不进代码与提交
@@ -27,9 +27,13 @@ npm workspaces，TypeScript 全栈：
 - `npm run typecheck`（全仓）· `npm test`（server）· `npm run build:ext`
 - dev：`npm run dev:server`（:3000）+ `npm run dev:web`（:5173）+ `npm run build:ext` 后 chrome://extensions 加载 `apps/extension/dist`
 
-## AI 分析
+## 持久 AI 任务（R3）
 
-- `POST /api/collections/:id/analyze` 是异步的：立刻 202 + `status=running` 行（已含代码算好的信号），后台跑 AI，页面轮询详情到 done/failed；running 超 12 分钟读取时回收为 failed。Cloudflare 对 >100s 无响应的请求返回 524，所以不能同步等，AI 客户端也用流式。
+- `POST /api/collections/:id/analyze` 在同一事务创建 `CollectionAnalysis(status=running,aiRunId)` 和 `ai_runs`，立即 202（已含代码信号）。`POST /api/ai/topics|topic-score` 立即 202 + 公共 `AiRun`，结果通过 `GET /api/ai/runs/:id` 及原领域接口读取，不再同步返回选题列表或评分正文。创建可带 UUID `operationId`；同用户相同操作/请求返回原任务，不重新冻结输入，换请求复用 ID 返回 409。
+- worker 在 `src/lib/ai-runs.ts`，领域适配器在 `analysis-ai-run.ts` / `topic-ai-run.ts`。必须冻结样本、人设、原选题版本、模型与提示词，再排队；禁止请求内 `void` 闭包启动 AI。租约 2 分钟、20 秒续租、单 attempt 最长 12 分钟；worker 回收过期租约并按 30s/60s 退避，初始最多 3 次。进度、终态和领域写入均校验租约/attempt，领域结果与 done 同事务提交，迟到模型不能覆盖新代次或已停止结果。新 run 的 GET 仅观测，不回收任务；旧无 aiRunId 的分析保留原超时兼容规则。
+- `POST /api/ai/runs/:id/retry {operationId:UUID}` 重试失败任务，沿用冻结输入且 attempt 继续递增；持久重试命令收据防止 ACK 丢失后再次排队。同 ID 换目标 409。`/cancel` 停止 queued/running 并清租约，不保证撤回已送到模型服务的请求。账号归档增加内部执行代次，恢复不重新授权旧 AI 结果。选题编辑/来源删除或移库/人设变化会阻止旧评分或选题写入；七维缺失或非法输出必须 failed，不能补 5 分伪造评分。
+- schema 当前为版本 3 `durable-ai-runs`；生产先运行显式迁移，再启动服务。只追加迁移，不改已应用版本 1/2 的 statements/checksum；生产只读模式不启动 AI worker。
+- Cloudflare 对 >100s 无响应的请求返回 524，所以这些入口不等待模型；AI 客户端仍用流式。
 - 提示词在 `src/lib/analysis-prompts.ts`，原则：最短 + 说明原因，只为评测失败加内容；评分器 `src/lib/analysis-grader.ts`，真模型评测 `npx tsx apps/server/scripts/eval-analysis.ts`。
 - `AI_ANALYSIS_MODEL` 可单独指定分析用模型（空=`AI_MODEL`）；慢的推理模型会很久，选响应快的。
 

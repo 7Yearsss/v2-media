@@ -35,6 +35,7 @@ import {
   AnimatedSidebarFooter,
   AnimatedSidebarGroup,
   AnimatedSidebarGroupContent,
+  AnimatedSidebarGroupLabel,
   AnimatedSidebarHeader,
   AnimatedSidebarInset,
   AnimatedSidebarMenu,
@@ -69,7 +70,7 @@ import { useToast } from "@/lib/toast";
 import { useRuntime } from "@/lib/hooks/use-runtime";
 
 const NAV = [
-  { to: "/", label: "仪表盘", icon: LayoutDashboard, match: /^\/$/ },
+  { to: "/", label: "今日工作", icon: LayoutDashboard, match: /^\/$/ },
   { to: "/library", label: "内容库", icon: LibraryBig, match: /^\/library/ },
   { to: "/analysis", label: "AI 分析", icon: BrainCircuit, match: /^\/analysis/ },
   { to: "/topics", label: "选题池", icon: Lightbulb, match: /^\/topics/ },
@@ -82,7 +83,7 @@ const NAV = [
 ] as const;
 
 const PAGE_TITLES: [RegExp, string][] = [
-  [/^\/$/, "仪表盘"],
+  [/^\/$/, "今日工作"],
   [/^\/library/, "内容库"],
   [/^\/analysis/, "AI 分析"],
   [/^\/topics/, "选题池"],
@@ -231,14 +232,14 @@ export function AppShell() {
 
   return (
     <ExtensionCtx.Provider value={{ online }}>
-      <AnimatedSidebarProvider className="h-dvh min-h-0 w-full overflow-hidden bg-background">
+      <AnimatedSidebarProvider style={{ "--sidebar-width": "232px", "--sidebar-width-icon": "60px" }} className="workspace-shell h-dvh min-h-0 w-full overflow-hidden bg-background">
         <AnimatedSidebar
           ariaLabel="v2-media 工作台"
           collapsible="icon"
           className="min-h-0"
-          panelClassName="border-border"
+          panelClassName="border-border bg-[var(--workspace-rail)]"
         >
-          <AnimatedSidebarHeader className="p-3 pb-2">
+          <AnimatedSidebarHeader className="p-3 pb-4">
             <div className="flex min-h-11 items-center gap-3 overflow-hidden px-2">
               <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
                 <Layers aria-hidden className="size-4" />
@@ -258,12 +259,20 @@ export function AppShell() {
           </AnimatedSidebarHeader>
 
           <AnimatedSidebarContent className="px-2 pt-1">
-            <AnimatedSidebarGroup>
+            {[
+              { label: "工作台", paths: ["/"] },
+              { label: "资料研究", paths: ["/library", "/analysis"] },
+              { label: "内容创作", paths: ["/topics", "/drafts"] },
+              { label: "发布与复盘", paths: ["/publish", "/insights"] },
+              { label: "管理", paths: ["/collection-tasks", "/accounts", "/extension"] },
+            ].map(group => <AnimatedSidebarGroup key={group.label} className="p-0">
+              <AnimatedSidebarGroupLabel className="h-7 px-3 text-[11px] font-normal">{group.label}</AnimatedSidebarGroupLabel>
               <AnimatedSidebarGroupContent>
                 <AnimatedSidebarMenu>
-                  {NAV.map(({ to, label, icon: Icon, match }) => (
+                  {NAV.filter(item => group.paths.includes(item.to)).map(({ to, label, icon: Icon, match }) => (
                     <AnimatedSidebarMenuItem key={to}>
                       <AnimatedSidebarMenuButton
+                        className="workspace-nav-item"
                         isActive={match.test(location.pathname)}
                         icon={<Icon className="size-4" />}
                         onSelect={() => navigate(to)}
@@ -274,7 +283,7 @@ export function AppShell() {
                   ))}
                 </AnimatedSidebarMenu>
               </AnimatedSidebarGroupContent>
-            </AnimatedSidebarGroup>
+            </AnimatedSidebarGroup>)}
           </AnimatedSidebarContent>
 
           <AnimatedSidebarFooter className="gap-3 border-none p-3">
@@ -331,7 +340,7 @@ export function AppShell() {
         </AnimatedSidebar>
 
         <AnimatedSidebarInset className="min-h-0 bg-background">
-          <header className="flex h-14 shrink-0 items-center gap-3 border-border border-b px-4">
+          <header className="flex h-14 shrink-0 items-center gap-3 border-border border-b bg-card/80 px-5">
             <AnimatedSidebarTrigger className="text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
               <PanelLeft aria-hidden className="size-4" />
             </AnimatedSidebarTrigger>

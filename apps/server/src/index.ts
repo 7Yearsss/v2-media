@@ -10,6 +10,8 @@ import { startMediaWorker } from "./lib/media-jobs";
 import { startUploadWorker } from "./lib/upload-jobs";
 import { startDraftWorker } from "./lib/draft-jobs";
 import { startPostmortemWorker } from "./lib/postmortem-jobs";
+import { startAiWorker } from "./lib/ai-runs";
+import { createAiRunHandlers } from "./lib/ai-run-handlers";
 import { createOpenAiClient } from "./modules/ai";
 
 async function main() {
@@ -26,6 +28,7 @@ async function main() {
   };
   const app = createApp(deps);
   if (env.runtimeMode !== "production-readonly") {
+    startAiWorker(deps, createAiRunHandlers(deps));
     startPostmortemWorker(deps);
     if (r2) startMediaWorker(deps);
     if (r2) startUploadWorker(deps);

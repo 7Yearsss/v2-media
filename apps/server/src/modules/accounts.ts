@@ -57,7 +57,7 @@ export function accountsModule(deps: Deps) {
       const [account] = await tx.select().from(hostedAccounts).where(and(eq(hostedAccounts.id, id), eq(hostedAccounts.userId, userId)));
       if (!account) return false;
       if (account.archivedAt) return true;
-      await tx.update(hostedAccounts).set({ archivedAt: deps.now() }).where(eq(hostedAccounts.id, id));
+      await tx.update(hostedAccounts).set({ archivedAt: deps.now(), executionRevision: account.executionRevision + 1 }).where(eq(hostedAccounts.id, id));
       // Restore cannot authorize model results that began before this archive.
       // Lock draft before publication, matching draft archive and publish creation.
       const interrupted = await tx.update(drafts).set({ generationRevision: sql`${drafts.generationRevision} + 1`,
