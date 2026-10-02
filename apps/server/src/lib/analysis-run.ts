@@ -1,4 +1,4 @@
-import type { AnalysisSignals, AnalysisStage, AnalysisVideoBreakdown, AnalysisVisualItem } from "@v2media/shared";
+import type { AccountPersonaSnapshot, AnalysisSignals, AnalysisStage, AnalysisVideoBreakdown, AnalysisVisualItem } from "@v2media/shared";
 
 import type { Deps } from "../context";
 import { env } from "../env";
@@ -6,6 +6,7 @@ import type { AiPart } from "../modules/ai";
 import { HYPOTHESIS_SYSTEM, REPORT_SYSTEM, VIDEO_SYSTEM, VISION_SYSTEM } from "./analysis-prompts";
 import { engagementOf, signalsForPrompt } from "./analysis-signals";
 import { isUsableInsight, parseInsight } from "./insight-parse";
+import { personaForPrompt } from "./account-persona";
 
 /** 分析需要的笔记字段（路由查库后传入）。ref = 候选池里的互动排名，AI 只引用编号。 */
 export interface RunNote {
@@ -34,6 +35,7 @@ export interface RunNote {
 export interface RunInput {
   colName: string;
   positioning: string;
+  persona?: AccountPersonaSnapshot | null;
   /** 候选池（按互动降序）。 */
   pool: RunNote[];
   /** 进 AI 样本的笔记（总互动 top ∪ 日均互动 top）。 */
@@ -250,7 +252,7 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     : "";
   const context = [
     `采集库「${input.colName}」共 ${pool.length} 篇`,
-    positioning ? `目标账号定位：${positioning}` : "",
+    input.persona ? personaForPrompt(input.persona) : positioning ? `目标账号定位：${positioning}` : "",
     `【信号】\n${signalsForPrompt(signals)}`,
     pairText ? `【对照：同类内容，一篇火一篇没火】\n${pairText}` : "",
     `【笔记】\n${sample.map(line).join("\n")}`,
@@ -267,7 +269,7 @@ export async function runAnalysisAI(deps: Deps, input: RunInput): Promise<{ repo
     })
     .join("\n");
   const reviewContext = [
-    positioning ? `目标账号定位：${positioning}` : "",
+    input.persona ? personaForPrompt(input.persona) : positioning ? `目标账号定位：${positioning}` : "",
     `【信号】\n${signalsForPrompt(signals)}`,
     pairText ? `【对照】\n${pairText}` : "",
     `【笔记索引】\n${brief}`,

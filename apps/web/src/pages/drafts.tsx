@@ -31,6 +31,7 @@ import {
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { DraftImages } from "@/components/app/draft-images";
 import { DraftCover } from "@/components/app/draft-cover";
+import { DraftAccount } from "@/components/app/draft-account";
 import { AiPanel } from "@/components/app/ai-panel";
 import { RiskTextarea } from "@/components/app/risk-textarea";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
@@ -436,6 +437,7 @@ export default function DraftsPage() {
             </div>
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-8 py-6">
+              <DraftAccount key={`account-${selected.id}`} draftId={selected.id} beforeChange={beforeGenerate} />
               <input
                 value={title}
                 onChange={(e) => update({ title: e.target.value })}

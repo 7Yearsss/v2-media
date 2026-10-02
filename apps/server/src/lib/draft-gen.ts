@@ -1,11 +1,12 @@
-import { checkBannedWords, summarizeBanned } from "@v2media/shared";
+import { checkBannedWords, summarizeBanned, type AccountPersonaSnapshot } from "@v2media/shared";
 
 import type { Deps } from "../context";
 import { env } from "../env";
 import { jsonObjectsIn } from "./json-extract";
+import { personaForPrompt } from "./account-persona";
 
 /** 选题一键成稿：借爆款的结构，换成选题和定位说的事；写完自查违禁词，命中就让模型改一次。 */
-export const DRAFT_SYSTEM = `你在帮一个小红书账号写下一篇笔记。输入有选题（标题、开头钩子、借鉴思路）、被借鉴的爆款笔记，可能还有账号定位。
+export const DRAFT_SYSTEM = `你在帮一个小红书账号写下一篇笔记。输入有选题（标题、开头钩子、借鉴思路）、被借鉴的爆款笔记，可能还有账号定位、风格和红线。
 借爆款的结构：先抛什么、怎么分段、读者能拿走什么；内容换成选题和定位要说的事，不要照搬原文，因为平台会判定搬运，读者也会觉得眼熟。
 正文写给手机上扫读的人：短段落，每段一个意思，第一句就是钩子，结尾留一个读者能回答的问题。
 涉及操作步骤、数据或安全的细节，输入里没有依据的不要编，写得保守并提醒以实际情况为准，因为读者会照着做。
@@ -18,6 +19,7 @@ export interface DraftSource {
   hook?: string;
   angle?: string;
   positioning?: string;
+  persona?: AccountPersonaSnapshot | null;
   note?: { title: string; content: string; tags: string[] };
 }
 
@@ -59,7 +61,7 @@ function parse(text: string): Omit<GeneratedDraft, "warnings"> | null {
 
 export async function generateDraft(deps: Deps, src: DraftSource): Promise<GeneratedDraft> {
   const input = [
-    src.positioning ? `账号定位：${src.positioning}` : "",
+    src.persona ? personaForPrompt(src.persona) : src.positioning ? `账号定位：${src.positioning}` : "",
     `选题标题：${src.title}`,
     src.hook ? `开头钩子：${src.hook}` : "",
     src.angle ? `借鉴思路：${src.angle}` : "",

@@ -4,18 +4,18 @@
 
 ## 现状（一句话）
 
-「插件采集 → 内容库 → AI 分析 → 选题 → AI 成稿 → 插件发布」已端到端跑通一次（PR #27，仅自己可见发布成功）。**断点在两头**：成稿没有图（发不出真笔记），发布后的数据回流没验证过。
+「插件采集 → 内容库 → AI 分析 → 选题 → AI 成稿 → 插件发布」已端到端跑通一次（PR #27，仅自己可见发布成功）。真实 readback 与首条指标已验证；T1 图片上传、T2 自动封面和 T3 账号人设已在功能分支实现，尚待部署后的真实 AI/R2/私密发布验收。
 
 | 环节 | 状态 | 关键位置 |
 |---|---|---|
 | 采集 | 可用（浏览即采集、深度采集、点赞门槛） | `apps/extension/src/{content,background}.ts`、`main-world/xhs.ts` |
 | AI 分析 | 可用，异步 + 评分器 | `apps/server/src/lib/analysis-*.ts`、`modules/collections.ts` |
 | 选题 | 可用（AI 生成 + 七维评分） | `modules/topics.ts`、`web/src/pages/topics.tsx` |
-| AI 成稿 | **只出文字**：title/content/tags + 一行 `cover` 大字，`images: []` | `lib/draft-gen.ts`、`topics.ts` 的 `to-draft {ai:true}` |
-| 草稿图片 | **只能粘贴 URL，没有上传** | `web/src/pages/drafts.tsx` `addImage` |
+| AI 成稿 | T2 分支实现异步成稿 + 模板封面，生产仍待部署验收 | `lib/draft-jobs.ts`、`lib/cover-render.ts` |
+| 草稿图片 | T1 分支实现上传/排序/移除/重试，生产仍待验收 | `modules/media.ts`、`web/src/components/app/draft-images.tsx` |
 | 插件发布 | 刚跑通 | `extension/src/creator-publish.ts` |
-| 归因回采 | 代码已有，**从未在真实数据上跑完** | `ext.ts` tasks、`background.ts` readback/metrics |
-| 账号人设 | 未做（`hosted_accounts` 无定位/风格/红线字段） | `db/schema.ts` |
+| 归因回采 | readback 与首条 metrics 真实落库已通过，1 天/7 天待到期 | `ext.ts` tasks、`background.ts` readback/metrics |
+| 账号人设 | T3 分支实现三字段编辑/提示词注入/历史快照，生产待部署 | `lib/account-persona.ts`、`db/schema.ts` |
 
 ⚠️ 本地 `apps/server/.env` 的 `DATABASE_URL` 指向**生产库**（经 SSH 隧道 127.0.0.1:54330）。写操作都会落到线上。做开发/测试请换成本地 PGlite（去掉 `DATABASE_URL`），或明确知道自己在动生产。
 
@@ -33,6 +33,8 @@
 验收：`publish_jobs.13` 有 `outcome=verified` + `note_id`；`note_metrics` 至少一行。
 
 2026-10-02 接手进展：已恢复数据库隧道并启动本地 server/web。09:50（北京时间）复查确认 readback #85 已 done，发布 #13 已 verified，note_id 已回填为 `6abe8de6000000000200f2b7`；自动排出 metrics #86/#87/#88，分别在北京时间 10 月 2 日 10:48、10 月 3 日 09:48、10 月 9 日 09:48 到期。09:50 尚无指标快照，第一条任务未到期。完整证据、启动参数与时间解释见 `docs/publish-smoke-test.md` 的「T0 接手核对」。**笔记确认已通过，T0 仍待至少一行真实指标入库。**
+
+T0 最新结论（13:03 北京时间只读复查）：admin@devin.local（ID #2）的 metrics #86 已 done，note_metrics #1 于北京时间 10:55:39 真实入库，关联发布 #13 和已核对笔记 ID。互动四项为 0，views/exposure 未采到。T0 最小验收通过；#87/#88 的 1 天/7 天指标仍待到期。完整证据见 publish-smoke-test.md 最新段落。
 
 ### T1 草稿图片上传（P1 前置）
 
@@ -59,6 +61,8 @@
 验收：选题一键成稿后草稿自带一张封面，无需任何手动操作即可创建发布任务。
 
 ### T3 账号人设（P2）
+
+2026-10-02：实现位于 `codex/account-persona`（包含 T1/T2）。账号矩阵编辑三字段，统一注入选题/成稿/改写/标题/标签/分析，保存调用快照，发布采用实际目标账号规则和版本检查。隔离内存库/mock AI/R2 已验证保存、刷新和切换账号；135 项测试（单 worker）、typecheck、插件/web 构建通过。未迁移生产库，也未编辑真实 ID #2 的人设。详见 `docs/t3-persona-verification.md`。
 
 `hosted_accounts` 加 `positioning`（定位/内容支柱）、`style_notes`、`redlines`；账号矩阵页可编辑；选题生成、AI 成稿、AI 分析的提示词注入（现在分析/成稿已有临时 `positioning` 参数，改为默认取账号字段）；红线作为发布前自查的输入之一（违禁词检查已有）。设计见 `docs/planning-attribution-design.md` 第四节。
 

@@ -101,6 +101,10 @@ export function AiPanel({
   const [prompt, setPrompt] = useState("");
   const idRef = useRef(0);
   const [busy, setBusy] = useState(false);
+  const context = `${draft?.id ?? "none"}:${draft?.accountId ?? "generic"}`;
+  const contextRef = useRef(context);
+  contextRef.current = context;
+  useEffect(() => { setRuns([]); }, [context]);
 
   const pushRun = (kind: RunKind, label: string): number => {
     const id = ++idRef.current;
@@ -125,14 +129,17 @@ export function AiPanel({
   const startRewrite = async (instruction?: string) => {
     if (guardEmpty() || busy) return;
     const id = pushRun("rewrite", instruction ? "自定义改写" : "AI 改写正文");
+    const startedIn = contextRef.current;
     setBusy(true);
     try {
       const res = await api.aiRewrite({
         draftId: draft?.id,
+        accountId: draft?.accountId,
         title,
         content,
         instruction,
       });
+      if (contextRef.current !== startedIn) return;
       patchRun(id, {
         status: "streaming",
         fullText: `${res.title}\n===\n${res.content}`,
@@ -155,9 +162,11 @@ export function AiPanel({
   const startTitles = async () => {
     if (guardEmpty() || busy) return;
     const id = pushRun("titles", "生成 5 个标题");
+    const startedIn = contextRef.current;
     setBusy(true);
     try {
-      const res = await api.aiTitles({ title, content, count: 5 });
+      const res = await api.aiTitles({ draftId: draft?.id, accountId: draft?.accountId, title, content, count: 5 });
+      if (contextRef.current !== startedIn) return;
       patchRun(id, { status: "complete", titles: res.titles });
     } catch (err) {
       patchRun(id, {
@@ -172,9 +181,11 @@ export function AiPanel({
   const startTags = async () => {
     if (guardEmpty() || busy) return;
     const id = pushRun("tags", "生成话题标签");
+    const startedIn = contextRef.current;
     setBusy(true);
     try {
-      const res = await api.aiTags({ title, content, count: 8 });
+      const res = await api.aiTags({ draftId: draft?.id, accountId: draft?.accountId, title, content, count: 8 });
+      if (contextRef.current !== startedIn) return;
       patchRun(id, { status: "complete", tags: res.tags });
     } catch (err) {
       patchRun(id, {

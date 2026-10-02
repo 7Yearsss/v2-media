@@ -3,11 +3,12 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { collectedNotes, drafts, mediaAssets } from "../db/schema";
+import { collectedNotes, drafts, hostedAccounts, mediaAssets } from "../db/schema";
 import { draftWithUploads } from "../lib/draft-media";
 import { IMAGE_UPLOAD_LIMITS } from "@v2media/shared";
 
 const createSchema = z.object({
+  accountId: z.number().int().positive().optional(),
   collectedNoteId: z.number().int().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
@@ -16,6 +17,7 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
+  accountId: z.number().int().positive().nullable().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
   tags: z.array(z.string()).optional(),
@@ -43,6 +45,10 @@ export function draftsModule(deps: Deps) {
     const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const p = parsed.data;
+    if (p.accountId) {
+      const [account] = await deps.db.select({ id: hostedAccounts.id }).from(hostedAccounts).where(and(eq(hostedAccounts.id, p.accountId), eq(hostedAccounts.userId, userId)));
+      if (!account) return c.json({ error: "account not found" }, 404);
+    }
     let values = {
       userId,
       title: p.title ?? "",
@@ -67,7 +73,7 @@ export function draftsModule(deps: Deps) {
     }
     const [draft] = await deps.db
       .insert(drafts)
-      .values({ ...values, collectedNoteId: p.collectedNoteId })
+      .values({ ...values, collectedNoteId: p.collectedNoteId, accountId: p.accountId })
       .returning();
     return c.json(draft);
   });
@@ -83,6 +89,10 @@ export function draftsModule(deps: Deps) {
       const [existing] = await tx.select().from(drafts).where(and(eq(drafts.id, id), eq(drafts.userId, userId)));
       if (!existing) return { error: "not found", code: 404 as const };
       const { imagesVersion, ...patch } = parsed.data;
+      if (patch.accountId) {
+        const [account] = await tx.select({ id: hostedAccounts.id }).from(hostedAccounts).where(and(eq(hostedAccounts.id, patch.accountId), eq(hostedAccounts.userId, userId)));
+        if (!account) return { error: "account not found", code: 404 as const };
+      }
       if (patch.images) {
         if ((existing.images.some(i => i.assetId) || patch.images.some(i => i.assetId)) && imagesVersion === undefined)
           return { error: "修改上传图集需要 imagesVersion", code: 428 as const };
@@ -108,7 +118,8 @@ export function draftsModule(deps: Deps) {
       const removedCover = !!patch.images && !!existing.coverAssetId && !patch.images.some(i => i.assetId === existing.coverAssetId);
       if (removedCover) await tx.update(mediaAssets).set({ status: "canceled" }).where(and(eq(mediaAssets.userId, userId),
         eq(mediaAssets.draftId, id), eq(mediaAssets.kind, "cover"), inArray(mediaAssets.status, ["queued", "processing", "failed"])));
-      const editedText = patch.title !== undefined || patch.content !== undefined || patch.tags !== undefined;
+      const editedText = patch.title !== undefined || patch.content !== undefined || patch.tags !== undefined
+        || (patch.accountId !== undefined && patch.accountId !== existing.accountId);
       const [row] = await tx.update(drafts).set({
         ...patch, ...(patch.images ? { imagesVersion: existing.imagesVersion + 1 } : {}), updatedAt: deps.now(),
         ...(editedText ? { textVersion: existing.textVersion + 1 } : {}),

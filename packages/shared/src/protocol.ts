@@ -95,6 +95,7 @@ export interface CollectResponse {
 
 /** POST /api/drafts —— 从收藏或空白创建草稿。 */
 export interface DraftCreateRequest {
+  accountId?: number;
   collectedNoteId?: number;
   title?: string;
   content?: string;
@@ -102,6 +103,7 @@ export interface DraftCreateRequest {
   images?: { url: string }[];
 }
 export interface DraftUpdateRequest {
+  accountId?: number | null;
   title?: string;
   content?: string;
   tags?: string[];
@@ -112,6 +114,7 @@ export interface DraftUpdateRequest {
 
 /** POST /api/ai/* —— 统一走 OpenAI 兼容网网。 */
 export interface AiRewriteRequest {
+  accountId?: number | null;
   draftId?: number;
   title?: string;
   content?: string;
@@ -122,11 +125,15 @@ export interface AiRewriteResponse {
   content: string;
 }
 export interface AiTitlesRequest {
+  accountId?: number | null;
+  draftId?: number;
   title: string;
   content?: string;
   count?: number;
 }
 export interface AiTagsRequest {
+  accountId?: number | null;
+  draftId?: number;
   title: string;
   content?: string;
   count?: number;
@@ -134,11 +141,14 @@ export interface AiTagsRequest {
 
 /** POST /api/publish/jobs */
 export interface PublishJobCreateRequest {
+  /** 发布前展示的人设版本；冲突时应重新读取目标账号。 */
+  personaVersion?: number;
   draftId: number;
   accountId: number;
   scheduledAt?: number;
   visibility?: "public" | "private" | "friends";
 }
+export interface CollectionAnalyzeRequest { accountId?: number; positioning?: string; withVideo?: boolean }
 
 /** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。xhsUserId 供插件比对当前浏览器登录的托管账号。 */
 export interface PendingPublishJobsResponse {

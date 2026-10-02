@@ -17,6 +17,8 @@ import type {
   NotesSummary,
   Collection,
   CollectionAnalysis,
+  CollectionAnalyzeRequest,
+  AccountPersonaUpdateRequest,
   Draft,
   DraftCreateRequest,
   DraftUpdateRequest,
@@ -273,6 +275,8 @@ export const api = {
     request<AuthResponse>("/api/auth/login", { method: "POST", body }),
 
   accounts: () => request<HostedAccount[]>("/api/accounts"),
+  updateAccountPersona: (id: number, body: AccountPersonaUpdateRequest) =>
+    request<HostedAccount>(`/api/accounts/${id}`, { method: "PATCH", body }),
   deleteAccount: (id: number) =>
     request<void>(`/api/accounts/${id}`, { method: "DELETE" }),
 
@@ -318,8 +322,8 @@ export const api = {
     request<Collection>(`/api/collections/${id}`, { method: "PATCH", body: { name } }),
   deleteCollection: (id: number) =>
     request<void>(`/api/collections/${id}`, { method: "DELETE" }),
-  analyzeCollection: (id: number, positioning?: string) =>
-    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST", body: { positioning } }),
+  analyzeCollection: (id: number, opts: CollectionAnalyzeRequest = {}) =>
+    request<CollectionAnalysis>(`/api/collections/${id}/analyze`, { method: "POST", body: opts }),
   collectionAnalyses: (id: number) =>
     request<{ items: Omit<CollectionAnalysis, "report" | "data">[] }>(`/api/collections/${id}/analyses`),
   collectionAnalysis: (id: number, aid: number) =>

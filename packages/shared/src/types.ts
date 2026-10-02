@@ -259,6 +259,7 @@ export interface CollectionAnalysis {
     insight: CollectionInsight | null;
     /** 分析时填的目标账号定位（空=通用）。 */
     positioning?: string;
+    persona?: AccountPersonaSnapshot | null;
     visual?: AnalysisVisualItem[];
     /** 生成中的进度（done 后移除）。 */
     progress?: AnalysisProgress;
@@ -296,6 +297,26 @@ export interface HostedAccount {
   statusMessage: string;
   lastSeenAt: string;
   createdAt: string;
+  positioning: string;
+  styleNotes: string;
+  redlines: string;
+  personaVersion: number;
+}
+
+export const ACCOUNT_PERSONA_LIMITS = { positioning: 1000, styleNotes: 1000, redlines: 1000 } as const;
+export interface AccountPersonaSnapshot {
+  accountId: number | null;
+  nickname: string | null;
+  version: number;
+  positioning: string;
+  styleNotes: string;
+  redlines: string;
+}
+export interface AccountPersonaUpdateRequest {
+  version: number;
+  positioning?: string;
+  styleNotes?: string;
+  redlines?: string;
 }
 
 /** 服务端存的内容库条目。 */
@@ -345,6 +366,8 @@ export interface NotesSummary {
 export interface Draft {
   id: number;
   collectedNoteId?: number;
+  accountId: number | null;
+  personaSnapshot: AccountPersonaSnapshot | null;
   title: string;
   content: string;
   tags: string[];
@@ -436,6 +459,7 @@ export interface TopicScoreDetail {
 
 export interface Topic {
   id: number;
+  personaSnapshot?: AccountPersonaSnapshot | null;
   title: string;
   /** 切入角度/要点说明。 */
   angle: string;
@@ -477,6 +501,7 @@ export type PublishOutcome =
   | "readback_error"; // 其他读回失败（超时/页面结构变了）
 
 export interface PublishJob {
+  personaSnapshot?: AccountPersonaSnapshot | null;
   id: number;
   draftId: number;
   accountId: number;

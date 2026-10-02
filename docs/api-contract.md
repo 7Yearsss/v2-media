@@ -15,6 +15,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 |---|---|---|
 | POST | /api/auth/register · /api/auth/login | `{email,password}` → `{token,user}` |
 | GET | /api/accounts | 托管账号列表 `HostedAccount[]` |
+| PATCH | /api/accounts/:id | `{version,positioning?,styleNotes?,redlines?}` 保存账号人设，返回 `HostedAccount` |
 | DELETE | /api/accounts/:id | 解绑 |
 | GET | /api/notes?keyword=&tag=&source=&collectionId=&cursor= | 内容库列表（分页 `{items,nextCursor}`；`collectionId` 数字=该库、`none`=未分组） |
 | GET | /api/collections | 采集库列表 `{items:[{id,name,noteCount,createdAt}]}` |
@@ -46,6 +47,16 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | GET | /api/publish/jobs | 任务列表 |
 | POST | /api/publish/jobs/:id/cancel | |
 | GET | /api/overview | 仪表盘计数 |
+
+## 账号人设与创作上下文
+
+- `HostedAccount` 增加 `positioning`、`styleNotes`、`redlines`（默认空字符串）、`personaVersion`（默认 0）。PATCH 至少一个人设字段，每项最多 1000 字符，首尾空白裁去；拒绝其他字段，空字符串表示清空。必须提交当前 version，旧版本 409、跨用户 404；有实际变更才增加版本，重复保存不增加。插件心跳不覆盖这些字段。
+- `AccountPersonaSnapshot` 为 `{accountId,nickname,version,positioning,styleNotes,redlines}`。选题生成/评分、成稿、分析、发布分别保存调用时的快照，后续编辑人设不会改写历史。无账号且无人设时使用通用风格。
+- `Draft` 增加可空 `accountId`（写作账号）与 `personaSnapshot`（成稿时人设）。创建/PATCH 可以指定或清空 accountId；校验归属，更换写作账号增加 textVersion，防止迟到 AI 覆盖。首次新增此列时，从同用户最近关联选题继承账号；之后明确清空不被启动迁移回填。
+- `/api/ai/rewrite|titles|tags` 可接收 `draftId`、可空 `accountId`：省略账号继承草稿写作账号，明确 null 使用通用风格；即使同时提供原始 title/content，draftId 仍校验归属。每次读取当前人设，注入改写、标题、标签提示词。选题生成/评分使用选题目标账号；评分中途换账号时拒绝旧结果回写（409）。
+- `POST /api/collections/:id/analyze` 可接收 `{accountId?,positioning?,withVideo?}`，定位最多 1000 字符。定位覆盖只影响本次定位，账号风格/红线仍保留。报告 `data.persona` 保存快照，注入假设与深度复核，客观视觉描述不随人设改写。
+- `to-draft {ai:true,positioning?}` 冻结目标账号三字段，定位覆盖语义同分析；任务执行前后检查写作账号和文字版本。成稿重试读取当前写作账号人设；原定位覆盖仅在仍是原账号时复用。
+- `POST /api/publish/jobs` 可增加 `personaVersion`，过期返回 409；创建时锁实际目标账号与草稿，并冻结 `PublishJob.personaSnapshot` 与正文图集快照。旧客户端省略版本仍兼容。发布页展示目标账号红线与成稿账号不一致提示；自然语言红线是提示词/人工自查上下文，确定性违禁词校验仍沿用已有机制。
 
 ## 草稿图片上传
 

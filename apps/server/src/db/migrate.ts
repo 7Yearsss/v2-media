@@ -223,13 +223,34 @@ ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_revision integer NOT NULL DEFA
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_state varchar(16) NOT NULL DEFAULT 'idle';
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_error text;
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_asset_id integer;
+ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS positioning text NOT NULL DEFAULT '';
+ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS style_notes text NOT NULL DEFAULT '';
+ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS redlines text NOT NULL DEFAULT '';
+ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS persona_version integer NOT NULL DEFAULT 0;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS account_id integer REFERENCES hosted_accounts(id) ON DELETE SET NULL;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
 `;
 
 export async function migrate(db: Db) {
   // drizzle 的 execute 走底层驱动；pglite/node-postgres 都支持单字符串多语句？pg 驱动默认不允许。
   const stmts = DDL.split(";").map((s) => s.trim()).filter(Boolean);
   const { sql } = await import("drizzle-orm");
-  for (const stmt of stmts) {
-    await db.execute(sql.raw(stmt));
-  }
+  await db.transaction(async tx => {
+    const before = await tx.execute(sql`SELECT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'drafts' AND column_name = 'account_id'
+    ) AS present`) as { rows: Array<{ present: boolean }> };
+    for (const stmt of stmts) await tx.execute(sql.raw(stmt));
+    // Backfill once when adding the writing-account field. Later explicit "通用风格" stays null.
+    if (!before.rows[0]?.present) await tx.execute(sql`
+      UPDATE drafts d SET account_id = t.account_id
+      FROM (
+        SELECT DISTINCT ON (draft_id, user_id) draft_id, user_id, account_id
+        FROM topics WHERE draft_id IS NOT NULL AND account_id IS NOT NULL
+        ORDER BY draft_id, user_id, updated_at DESC, id DESC
+      ) t WHERE d.id = t.draft_id AND d.user_id = t.user_id AND d.account_id IS NULL
+    `);
+  });
 }

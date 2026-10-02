@@ -8,6 +8,8 @@ import type { Deps } from "../context";
 import { runAnalysisAI, type RunNote } from "../lib/analysis-run";
 import { computeSignals, engagementOf, type SignalNote } from "../lib/analysis-signals";
 import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
+import { ACCOUNT_PERSONA_LIMITS } from "@v2media/shared";
+import { resolveAccountPersona } from "../lib/account-persona";
 
 /** 一次分析喂给模型的笔记上限（按互动量取 top）。 */
 const ANALYZE_LIMIT = 40;
@@ -109,8 +111,15 @@ export function collectionsModule(deps: Deps) {
     const col = await ownCollection(c);
     if (!col) return c.json({ error: "not found" }, 404);
     const userId = c.get("userId");
-    const body = (await c.req.json().catch(() => null)) as { positioning?: unknown; withVideo?: unknown } | null;
-    const positioning = typeof body?.positioning === "string" ? body.positioning.trim().slice(0, 200) : "";
+    const parsed = z.object({ accountId: z.number().int().positive().optional(),
+      positioning: z.string().trim().max(ACCOUNT_PERSONA_LIMITS.positioning).optional(), withVideo: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const body = parsed.data;
+    const persona = await resolveAccountPersona(deps.db, userId, body.accountId, body.positioning);
+    if ("error" in persona) return c.json({ error: persona.error }, 404);
+    const positioning = persona.snapshot?.positioning ?? "";
+    const personaData = { persona: persona.snapshot, ...(positioning ? { positioning } : {}) };
     const notes = await deps.db
       .select({
         id: collectedNotes.id,
@@ -134,7 +143,7 @@ export function collectionsModule(deps: Deps) {
         commentsData: collectedNotes.commentsData,
       })
       .from(collectedNotes)
-      .where(eq(collectedNotes.collectionId, col.id))
+      .where(and(eq(collectedNotes.collectionId, col.id), eq(collectedNotes.userId, userId)))
       .orderBy(
         desc(sql`${collectedNotes.likes} + ${collectedNotes.collects} + ${collectedNotes.comments} + ${collectedNotes.shares}`),
       )
@@ -208,7 +217,7 @@ export function collectionsModule(deps: Deps) {
         collectionId: col.id,
         noteCount: notes.length,
         status: "running",
-        data: { stats, insight: null, ...(positioning ? { positioning } : {}) },
+        data: { stats, insight: null, ...personaData },
       })
       .returning();
     const runId = row!.id;
@@ -223,6 +232,7 @@ export function collectionsModule(deps: Deps) {
         const { report, visual } = await runAnalysisAI(deps, {
           colName: col.name,
           positioning,
+          persona: persona.snapshot,
           pool: runNotes,
           sample: runNotes.filter((n) => sampleSet.has(n.id)),
           signals,
@@ -231,7 +241,7 @@ export function collectionsModule(deps: Deps) {
           onStage: async (stage, steps) => {
             await deps.db
               .update(collectionAnalyses)
-              .set({ data: { stats, insight: null, ...(positioning ? { positioning } : {}), progress: { stage, steps, at: Date.now() } } })
+              .set({ data: { stats, insight: null, ...personaData, progress: { stage, steps, at: Date.now() } } })
               .where(eq(collectionAnalyses.id, runId));
           },
         });
@@ -240,7 +250,7 @@ export function collectionsModule(deps: Deps) {
           .set({
             status: "done",
             report,
-            data: { stats, insight: parseInsight(report, resolve), ...(positioning ? { positioning } : {}), ...(visual.length ? { visual } : {}) },
+            data: { stats, insight: parseInsight(report, resolve), ...personaData, ...(visual.length ? { visual } : {}) },
           })
           .where(eq(collectionAnalyses.id, runId));
       } catch (e) {

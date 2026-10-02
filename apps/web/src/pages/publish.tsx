@@ -62,6 +62,7 @@ function NewJobDrawer({
   onCreated: () => void;
 }) {
   const toast = useToast();
+  const queryClient = useQueryClient();
   const [draftId, setDraftId] = useState("");
   const [accountId, setAccountId] = useState("");
   const [visibility, setVisibility] =
@@ -93,6 +94,7 @@ function NewJobDrawer({
       await api.createJob({
         draftId: Number(draftId),
         accountId: Number(accountId),
+        personaVersion: account?.personaVersion,
         visibility,
         scheduledAt:
           scheduledAt && Number.isFinite(scheduledAt) ? scheduledAt : undefined,
@@ -106,6 +108,7 @@ function NewJobDrawer({
       setSchedule("");
     } catch (err) {
       toast.error("创建失败", err instanceof Error ? err.message : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["accounts"] });
     } finally {
       setSubmitting(false);
     }
@@ -192,6 +195,13 @@ function NewJobDrawer({
             </Select>
           </div>
 
+          {account?.redlines && <div className="space-y-1.5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3.5 text-xs leading-5">
+            <p className="font-medium">「{account.nickname || "目标账号"}」内容红线</p>
+            <p className="whitespace-pre-wrap">{account.redlines}</p>
+            <p className="text-muted-foreground">请核对标题、正文和图片是否符合这些要求。</p>
+          </div>}
+          {account && draft && ((draft.accountId && draft.accountId !== account.id) || (draft.personaSnapshot?.accountId && draft.personaSnapshot.accountId !== account.id)) &&
+            <p className="text-xs leading-5 text-amber-600">这篇草稿曾使用其他账号设置，发布前请核对当前语气和目标账号红线。</p>}
           <div>
             <p className="mb-1.5 text-xs font-medium text-muted-foreground">
               可见性

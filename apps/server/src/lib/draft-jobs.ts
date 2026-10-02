@@ -6,8 +6,9 @@ import { collectedNotes, collectionAnalyses, drafts, jobs, topics } from "../db/
 import { generateDraft, type DraftSource } from "./draft-gen";
 import { automaticCoverSpec } from "./cover-spec";
 import { queueCover, runCoverJobs } from "./cover-jobs";
+import { resolveAccountPersona } from "./account-persona";
 
-interface Payload { draftId: number; revision: number; textVersion: number; source: DraftSource; referenceKind: string; base: string }
+interface Payload { draftId: number; revision: number; textVersion: number; source: DraftSource; referenceKind: string; base: string; positioningOverride?: string }
 
 export async function createTopicDraft(deps: Deps, userId: number, id: number, opts: TopicToDraftRequest, base: string) {
   return deps.db.transaction(async tx => {
@@ -19,10 +20,12 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
       if (draft) return { draft, topic, code: 200 as const };
     }
     if (opts.ai && !deps.r2) return { error: "自动成稿需要 R2 图片存储，请配置后再生成", code: 503 as const };
+    const persona = await resolveAccountPersona(tx as unknown as Db, userId, topic.accountId, opts.positioning);
+    if ("error" in persona) return { error: persona.error, code: 404 as const };
     const [note] = topic.sourceNoteId ? await tx.select().from(collectedNotes)
       .where(and(eq(collectedNotes.id, topic.sourceNoteId), eq(collectedNotes.userId, userId))) : [];
     const [draft] = await tx.insert(drafts).values({
-      userId, collectedNoteId: topic.sourceNoteId,
+      userId, collectedNoteId: topic.sourceNoteId, accountId: topic.accountId,
       title: topic.title, content: opts.ai ? "" : topic.angle || topic.title,
       tags: opts.ai ? [] : note?.tags ?? [], images: opts.ai ? [] : note?.images.map(i => ({ url: i.url })) ?? [],
       ...(opts.ai ? { generationState: "queued", generationRevision: 1 } : {}),
@@ -38,11 +41,11 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
     const referenceKind = (visuals.find(v => v.id === topic.sourceNoteId) ?? visuals.find(v => v.hit))?.kind ?? "";
     const [hook = "", ...rest] = (topic.angle || "").split("\n");
     const source: DraftSource = {
-      title: topic.title, hook, angle: rest.join("\n"), positioning: opts.positioning ?? "",
+      title: topic.title, hook, angle: rest.join("\n"), persona: persona.snapshot,
       ...(note ? { note: { title: note.title, content: note.content, tags: note.tags } } : {}),
     };
     const [job] = await tx.insert(jobs).values({ userId, type: "draft_generate", status: "queued",
-      payload: { draftId: draft!.id, revision: 1, textVersion: draft!.textVersion, source, referenceKind, base } satisfies Payload }).returning();
+      payload: { draftId: draft!.id, revision: 1, textVersion: draft!.textVersion, source, referenceKind, base, positioningOverride: opts.positioning } satisfies Payload }).returning();
     return { draft: draft!, topic: updatedTopic!, jobId: job!.id, code: 202 as const };
   });
 }
@@ -57,12 +60,17 @@ export async function retryDraftGeneration(deps: Deps, userId: number, id: numbe
     const [prior] = await tx.select().from(jobs).where(and(eq(jobs.type, "draft_generate"), eq(jobs.userId, userId),
       sql`${jobs.payload}->>'draftId' = ${String(id)}`)).orderBy(desc(jobs.id)).limit(1);
     if (!prior) return { error: "成稿任务不存在", code: 404 as const };
+    const previous = prior.payload as Payload;
+    const positioningOverride = draft.accountId === previous.source.persona?.accountId ? previous.positioningOverride : undefined;
+    const persona = await resolveAccountPersona(tx as unknown as Db, userId, draft.accountId, positioningOverride);
+    if ("error" in persona) return { error: persona.error, code: 404 as const };
     const revision = draft.generationRevision + 1;
     const [updated] = await tx.update(drafts).set({ generationState: "queued", generationRevision: revision, generationError: null, updatedAt: deps.now() })
       .where(eq(drafts.id, id)).returning();
     const [job] = await tx.insert(jobs).values({
       userId, type: "draft_generate", status: "queued",
-      payload: { ...(prior.payload as Payload), revision, textVersion: draft.textVersion, base },
+      payload: { ...previous, revision, textVersion: draft.textVersion, base, positioningOverride,
+        source: { ...previous.source, persona: persona.snapshot, positioning: undefined } },
     }).returning();
     return { draft: updated!, jobId: job!.id, code: 202 as const };
   });
@@ -84,7 +92,8 @@ export async function runDraftJobs(deps: Deps) {
   const finish = () => deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(eq(jobs.id, job.id));
   if (!draft || draft.generationRevision !== p.revision || draft.generationState === "done") { await finish(); return; }
   try {
-    if (draft.textVersion !== p.textVersion) throw new Error("生成期间你已编辑文字，已保留修改；确认后可重新成稿");
+    if (draft.textVersion !== p.textVersion || draft.accountId !== (p.source.persona?.accountId ?? null))
+      throw new Error("生成期间你已编辑文字或更换账号，已保留修改；确认后可重新成稿");
     await deps.db.update(drafts).set({ generationState: "writing", generationError: null }).where(and(
       eq(drafts.id, draft.id), eq(drafts.generationRevision, p.revision)));
     const generated = await generateDraft(deps, p.source);
@@ -92,13 +101,15 @@ export async function runDraftJobs(deps: Deps) {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${draft.id} FOR UPDATE`);
       const [current] = await tx.select().from(drafts).where(and(eq(drafts.id, draft.id), eq(drafts.userId, job.userId)));
       if (!current || current.generationRevision !== p.revision || current.generationState === "done") return;
-      if (current.textVersion !== p.textVersion) throw new Error("生成期间你已编辑文字，已保留修改；确认后可重新成稿");
+      if (current.textVersion !== p.textVersion || current.accountId !== (p.source.persona?.accountId ?? null))
+        throw new Error("生成期间你已编辑文字或更换账号，已保留修改；确认后可重新成稿");
       const spec: CoverSpec = automaticCoverSpec(generated.cover || generated.title, p.referenceKind, {
         points: generated.coverPoints, comparison: generated.coverComparison,
       });
       const [written] = await tx.update(drafts).set({
         title: generated.title, content: generated.content, tags: generated.tags, generationState: "done",
         textVersion: current.textVersion + 1, generationWarnings: generated.warnings, generationError: null, coverSpec: spec, updatedAt: deps.now(),
+        personaSnapshot: p.source.persona ?? null,
       }).where(eq(drafts.id, current.id)).returning();
       if (!current.coverAssetId && current.images.length >= IMAGE_UPLOAD_LIMITS.images) {
         await tx.update(drafts).set({ coverState: "failed", coverError: "请先移除一张图片，为封面留出位置" }).where(eq(drafts.id, current.id));

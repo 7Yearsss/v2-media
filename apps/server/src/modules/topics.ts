@@ -6,6 +6,7 @@ import type { Deps } from "../context";
 import { createTopicDraft } from "../lib/draft-jobs";
 import { publicBase } from "../lib/media-store";
 import { draftWithUploads } from "../lib/draft-media";
+import { ACCOUNT_PERSONA_LIMITS } from "@v2media/shared";
 import {
   collectedNotes,
   collections,
@@ -186,7 +187,7 @@ export function topicsModule(deps: Deps) {
   app.post("/:id/to-draft", async (c) => {
     const id = Number(c.req.param("id"));
     if (!Number.isInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
-    const opts = z.object({ ai: z.boolean().optional(), positioning: z.string().trim().max(200).optional() })
+    const opts = z.object({ ai: z.boolean().optional(), positioning: z.string().trim().max(ACCOUNT_PERSONA_LIMITS.positioning).optional() })
       .safeParse(await c.req.json().catch(() => ({})));
     if (!opts.success) return c.json({ error: "bad payload" }, 400);
     const result = await createTopicDraft(deps, c.get("userId"), id, opts.data, publicBase(c.req));

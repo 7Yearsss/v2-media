@@ -4,7 +4,8 @@ import { z } from "zod";
 
 import type { Deps } from "../context";
 import { env } from "../env";
-import { collectedNotes, collections, drafts, hostedAccounts, topics } from "../db/schema";
+import { collectedNotes, collections, drafts, topics } from "../db/schema";
+import { personaForPrompt, resolveAccountPersona } from "../lib/account-persona";
 
 /** OpenAI 兼容 chat 客户端 —— fetch 可注入（测试里 mock）。 */
 /** 多模态消息片段（OpenAI 兼容格式；图片用 data URL 内嵌，网关不会替我们去取外链）。 */
@@ -139,7 +140,7 @@ function normalizeSuggestion(raw: unknown): {
 const aiTopicsSchema = z.object({
   collectionId: z.number().int(),
   count: z.number().int().min(1).max(10).default(5),
-  accountId: z.number().int().optional(),
+  accountId: z.number().int().positive().optional(),
 });
 const topicScoreSchema = z.object({ topicId: z.number().int() });
 
@@ -159,12 +160,15 @@ const TOPIC_SCORE_SYSTEM =
   '{"scoreDetail":{"traffic":8,...},"verdict":"做|改方向|不做","advice":"2-3 句具体建议"}';
 
 const rewriteSchema = z.object({
-  draftId: z.number().int().optional(),
+  draftId: z.number().int().positive().optional(),
+  accountId: z.number().int().positive().nullable().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
   instruction: z.string().optional(),
 });
 const titlesSchema = z.object({
+  draftId: z.number().int().positive().optional(),
+  accountId: z.number().int().positive().nullable().optional(),
   title: z.string().default(""),
   content: z.string().default(""),
   count: z.number().int().min(1).max(10).default(5),
@@ -174,27 +178,25 @@ const tagsSchema = titlesSchema;
 export function aiModule(deps: Deps) {
   const app = new Hono<{ Variables: { userId: number } }>();
 
-  const loadText = async (c: any, body: z.infer<typeof rewriteSchema>) => {
-    if (body.title || body.content) return { title: body.title ?? "", content: body.content ?? "" };
-    if (!body.draftId) return null;
-    const [d] = await deps.db
-      .select()
-      .from(drafts)
-      .where(and(eq(drafts.id, body.draftId), eq(drafts.userId, c.get("userId"))))
-      .limit(1);
-    return d ? { title: d.title, content: d.content } : null;
+  const loadText = async (userId: number, body: z.infer<typeof rewriteSchema>) => {
+    const [d] = body.draftId ? await deps.db.select().from(drafts).where(and(eq(drafts.id, body.draftId), eq(drafts.userId, userId))).limit(1) : [];
+    if (body.draftId && !d) return { error: "draft not found", code: 404 as const };
+    const persona = await resolveAccountPersona(deps.db, userId, body.accountId !== undefined ? body.accountId : d?.accountId);
+    if ("error" in persona) return { error: persona.error, code: 404 as const };
+    return { title: body.title ?? d?.title ?? "", content: body.content ?? d?.content ?? "", persona: persona.snapshot };
   };
 
   app.post("/rewrite", async (c) => {
     const parsed = rewriteSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
-    const input = await loadText(c, parsed.data);
-    if (!input || (!input.title && !input.content))
+    const input = await loadText(c.get("userId"), parsed.data);
+    if ("error" in input) return c.json({ error: input.error }, input.code);
+    if (!input.title && !input.content)
       return c.json({ error: "nothing to rewrite" }, 400);
     try {
       const content = await deps.ai.complete(
-        "你是小红书内容运营编辑，在保留事实的前提下改写成自然、可发布的种草笔记。保留emoji风格但避免夸张营销词。",
-        `改写要求：${parsed.data.instruction || "提升表达、增强小红书语感"}\n\n标题：${input.title}\n\n正文：\n${input.content}`,
+        "你是小红书内容运营编辑，保留事实，遵循输入的账号定位、风格和红线，改写成自然、可发布的种草笔记。未配置人设时保留原文emoji风格，避免夸张营销词。",
+        [personaForPrompt(input.persona), `改写要求：${parsed.data.instruction || "提升表达、增强小红书语感"}\n\n标题：${input.title}\n\n正文：\n${input.content}`].filter(Boolean).join("\n\n"),
       );
       // 约定模型输出 "标题：...\n正文：..."；否则全部当正文、保留原标题
       const titleLine = content.split("\n").find((l) => l.startsWith("标题："));
@@ -210,10 +212,12 @@ export function aiModule(deps: Deps) {
   app.post("/titles", async (c) => {
     const parsed = titlesSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const input = await loadText(c.get("userId"), parsed.data);
+    if ("error" in input) return c.json({ error: input.error }, input.code);
     try {
       const out = await deps.ai.complete(
         "你是小红书标题优化专家，只输出标题列表，每行一个，不要序号。",
-        `给 ${parsed.data.count} 个小红书标题。\n原标题：${parsed.data.title}\n正文：${parsed.data.content.slice(0, 2000)}`,
+        [personaForPrompt(input.persona), `给 ${parsed.data.count} 个小红书标题。\n原标题：${input.title}\n正文：${input.content.slice(0, 2000)}`].filter(Boolean).join("\n\n"),
       );
       const titles = out
         .split("\n")
@@ -229,10 +233,12 @@ export function aiModule(deps: Deps) {
   app.post("/tags", async (c) => {
     const parsed = tagsSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const input = await loadText(c.get("userId"), parsed.data);
+    if ("error" in input) return c.json({ error: input.error }, input.code);
     try {
       const out = await deps.ai.complete(
         "你是小红书 SEO 和话题标签专家。只输出标签，逗号或换行分隔，不带 # 号。",
-        `给 ${parsed.data.count} 个小红书话题标签。\n标题：${parsed.data.title}\n正文：${parsed.data.content.slice(0, 2000)}`,
+        [personaForPrompt(input.persona), `给 ${parsed.data.count} 个小红书话题标签。\n标题：${input.title}\n正文：${input.content.slice(0, 2000)}`].filter(Boolean).join("\n\n"),
       );
       const tags = out
         .replace(/，/g, ",")
@@ -258,14 +264,8 @@ export function aiModule(deps: Deps) {
       .where(and(eq(collections.id, collectionId), eq(collections.userId, userId)))
       .limit(1);
     if (!col) return c.json({ error: "collection not found" }, 404);
-    if (accountId) {
-      const [acc] = await deps.db
-        .select({ id: hostedAccounts.id })
-        .from(hostedAccounts)
-        .where(and(eq(hostedAccounts.id, accountId), eq(hostedAccounts.userId, userId)))
-        .limit(1);
-      if (!acc) return c.json({ error: "account not found" }, 404);
-    }
+    const persona = await resolveAccountPersona(deps.db, userId, accountId);
+    if ("error" in persona) return c.json({ error: persona.error }, 404);
     const notes = await deps.db
       .select({
         title: collectedNotes.title,
@@ -277,7 +277,7 @@ export function aiModule(deps: Deps) {
         content: collectedNotes.content,
       })
       .from(collectedNotes)
-      .where(eq(collectedNotes.collectionId, col.id))
+      .where(and(eq(collectedNotes.collectionId, col.id), eq(collectedNotes.userId, userId)))
       .orderBy(
         desc(sql`${collectedNotes.likes} + ${collectedNotes.collects} + ${collectedNotes.comments} + ${collectedNotes.shares}`),
       )
@@ -300,7 +300,7 @@ export function aiModule(deps: Deps) {
     try {
       raw = await deps.ai.complete(
         TOPIC_GEN_SYSTEM,
-        `采集库「${col.name}」互动量 Top ${notes.length} 篇：\n${payload}\n\n生成 ${count} 个选题。`,
+        [personaForPrompt(persona.snapshot), `采集库「${col.name}」互动量 Top ${notes.length} 篇：\n${payload}\n\n生成 ${count} 个选题。`].filter(Boolean).join("\n\n"),
       );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : "AI failed" }, 502);
@@ -324,6 +324,7 @@ export function aiModule(deps: Deps) {
           status: "idea",
           score: weightedScore(s.scoreDetail),
           scoreDetail: s.scoreDetail,
+          personaSnapshot: persona.snapshot,
         })
         .returning();
       items.push(row);
@@ -342,11 +343,13 @@ export function aiModule(deps: Deps) {
       .where(and(eq(topics.id, parsed.data.topicId), eq(topics.userId, userId)))
       .limit(1);
     if (!topic) return c.json({ error: "not found" }, 404);
+    const persona = await resolveAccountPersona(deps.db, userId, topic.accountId);
+    if ("error" in persona) return c.json({ error: persona.error }, 404);
     let raw: string;
     try {
       raw = await deps.ai.complete(
         TOPIC_SCORE_SYSTEM,
-        `选题：${topic.title}\n切入角度：${topic.angle || "（未填）"}`,
+        [personaForPrompt(persona.snapshot), `选题：${topic.title}\n切入角度：${topic.angle || "（未填）"}`].filter(Boolean).join("\n\n"),
       );
     } catch (e) {
       return c.json({ error: e instanceof Error ? e.message : "AI failed" }, 502);
@@ -363,10 +366,12 @@ export function aiModule(deps: Deps) {
       .set({
         score: weightedScore(scoreDetail),
         scoreDetail,
+        personaSnapshot: persona.snapshot,
         updatedAt: deps.now(),
       })
-      .where(eq(topics.id, topic.id))
+      .where(and(eq(topics.id, topic.id), eq(topics.userId, userId), sql`${topics.accountId} IS NOT DISTINCT FROM ${topic.accountId}`))
       .returning();
+    if (!row) return c.json({ error: "选题目标账号已变化，请重新评分" }, 409);
     return c.json({
       topic: row,
       verdict: typeof j?.verdict === "string" ? j.verdict : "",

@@ -1,4 +1,4 @@
-import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage } from "@v2media/shared";
+import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -21,6 +21,10 @@ export const hostedAccounts = pgTable("hosted_accounts", {
   status: varchar("status", { length: 32 }).notNull().default("unknown"),
   statusMessage: text("status_message").notNull().default(""),
   lastSeenAt: timestamp("last_seen_at"),
+  positioning: text("positioning").notNull().default(""),
+  styleNotes: text("style_notes").notNull().default(""),
+  redlines: text("redlines").notNull().default(""),
+  personaVersion: integer("persona_version").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -44,6 +48,7 @@ export const collectionAnalyses = pgTable("collection_analyses", {
       stats: CollectionAnalysisStats;
       insight: CollectionInsight | null;
       positioning?: string;
+      persona?: AccountPersonaSnapshot | null;
       visual?: AnalysisVisualItem[];
       progress?: AnalysisProgress;
     }>()
@@ -95,6 +100,8 @@ export const drafts = pgTable("drafts", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
   collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id, { onDelete: "set null" }),
+  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "set null" }),
+  personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
   title: varchar("title", { length: 512 }).notNull().default(""),
   content: text("content").notNull().default(""),
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
@@ -123,6 +130,7 @@ export const publishJobs = pgTable("publish_jobs", {
   status: varchar("status", { length: 32 }).notNull().default("pending"),
   scheduledAt: timestamp("scheduled_at"),
   visibility: varchar("visibility", { length: 32 }).notNull().default("public"),
+  personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
   draftSnapshot: jsonb("draft_snapshot").$type<{ title: string; content: string; tags: string[]; images: NoteImage[] }>(),
   claimedBy: varchar("claimed_by", { length: 128 }),
   error: text("error"),
@@ -159,6 +167,7 @@ export const mediaAssets = pgTable("media_assets", {
 export const topics = pgTable("topics", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
+  personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
   title: varchar("title", { length: 512 }).notNull().default(""),
   /** 切入角度/要点说明。 */
   angle: text("angle").notNull().default(""),

@@ -328,6 +328,8 @@ export default function AnalysisPage() {
   const queryClient = useQueryClient();
   const [colId, setColId] = useState<number | null>(null);
   const [active, setActive] = useState<CollectionAnalysis | null>(null);
+  const [accountId, setAccountId] = useState("");
+  const accounts = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
   // 目标账号定位：可选，填了建议和选题会贴合它；记在本机
   const [positioning, setPositioning] = useState(() => {
     try {
@@ -371,7 +373,7 @@ export default function AnalysisPage() {
   });
   const analyze = useMutation({
     mutationFn: ({ id, positioning }: { id: number; positioning: string }) =>
-      api.analyzeCollection(id, positioning || undefined),
+      api.analyzeCollection(id, { accountId: accountId ? Number(accountId) : undefined, positioning: positioning || undefined }),
     onSuccess: (row) => {
       // 后台异步跑：先拿到 running 行（已含代码算好的信号图），再轮询到完成
       void queryClient.invalidateQueries({ queryKey: ["analyses", row.collectionId] });
@@ -459,15 +461,30 @@ export default function AnalysisPage() {
           />
         )}
         {colId != null && (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">目标账号
+            <select aria-label="分析目标账号" value={accountId} onChange={e => { setAccountId(e.target.value); updatePositioning(""); }}
+              className="h-9 rounded-full border border-border bg-card px-3 text-sm text-foreground">
+              <option value="">通用分析</option>{accounts.data?.map(a => <option key={a.id} value={a.id}>{a.nickname || a.xhsUserId}</option>)}
+            </select>
+          </label>
+        )}
+        {colId != null && (
           <input
             value={positioning}
             onChange={(e) => updatePositioning(e.target.value)}
-            maxLength={60}
-            placeholder="我的账号定位（选填，如：职场效率/平价护肤）"
+            maxLength={1000}
+            aria-label="本次分析定位"
+            placeholder="本次定位（留空使用账号设置）"
             className="h-9 w-72 rounded-full border border-border bg-card px-4 text-sm outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-primary"
           />
         )}
       </div>
+      {active?.data.persona && <p className="text-xs leading-5 text-muted-foreground">
+        此报告使用：{active.data.persona.nickname || "通用风格"}
+        {active.data.persona.positioning ? ` · ${active.data.persona.positioning}` : ""}
+        {active.data.persona.styleNotes ? ` · 风格：${active.data.persona.styleNotes}` : ""}
+        {active.data.persona.redlines ? ` · 红线：${active.data.persona.redlines}` : ""}
+      </p>}
 
       {colId != null && (
         <div>
