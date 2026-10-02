@@ -1,6 +1,8 @@
 # Handoff：下一阶段任务
 
-2026-10-02。写给接手的 AI。先读 `AGENTS.md`，再读本文件和 `docs/publish-smoke-test.md`。
+2026-10-03 更新。写给接手的 AI。先读 `AGENTS.md`，再读本文件和 `docs/publish-smoke-test.md`。
+
+**当前生产状态：** main 的 T1–T5、R0–R4 和 UI 调整已通过 GitHub Action 部署，schema 已升级至 3；生产运行模式已配置为 `production-worker`。原有草稿和发布 #13 的关键字段核对一致，测试痕迹没有删除。详细证据、备份和暂时关闭媒体自动清理的说明见 [`production-deploy-2026-10-03.md`](production-deploy-2026-10-03.md)。真实 AI/R2/新版插件的 R5 联合验收仍待执行。下文 10 月 2 日各分支记录中的“未部署”是当时状态，以本段更新为准。
 
 2026-10-02 架构复审后的 R0 `8873195`、R1 `a789d6c` 已完成；详见各自验收文档。R2 在 `codex/r2-history-runtime` 实现可恢复归档/历史证据、账号身份唯一、只读模式和版本迁移，已补真实 PostgreSQL 16.15 的双连接锁超时/回滚/重复预检/权限验证，详见 [`r2-history-runtime-verification.md`](r2-history-runtime-verification.md)。生产仍未迁移或部署，角色/密钥/旧身份预检与实际脱敏副本升级需部署前核对。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R5–R6 推进；真实 XHS/R2/模型联合验收仍属 R5，生产测试痕迹保持原样。
 
