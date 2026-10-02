@@ -28,6 +28,7 @@ import type {
   MediaUploadResponse,
   HostedAccount,
   InsightsQuery, InsightsOverview, InsightsNotesPage, InsightNoteDetail, PostmortemReport, PostmortemCreateRequest,
+  CollectionTask, CollectionTaskRules, CollectionTaskDetail, CollectionControlRequest,
   NoteComment,
   PublishJob,
   PublishJobCreateRequest,
@@ -270,6 +271,10 @@ export function normalizeOverview(raw: unknown): OverviewStats {
 // ---------- 端点 ----------
 
 export const api = {
+  collectionTasks: () => request<{ items: CollectionTask[] }>("/api/collection-tasks"),
+  collectionTask: (id: number, offset = 0) => request<CollectionTaskDetail>(`/api/collection-tasks/${id}`, { query: { offset } }),
+  createCollectionTask: (body: CollectionTaskRules) => request<CollectionTask>("/api/collection-tasks", { method: "POST", body }),
+  controlCollectionTask: (id: number, body: CollectionControlRequest) => request<CollectionTask>(`/api/collection-tasks/${id}/control`, { method: "POST", body }),
   insightsOverview: (query: InsightsQuery) => request<InsightsOverview>("/api/insights/overview", { query: { ...query } }),
   insightsNotes: (query: InsightsQuery) => request<InsightsNotesPage>("/api/insights/notes", { query: { ...query } }),
   insightNote: (id: number) => request<InsightNoteDetail>(`/api/insights/notes/${id}`),

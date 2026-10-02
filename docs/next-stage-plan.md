@@ -1,6 +1,6 @@
 # 下一阶段实施计划：从文字成稿到可发布笔记
 
-2026-10-02 初始规划，范围为 T1–T5。随后 T1–T4 已在功能分支实现，具体代码验收与生产待办见 `t1-upload-verification.md`、`t2-cover-verification.md`、`t3-persona-verification.md`、`t4-insights-verification.md`；本文件保留原实施思路。入口说明见 `handoff-next-steps.md`，真实发布和回采证据见 `publish-smoke-test.md`。
+2026-10-02 初始规划，范围为 T1–T5。随后 T1–T4 与 T5 关键词首切片已在功能分支实现，具体代码验收与生产待办见 `t1-upload-verification.md`、`t2-cover-verification.md`、`t3-persona-verification.md`、`t4-insights-verification.md`、`t5-collection-verification.md`；本文件保留原实施思路。入口说明见 `handoff-next-steps.md`，真实发布和回采证据见 `publish-smoke-test.md`。
 
 ## 目标与顺序
 

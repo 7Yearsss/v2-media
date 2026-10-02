@@ -31,8 +31,45 @@ import type {
   PublishJobPayload,
 } from "./lib/messages";
 import { getSettings, setSettings } from "./lib/settings";
+import { BrowserLane } from "./lib/browser-lane";
+import { KeywordRunner } from "./lib/keyword-runner";
+import { COLLECTION_CAPABILITY, type CollectionPageSnapshot } from "@v2media/shared";
 
 const VERSION = chrome.runtime.getManifest().version;
+const browserLane = new BrowserLane();
+class BrowserBusyError extends Error { constructor() { super("浏览器正在执行其他任务，请稍后重试或先暂停自动采集"); } }
+
+async function collectionSafetyReady() {
+  const block = (await chrome.storage.local.get("collectionSafetyBlock")).collectionSafetyBlock as { taskId: number; leaseId: string } | undefined;
+  if (!block) return true;
+  try {
+    const state = await api<{ task: { status: string } }>(`/api/collection-tasks/${block.taskId}`);
+    if (state.task.status === "blocked") return false;
+  } catch (e) { if (!/not found/.test(String(e))) return false; }
+  await chrome.storage.local.remove("collectionSafetyBlock");
+  for (const tab of await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" }))
+    if (tab.id && tab.url?.includes(`__v2m_lease=${block.leaseId}`)) await chrome.tabs.remove(tab.id).catch(() => {});
+  return true;
+}
+async function reserveBrowser(owner: string) {
+  if (!browserLane.acquire(owner)) return false;
+  try {
+    if (!(await collectionSafetyReady())) { browserLane.release(owner); return false; }
+    const finished = ((await chrome.storage.session.get("finishedPublishJobs")).finishedPublishJobs ?? []) as number[];
+    for (const tab of await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" })) {
+      if (!tab.url) continue; const u = new URL(tab.url);
+      if (u.searchParams.has("__v2m_collect_task")) {
+        // Only our keyword marker is cleanup-eligible on SW recovery; CAPTCHA tabs are protected by the block above.
+        if (owner === "keyword" && tab.id) { await chrome.tabs.remove(tab.id).catch(() => {}); continue; }
+        browserLane.release(owner); return false;
+      }
+      const job = u.searchParams.get("job_id"), task = u.searchParams.get("__v2m_task");
+      const same = job ? owner === `publish:${job}` : task ? owner === `task:${task}` : u.searchParams.has("__v2m_collect") ? owner === `collect:${u.pathname.match(/[0-9a-f]{24}/i)?.[0] ?? "manual"}` : false;
+      if (!same && ((job && !finished.includes(Number(job))) || task || u.searchParams.has("__v2m_collect"))) { browserLane.release(owner); return false; }
+    }
+    return true;
+  } catch (e) { browserLane.release(owner); throw e; }
+}
 
 /**
  * 认领标识：storage.session 持久 → SW 重启后同一浏览器仍是同一认领方
@@ -264,6 +301,8 @@ async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
     console.warn(`[v2m] job ${job.id} skipped: ${mismatch}`);
     return false;
   }
+  if (!(await reserveBrowser(`publish:${job.id}`))) throw new BrowserBusyError();
+  try {
   await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: await swId() } });
   const tracked: TrackedJob = {
     jobId: job.id,
@@ -279,6 +318,7 @@ async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
   });
   tracked.tabId = tab.id;
   return true;
+  } catch (e) { browserLane.release(`publish:${job.id}`); trackedJobs.delete(job.id); throw e; }
 }
 
 async function pollPendingJobs() {
@@ -286,6 +326,7 @@ async function pollPendingJobs() {
   for (const [id, t] of trackedJobs) {
     if ((t.state === "opening" || t.state === "running") && Date.now() > t.deadline) {
       trackedJobs.delete(id);
+      browserLane.release(`publish:${id}`);
       await api(`/api/ext/publish/${id}/result`, {
         body: { status: "failed", error: "插件执行超时（发布页未回传结果）" },
       }).catch(() => {});
@@ -293,6 +334,7 @@ async function pollPendingJobs() {
     }
   }
   if (!(await getSettings()).enabled) return; // 总开关关闭：不领发布任务
+  if (browserLane.busy || !(await collectionSafetyReady())) return;
   const auth = await getAuth();
   if (!auth) return;
   let jobs: PublishJobPayload[];
@@ -305,7 +347,7 @@ async function pollPendingJobs() {
   for (const job of jobs) {
     if (job.status !== "pending" || trackedJobs.has(job.id)) continue;
     try {
-      await claimAndOpen(job);
+      if (await claimAndOpen(job)) break;
     } catch (e) {
       console.warn(`[v2m] claim job ${job.id} failed:`, e);
     }
@@ -323,6 +365,8 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
     `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}`,
   ).catch(async () => (await fetchPendingJobs()).find((j) => j.id === jobId));
   if (!job) throw new Error(`服务端没有 job ${jobId} 的待发布任务`);
+  if (!(await reserveBrowser(`publish:${job.id}`))) throw new BrowserBusyError();
+  try {
   // Run Now 标记持久在 storage.session：SW 重启后恢复 payload 时重新覆盖掉原定时
   const runNowKey = `runNow:${job.id}`;
   if ((await chrome.storage.session.get(runNowKey))[runNowKey]) {
@@ -339,6 +383,7 @@ async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
     payload: job,
   });
   return job;
+  } catch (e) { browserLane.release(`publish:${job.id}`); throw e; }
 }
 
 async function runPublishJobById(jobId: number) {
@@ -413,6 +458,7 @@ async function finishTask(
   await api(`/api/ext/tasks/${t.taskId}/result`, { body }).catch((e) => {
     console.warn(`[v2m] task ${t.taskId} result report failed:`, e);
   });
+  browserLane.release(`task:${t.taskId}`);
 }
 
 /** galaxy 响应 → 该任务要的数据（不匹配返回 null 继续等）。 */
@@ -446,6 +492,7 @@ async function pollTasks() {
     }
   }
   if (!(await getSettings()).enabled) return; // 总开关关：不领任务
+  if (browserLane.busy || !(await collectionSafetyReady())) return;
   if (!(await getAuth())) return;
   let tasks: ExtTask[];
   try {
@@ -464,16 +511,19 @@ async function pollTasks() {
     }
     // 串行 + 间隔：一轮最多领一个（下一个等下一分钟轮询）
     if (now - lastTaskOpenAt < TASK_SPACING_MS) break;
+    if (!(await reserveBrowser(`task:${task.id}`))) break;
     let claimed = false;
     try {
       await api(`/api/ext/tasks/${task.id}/claim`, { body: { claimedBy: await swId() } });
       claimed = true;
     } catch {
+      browserLane.release(`task:${task.id}`);
       continue;
     }
     if (!claimed) continue;
     const url = taskTabUrl(task);
     if (!url) {
+      browserLane.release(`task:${task.id}`);
       await api(`/api/ext/tasks/${task.id}/result`, {
         body: { status: "failed", error: `未知任务类型 ${task.type}` },
       }).catch(() => {});
@@ -493,6 +543,7 @@ async function pollTasks() {
     try {
       const tab = await chrome.tabs.create({ url, active: false });
       tracked.tabId = tab.id;
+      break;
     } catch (e) {
       await finishTask(tracked, { status: "failed", error: String(e) });
     }
@@ -580,7 +631,11 @@ chrome.runtime.onMessage.addListener(
         return reply(
           api(`/api/ext/publish/${msg.jobId}/result`, {
             body: { status: msg.status, resultUrl: msg.resultUrl, error: msg.error },
-          }).then(() => ({ reported: true })),
+          }).then(async () => {
+            const previous = ((await chrome.storage.session.get("finishedPublishJobs")).finishedPublishJobs ?? []) as number[];
+            await chrome.storage.session.set({ finishedPublishJobs: [...previous.filter(id => id !== msg.jobId), msg.jobId].slice(-100) });
+            return { reported: true };
+          }).finally(() => { browserLane.release(`publish:${msg.jobId}`); void dispatchBrowserWork(); }),
           sendResponse,
         );
       }
@@ -615,7 +670,7 @@ chrome.runtime.onMessage.addListener(
 
       case "TASK_DATA": {
         const t = trackedTasks.get(Number(msg.taskId));
-        if (t && !t.done && t.type === "metrics" && msg.data) {
+        if (t && sender.tab?.id === t.tabId && !t.done && t.type === "metrics" && msg.data) {
           void finishTask(t, { status: "done", data: { rows: [msg.data] } });
         }
         sendResponse({ ok: true });
@@ -668,7 +723,7 @@ chrome.runtime.onMessage.addListener(
       // --- site-bridge（工作台 origin 限定） ---
       case "SITE_PING":
         return reply(
-          getAuth().then((auth) => ({ version: VERSION, authorized: !!auth })),
+          getAuth().then((auth) => ({ version: VERSION, authorized: !!auth, capabilities: [COLLECTION_CAPABILITY] })),
           sendResponse,
         );
       case "SITE_SET_AUTH": {
@@ -682,7 +737,7 @@ chrome.runtime.onMessage.addListener(
         return reply(
           chrome.storage.local.set({ auth: { apiBase, token } satisfies ExtAuth }).then(async () => {
             void heartbeat();
-            void pollPendingJobs();
+            void dispatchBrowserWork();
             return { ok: true };
           }),
           sendResponse,
@@ -701,6 +756,7 @@ chrome.runtime.onMessage.addListener(
       case "SITE_COLLECT_URL":
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
       case "TRUSTED_CLICK":
+        if (browserLane.busy) { sendResponse({ ok: true, data: { ok: false, diag: "浏览器正在执行其他自动任务" } }); return false; }
         // 内容脚本的 .click() 是不可信事件，XHS 的弹窗 handler 会忽略；
         // 用 chrome.debugger 派发真实鼠标点击来打开笔记详情弹窗
         return reply(
@@ -743,6 +799,8 @@ chrome.runtime.onMessage.addListener(
         );
       case "SITE_RUN_PUBLISH_JOB":
         return reply(runPublishJobById(Number(msg.jobId)), sendResponse);
+      case "SITE_WAKE_COLLECTION_TASKS":
+        void dispatchBrowserWork(); sendResponse({ ok: true, data: { queued: true } }); return false;
 
       // --- popup 采集库 ---
       case "LIST_COLLECTIONS":
@@ -950,6 +1008,11 @@ function onCollectChallengeCleared(noteId: string, w: CollectWaiter) {
 }
 
 async function collectByUrl(url: string) {
+  const owner = `collect:${url.match(/[0-9a-f]{24}/i)?.[0] ?? "manual"}`;
+  if (!(await reserveBrowser(owner))) throw new BrowserBusyError();
+  try { return await performCollectByUrl(url); } finally { browserLane.release(owner); }
+}
+async function performCollectByUrl(url: string) {
   if (!/^https:\/\/(www\.)?xiaohongshu\.com\//.test(url)) {
     throw new Error("仅支持 xiaohongshu.com 链接");
   }
@@ -1068,6 +1131,7 @@ async function pumpDeepQueue() {
   try {
     await loadDeepQueue(); // 恢复上次 SW 生命周期里没跑完的队列
     while (deepQueue.length) {
+      if (!(await getAuth()) || browserLane.busy || !(await collectionSafetyReady()) || await highPriorityWaiting()) break;
       // 停用中断：中途关总开关 → 清空剩余队列，不再开页
       if (!(await getSettings()).enabled) {
         deepQueue = [];
@@ -1094,6 +1158,7 @@ async function pumpDeepQueue() {
           await chrome.storage.local.remove("lastDeepCollectFailure");
         }
       } catch (error) {
+        if (error instanceof BrowserBusyError) break;
         const attempts = (deepAttempts.get(id) ?? 0) + 1;
         const message = String((error as Error)?.message ?? error);
         const challenge = message.includes("验证码");
@@ -1184,11 +1249,37 @@ const PUBLISH_ALARM = "v2m-publish-poll";
 const HEARTBEAT_MIN = 5;
 const PUBLISH_MIN = 1;
 
+async function highPriorityWaiting() {
+  if (!(await getAuth())) return false;
+  const pending = await fetchPendingJobs();
+  if (pending.some(j => j.status === "pending")) return true;
+  const tasks = (await api<PendingTasksResponse>("/api/ext/tasks/pending?limit=5")).tasks ?? [];
+  const current = await currentXhsUserId();
+  return tasks.some(t => !needsAccountMatch(t.type) || !(t.payload as Record<string, unknown>).xhsUserId || (t.payload as Record<string, unknown>).xhsUserId === current);
+}
+const keywordRunner = new KeywordRunner({
+  api: (path, body) => api(path, { body }), ownerId: swId, enabled: async () => (await getSettings()).enabled && !!(await getAuth()),
+  reserve: reserveBrowser, release: owner => browserLane.release(owner), priorityWaiting: highPriorityWaiting,
+  open: async url => { const tab = await chrome.tabs.create({ url, active: false }); if (!tab.id) throw new Error("无法创建任务页"); return tab.id; },
+  close: async id => { await chrome.tabs.remove(id).catch(() => {}); }, focus: async id => { await chrome.tabs.update(id, { active: true }); },
+  page: async (id, leaseId, action, noteId) => {
+    const response = await chrome.tabs.sendMessage(id, { type: "COLLECTION_PAGE", leaseId, action, noteId }) as BgResponse<CollectionPageSnapshot>;
+    if (!response?.ok || !response.data) throw new Error(response?.error ?? "任务页尚未就绪"); return response.data;
+  }, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
+  block: async (taskId, leaseId) => { await chrome.storage.local.set({ collectionSafetyBlock: { taskId, leaseId } }); },
+});
+let dispatching = false;
+async function dispatchBrowserWork() {
+  if (dispatching) return; dispatching = true;
+  try { await pollPendingJobs(); await pollTasks(); if (browserLane.busy) return;
+    await pumpDeepQueue(); if (!browserLane.busy && !deepQueue.length) { await keywordRunner.run(); if (await highPriorityWaiting()) { await pollPendingJobs(); await pollTasks(); } }
+  } catch (e) { console.warn("[v2m] automation dispatch failed", e); } finally { dispatching = false; }
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === HEARTBEAT_ALARM) void heartbeat();
   if (alarm.name === PUBLISH_ALARM) {
-    void pollPendingJobs();
-    void pollTasks();
+    void dispatchBrowserWork();
   }
 });
 
@@ -1208,8 +1299,7 @@ async function ensureAlarms() {
 function kick() {
   void ensureAlarms();
   void heartbeat();
-  void pollPendingJobs();
-  void pollTasks();
+  void dispatchBrowserWork();
 }
 
 chrome.runtime.onInstalled.addListener(kick);

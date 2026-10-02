@@ -19,6 +19,7 @@ import { publishModule } from "./modules/publish";
 import { topicsModule } from "./modules/topics";
 import { insightsModule } from "./modules/insights";
 import { postmortemModule } from "./modules/postmortem";
+import { collectionTasksModule } from "./modules/collection-tasks";
 
 export function createApp(deps: Deps) {
   const app = new Hono();
@@ -46,6 +47,8 @@ export function createApp(deps: Deps) {
   secured.route("/topics", topicsModule(deps));
   secured.route("/overview", overviewModule(deps));
   secured.route("/ext", extModule(deps));
+  secured.route("/collection-tasks", collectionTasksModule(deps));
+  secured.route("/ext/collection-tasks", collectionTasksModule(deps, true));
   app.route("/api", secured);
 
   // 生产模式：直接托管 apps/web/dist（单进程部署，nginx 反代一个端口即可）

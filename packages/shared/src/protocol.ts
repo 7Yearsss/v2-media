@@ -43,7 +43,8 @@ export type BridgeRequestType =
   /** 让插件打开某个 URL 并采集详情页。 */
   | "COLLECT_URL"
   /** 立即执行某个发布任务（工作台触发；也可由插件自己轮询）。 */
-  | "RUN_PUBLISH_JOB";
+  | "RUN_PUBLISH_JOB"
+  | "WAKE_COLLECTION_TASKS";
 
 export interface SetAuthPayload {
   apiBase: string;

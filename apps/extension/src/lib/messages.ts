@@ -143,6 +143,7 @@ export type BgMessage =
   | { type: "SITE_COLLECT_URL"; url: string }
   | { type: "TRUSTED_CLICK"; x: number; y: number; selectors?: string[] } // content -> bg：debugger 真实点击开详情弹窗
   | { type: "SITE_RUN_PUBLISH_JOB"; jobId: number }
+  | { type: "SITE_WAKE_COLLECTION_TASKS" }
   // --- popup 采集库下拉 ---
   | { type: "LIST_COLLECTIONS" }
   | { type: "CREATE_COLLECTION"; name: string };

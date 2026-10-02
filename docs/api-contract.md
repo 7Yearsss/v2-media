@@ -73,6 +73,19 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 - 报告状态 queued/running/done/failed，页面通过单篇详情轮询；记录 promptVersion/model、冻结 evidence、结构化 insight、error、engine。server worker 处理，插件不能领取/回报此任务。12 分钟遗留 processing 回收为 failed，迟到模型不能覆盖失败报告。
 - 无指标、非公开笔记或历史正文缺失：engine=data_only，列数据缺口和补齐步骤，不调用 AI 评价传播表现。其余 engine=ai，模型必须区分观察/可能原因/实验，引用已提供指标 ID，引用不存在或格式无效则 failed。确定性 gaps 始终展示；模型文本仍需人工判断，不承诺消除所有无依据推断。缺浏览/曝光不能宣称互动率/点击率或推荐因果，零互动不等于内容失败。
 
+## 关键词自动浏览采集（插件 0.1.8 / xhs-keyword-v1）
+
+- `POST /api/collection-tasks`：`CollectionTaskRules`（keyword 1–80 字符、collectionId、minLikes 默认 1000/范围 0–1000 万、scanLimit 默认 60/范围 1–300、saveLimit 默认 10/范围 1–30 且不大于扫描数、commentLimit 默认 50/范围 0–200、intervalMs 默认 5000/范围 2000–15000）。只支持关键词搜索；每用户最多 10 个 queued/running/paused/blocked 任务。规则、库 ID/名称冻结，跨用户库 404，超容量 409，返回 201 `CollectionTask`。
+- `GET /api/collection-tasks` 返回最近 50 个 `{items}`；`GET /:id?offset=` 返回 `{task,items,nextOffset}`，逐篇每页 50。DTO 不暴露 nonce、执行方或笔记访问 token；按当前 user_id 隔离。
+- `POST /:id/control {revision,action:pause|resume|cancel}`：旧 revision 409。暂停/取消立即清租约并增加 revision，不删除任务、笔记或采集历史。paused/blocked/failed/partial 可 resume，failed/partial 逐篇重试仍遵守原规则。已经入库的笔记按用户+noteId 幂等更新，新增计数不重复。取消不可复活，done 不可重新运行；需要新范围时新建任务。目标库被删除不自动改到其他库，恢复返回 409。
+- `POST /api/ext/collection-tasks/claim {capability:'xhs-keyword-v1',claimedBy}` 返回 `{claim:CollectionTaskClaim|null}`。能力必传，旧插件无此协议不会误领。每用户最多一个有效 running 租约；blocked 时不认领后续关键词任务。租约 120s；过期自动重新排队、增加 revision、生成新 UUID，保留阶段、滚动位置及笔记进度。
+- 所有执行接口都传 `{leaseId,revision}`：`POST /:id/heartbeat` 续租/读取进度；`/discover {cards≤50,scrollSteps≤50,exhausted?}` 去重记录搜索卡片、按点赞筛选，到扫描/候选/滚动上限转详情；`/item {noteId,detail?,commentsHasMore?,error?}` 仅接受该任务的待处理笔记，详情再核验点赞与平台 URL/完整媒体；`/finish {outcome:done|yield|blocked|failed,reason?}` 结束或让位，可能返回 partial。跨用户 404，旧/暂停/取消/过期租约 409，非法站外 URL/字段 400。单请求最多 2MiB。
+- 入库和逐篇记录使用同一事务，锁任务行后检查租约；控制操作共用此锁。取消提交后的迟到响应不能新增笔记。复用 `collect-ingest.ts` 的既有完整详情/评论合并规则与异步媒体 jobs，不同步下载外部素材。
+- 每篇显示 pending/skipped/saved/partial/failed、原因、关联笔记、是否已有、平台评论数、实采主评/回复数、覆盖 not_requested/none/partial/complete。评论上限包含回复；仅收到一页、缺回复或未确认末页不能标完整。未采到平台评论数为 null。达上限/缺页时任务如实显示部分完成；重试不会扩大冻结上限，也不删除笔记里先前已采到的评论。
+- 插件通过 `PING.capabilities` 暴露 `xhs-keyword-v1`，`WAKE_COLLECTION_TASKS` 桥立即调度。全浏览器的自动执行使用单槽，发布→到期回采→已有深度队列→关键词任务；关键词每个动作前检查高优先级并持久让位。旧运行页在 SW 恢复时保守识别，关键词孤儿页按自有 marker 清理，重新打开并重放有限滚动；服务端笔记 ID 是幂等 checkpoint。
+- 任务页 `__v2m_collect_task`/租约标记（sessionStorage 跨重定向保留）关闭普通浏览自动入库和递归深度队列。XHS 适配器仅返回 shared 解析后的搜索卡片/详情/评论，UI 提示在 Shadow DOM。最多 50 次滚动、3 次连续无增量停止搜索；每篇最多 6 轮评论滚动，每轮间隔遵守任务配置，本轮 30 分钟执行上限。都不是站点全部结果/全量评论保证。
+- 检测登录失效、可见验证或安全中转页时，任务 blocked 并暂停自动执行队列，尽力保留验证页供人工处理；不重试导航绕过验证。用户在工作台明确继续/取消后解除阻断。浏览器关闭时停止、上线重新认领，不能在离线期间采集。旧手动采集路径沿用既有验证处理行为。
+
 ## 草稿图片上传
 
 上传与素材状态接口需 Bearer 鉴权；媒体 objects 的 GET 仍无鉴权，供图片标签和插件下载使用。

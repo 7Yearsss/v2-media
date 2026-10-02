@@ -15,6 +15,7 @@ const HANDLERS: Record<BridgeRequestType, string> = {
   SYNC_ACCOUNTS: "SITE_SYNC_ACCOUNTS",
   COLLECT_URL: "SITE_COLLECT_URL",
   RUN_PUBLISH_JOB: "SITE_RUN_PUBLISH_JOB",
+  WAKE_COLLECTION_TASKS: "SITE_WAKE_COLLECTION_TASKS",
 };
 
 window.addEventListener("message", (ev) => {

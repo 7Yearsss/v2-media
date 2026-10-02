@@ -1,6 +1,7 @@
 import {
   Bell,
   ChartNoAxesCombined,
+  SearchCheck,
   BrainCircuit,
   ChevronsUpDown,
   Layers,
@@ -75,6 +76,7 @@ const NAV = [
   { to: "/accounts", label: "账号矩阵", icon: Users, match: /^\/accounts/ },
   { to: "/publish", label: "发布中心", icon: SendHorizontal, match: /^\/publish/ },
   { to: "/insights", label: "数据洞察", icon: ChartNoAxesCombined, match: /^\/insights/ },
+  { to: "/collection-tasks", label: "自动采集", icon: SearchCheck, match: /^\/collection-tasks/ },
   { to: "/extension", label: "采集插件", icon: Puzzle, match: /^\/extension/ },
 ] as const;
 
@@ -87,6 +89,7 @@ const PAGE_TITLES: [RegExp, string][] = [
   [/^\/accounts/, "账号矩阵"],
   [/^\/publish/, "发布中心"],
   [/^\/insights/, "数据洞察"],
+  [/^\/collection-tasks/, "自动采集"],
   [/^\/extension/, "采集插件"],
 ];
 

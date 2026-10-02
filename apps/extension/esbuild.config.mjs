@@ -38,6 +38,7 @@ await build({
   entryPoints: {
     background: "src/background.ts",
     content: "src/content.ts",
+    "collection-page": "src/platforms/xhs/collection-page.ts",
     "xhs-main": "src/main-world/xhs.ts",
     "creator-main": "src/main-world/creator.ts",
     "creator-tasks": "src/creator-tasks.ts",

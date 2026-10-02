@@ -248,6 +248,22 @@ CREATE TABLE IF NOT EXISTS postmortem_reports (
 CREATE INDEX IF NOT EXISTS postmortem_reports_job ON postmortem_reports(user_id, publish_job_id, id);
 ALTER TABLE postmortem_reports ADD COLUMN IF NOT EXISTS engine varchar(16);
 CREATE INDEX IF NOT EXISTS note_metrics_job_time ON note_metrics(user_id, publish_job_id, captured_at, id);
+CREATE TABLE IF NOT EXISTS collection_tasks (
+  id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id),
+  collection_id integer REFERENCES collections(id) ON DELETE SET NULL, collection_name text NOT NULL, rules jsonb NOT NULL,
+  status varchar(16) NOT NULL DEFAULT 'queued', revision integer NOT NULL DEFAULT 0, phase varchar(16) NOT NULL DEFAULT 'search',
+  scroll_steps integer NOT NULL DEFAULT 0, reason text, lease_id varchar(36), claimed_by varchar(128), lease_until timestamp,
+  created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS collection_task_items (
+  id serial PRIMARY KEY, task_id integer NOT NULL REFERENCES collection_tasks(id) ON DELETE CASCADE,
+  note_id varchar(128) NOT NULL, card jsonb NOT NULL, status varchar(16) NOT NULL DEFAULT 'pending', reason text,
+  collected_note_id integer REFERENCES collected_notes(id) ON DELETE SET NULL, already_existed boolean NOT NULL DEFAULT false,
+  platform_comments integer, captured_comments integer NOT NULL DEFAULT 0, captured_replies integer NOT NULL DEFAULT 0,
+  comment_coverage varchar(16) NOT NULL DEFAULT 'not_requested'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS collection_task_items_note ON collection_task_items(task_id, note_id);
+CREATE INDEX IF NOT EXISTS collection_tasks_user_status ON collection_tasks(user_id, status, id);
 `;
 
 export async function migrate(db: Db) {

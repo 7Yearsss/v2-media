@@ -1,4 +1,4 @@
-import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight } from "@v2media/shared";
+import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight, CollectionTaskRules, NoteCard } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -256,3 +256,21 @@ export const postmortemReports = pgTable("postmortem_reports", {
   insight: jsonb("insight").$type<PostmortemInsight>(), error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(), finishedAt: timestamp("finished_at"),
 });
+
+export const collectionTasks = pgTable("collection_tasks", {
+  id: serial("id").primaryKey(), userId: integer("user_id").notNull().references(() => users.id),
+  collectionId: integer("collection_id").references(() => collections.id, { onDelete: "set null" }),
+  collectionName: text("collection_name").notNull(), rules: jsonb("rules").$type<CollectionTaskRules>().notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("queued"), revision: integer("revision").notNull().default(0),
+  phase: varchar("phase", { length: 16 }).notNull().default("search"), scrollSteps: integer("scroll_steps").notNull().default(0),
+  reason: text("reason"), leaseId: varchar("lease_id", { length: 36 }), claimedBy: varchar("claimed_by", { length: 128 }), leaseUntil: timestamp("lease_until"),
+  createdAt: timestamp("created_at").notNull().defaultNow(), updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+export const collectionTaskItems = pgTable("collection_task_items", {
+  id: serial("id").primaryKey(), taskId: integer("task_id").notNull().references(() => collectionTasks.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id", { length: 128 }).notNull(), card: jsonb("card").$type<NoteCard>().notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"), reason: text("reason"),
+  collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id, { onDelete: "set null" }), alreadyExisted: boolean("already_existed").notNull().default(false),
+  platformComments: integer("platform_comments"), capturedComments: integer("captured_comments").notNull().default(0), capturedReplies: integer("captured_replies").notNull().default(0),
+  commentCoverage: varchar("comment_coverage", { length: 16 }).notNull().default("not_requested"),
+}, t => [uniqueIndex("collection_task_items_note").on(t.taskId, t.noteId)]);
