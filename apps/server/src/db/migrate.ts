@@ -264,6 +264,21 @@ CREATE TABLE IF NOT EXISTS collection_task_items (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS collection_task_items_note ON collection_task_items(task_id, note_id);
 CREATE INDEX IF NOT EXISTS collection_tasks_user_status ON collection_tasks(user_id, status, id);
+ALTER TABLE collection_tasks ADD COLUMN IF NOT EXISTS control_revision integer NOT NULL DEFAULT 0;
+ALTER TABLE collection_tasks ADD COLUMN IF NOT EXISTS last_control_action varchar(16);
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS lease_id varchar(36);
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS lease_until timestamp;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_id varchar(36);
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_until timestamp;
+CREATE TABLE IF NOT EXISTS browser_execution_receipts (
+  id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id),
+  domain varchar(16) NOT NULL, execution_id integer NOT NULL,
+  receipt_id varchar(36) NOT NULL, body_hash varchar(64) NOT NULL, ack jsonb NOT NULL,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS browser_execution_receipts_user_receipt ON browser_execution_receipts(user_id, receipt_id);
 `;
 
 export async function migrate(db: Db) {

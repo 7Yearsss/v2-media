@@ -137,6 +137,9 @@ export const publishJobs = pgTable("publish_jobs", {
   personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
   draftSnapshot: jsonb("draft_snapshot").$type<{ title: string; content: string; tags: string[]; images: NoteImage[] }>(),
   claimedBy: varchar("claimed_by", { length: 128 }),
+  leaseId: varchar("lease_id", { length: 36 }),
+  attempt: integer("attempt").notNull().default(0),
+  leaseUntil: timestamp("lease_until"),
   error: text("error"),
   resultUrl: text("result_url"),
   /** 读回对账结论：verified | unverified | login_required | readback_error */
@@ -206,8 +209,11 @@ export const jobs = pgTable("jobs", {
   dueAt: timestamp("due_at"),
   /** 认领标识（插件 SW id），防多浏览器重复执行。 */
   claimedBy: varchar("claimed_by", { length: 128 }),
-  /** 认领时间——running 超过 30min 视为执行方掉线，回收重排。 */
+  /** 认领时间；浏览器归因执行以 leaseUntil 为有效期。 */
   claimedAt: timestamp("claimed_at"),
+  leaseId: varchar("lease_id", { length: 36 }),
+  attempt: integer("attempt").notNull().default(0),
+  leaseUntil: timestamp("lease_until"),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   finishedAt: timestamp("finished_at"),
@@ -245,6 +251,18 @@ export const accountSnapshots = pgTable("account_snapshots", {
   extra: jsonb("extra").$type<Record<string, unknown>>(),
 });
 
+/** Receipts are independent of editable drafts/accounts and retained for replay acknowledgement. */
+export const browserExecutionReceipts = pgTable("browser_execution_receipts", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  domain: varchar("domain", { length: 16 }).notNull(),
+  executionId: integer("execution_id").notNull(),
+  receiptId: varchar("receipt_id", { length: 36 }).notNull(),
+  bodyHash: varchar("body_hash", { length: 64 }).notNull(),
+  ack: jsonb("ack").$type<{ ok: true; rescheduled?: boolean }>().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, t => [uniqueIndex("browser_execution_receipts_user_receipt").on(t.userId, t.receiptId)]);
+
 export const postmortemReports = pgTable("postmortem_reports", {
   engine: varchar("engine", { length: 16 }),
   id: serial("id").primaryKey(),
@@ -262,6 +280,7 @@ export const collectionTasks = pgTable("collection_tasks", {
   collectionId: integer("collection_id").references(() => collections.id, { onDelete: "set null" }),
   collectionName: text("collection_name").notNull(), rules: jsonb("rules").$type<CollectionTaskRules>().notNull(),
   status: varchar("status", { length: 16 }).notNull().default("queued"), revision: integer("revision").notNull().default(0),
+  controlRevision: integer("control_revision").notNull().default(0), lastControlAction: varchar("last_control_action", { length: 16 }),
   phase: varchar("phase", { length: 16 }).notNull().default("search"), scrollSteps: integer("scroll_steps").notNull().default(0),
   reason: text("reason"), leaseId: varchar("lease_id", { length: 36 }), claimedBy: varchar("claimed_by", { length: 128 }), leaseUntil: timestamp("lease_until"),
   createdAt: timestamp("created_at").notNull().defaultNow(), updatedAt: timestamp("updated_at").notNull().defaultNow(),

@@ -13,6 +13,7 @@ import type { PublishJobPayload } from "./lib/messages";
 import { sendToBackground } from "./lib/messages";
 import { el, shadowHost } from "./lib/ui";
 import { getSettings } from "./lib/settings";
+import { confirmPublication, PublishResultUnknownError } from "./lib/publish-outcome";
 
 type AnyEl = HTMLElement;
 
@@ -62,9 +63,11 @@ function step(id: string, label: string, state: "run" | "ok" | "err" | "todo" = 
   row.className = `step ${state === "todo" ? "" : state}`;
   row.querySelector(".s")!.textContent = icon;
 }
-function failHint(msg: string) {
+function failHint(msg: string, needsReconciliation = false) {
   stepsEl.append(
-    el("div", { class: "hint" }, `失败：${msg}。可人工完成发布后忽略此页。`),
+    el("div", { class: "hint" }, needsReconciliation
+      ? `${msg}。请保留此页并核对站点结果，勿直接重发。`
+      : `失败：${msg}。可人工完成发布后忽略此页。`),
   );
 }
 
@@ -561,11 +564,14 @@ async function runJob(job: PublishJobPayload) {
 
   await ensureEnabled();
   step("publish", "点击发布");
-  const clicked = btn.host
-    ? await trustedClickSeq([`xhs-publish-btn[submit-text="发布"] @dx=${btn.dx}`])
-    : await trustedClickEl(btn.el);
-  if (!clicked) throw new Error(`点击发布失败（${lastClickDiag || "真实点击未成功"}）`);
-  const { resultUrl } = await awaitResult();
+  const target = btn;
+  const { resultUrl } = await confirmPublication(async () => {
+    const clicked = target.host
+      ? await trustedClickSeq([`xhs-publish-btn[submit-text="发布"] @dx=${target.dx}`])
+      : await trustedClickEl(target.el);
+    if (!clicked) throw new Error(`点击发布未确认（${lastClickDiag || "真实点击未成功"}）`);
+    return true;
+  }, awaitResult);
   step("publish", "发布完成", "ok");
   return { resultUrl };
 }
@@ -597,24 +603,26 @@ async function main() {
     failHint(String((e as Error)?.message ?? e));
     return;
   }
+  let result: Awaited<ReturnType<typeof runJob>>;
   try {
-    const { resultUrl } = await runJob(job);
-    await sendToBackground({
-      type: "JOB_RESULT",
-      jobId: job.id,
-      status: "done",
-      resultUrl,
-    });
-    step("done", "已回传服务端", "ok");
+    result = await runJob(job);
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
-    failHint(msg);
+    failHint(msg, e instanceof PublishResultUnknownError);
     await sendToBackground({
       type: "JOB_RESULT",
       jobId: job.id,
-      status: "failed",
+      status: e instanceof PublishResultUnknownError ? "uncertain" : "failed",
       error: msg.slice(0, 1500),
     }).catch(() => {});
+    return;
+  }
+  try {
+    await sendToBackground({ type: "JOB_RESULT", jobId: job.id, status: "done", resultUrl: result.resultUrl });
+    step("done", "已回传服务端", "ok");
+  } catch {
+    // The background persists its receipt before sending. Do not manufacture a second failure.
+    failHint("发布结果已产生，等待后台确认", true);
   }
 }
 

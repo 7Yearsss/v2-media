@@ -78,6 +78,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 - `POST /api/collection-tasks`：`CollectionTaskRules`（keyword 1–80 字符、collectionId、minLikes 默认 1000/范围 0–1000 万、scanLimit 默认 60/范围 1–300、saveLimit 默认 10/范围 1–30 且不大于扫描数、commentLimit 默认 50/范围 0–200、intervalMs 默认 5000/范围 2000–15000）。只支持关键词搜索；每用户最多 10 个 queued/running/paused/blocked 任务。规则、库 ID/名称冻结，跨用户库 404，超容量 409，返回 201 `CollectionTask`。
 - `GET /api/collection-tasks` 返回最近 50 个 `{items}`；`GET /:id?offset=` 返回 `{task,items,nextOffset}`，逐篇每页 50。DTO 不暴露 nonce、执行方或笔记访问 token；按当前 user_id 隔离。
 - `POST /:id/control {revision,action:pause|resume|cancel}`：旧 revision 409。暂停/取消立即清租约并增加 revision，不删除任务、笔记或采集历史。paused/blocked/failed/partial 可 resume，failed/partial 逐篇重试仍遵守原规则。已经入库的笔记按用户+noteId 幂等更新，新增计数不重复。取消不可复活，done 不可重新运行；需要新范围时新建任务。目标库被删除不自动改到其他库，恢复返回 409。
+- `CollectionTask.controlRevision` / `lastControlAction` 记录最近一次用户控制的 revision 和 pause/resume/cancel，初始为 0/null。自动租约回收与认领只增加普通 revision，不改变这两个字段。插件的验证阻断只能由较新的明确 resume/cancel 解除，不能把超时回到 queued 当作用户继续。
 - `POST /api/ext/collection-tasks/claim {capability:'xhs-keyword-v1',claimedBy}` 返回 `{claim:CollectionTaskClaim|null}`。能力必传，旧插件无此协议不会误领。每用户最多一个有效 running 租约；blocked 时不认领后续关键词任务。租约 120s；过期自动重新排队、增加 revision、生成新 UUID，保留阶段、滚动位置及笔记进度。
 - 所有执行接口都传 `{leaseId,revision}`：`POST /:id/heartbeat` 续租/读取进度；`/discover {cards≤50,scrollSteps≤50,exhausted?}` 去重记录搜索卡片、按点赞筛选，到扫描/候选/滚动上限转详情；`/item {noteId,detail?,commentsHasMore?,error?}` 仅接受该任务的待处理笔记，详情再核验点赞与平台 URL/完整媒体；`/finish {outcome:done|yield|blocked|failed,reason?}` 结束或让位，可能返回 partial。跨用户 404，旧/暂停/取消/过期租约 409，非法站外 URL/字段 400。单请求最多 2MiB。
 - 入库和逐篇记录使用同一事务，锁任务行后检查租约；控制操作共用此锁。取消提交后的迟到响应不能新增笔记。复用 `collect-ingest.ts` 的既有完整详情/评论合并规则与异步媒体 jobs，不同步下载外部素材。
@@ -117,12 +118,28 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/ext/accounts/heartbeat | `AccountHeartbeat`：插件每 5min 上报已登录账号 |
 | POST | /api/ext/collect | `CollectBatch` → `{saved,ids}`（按 noteId 去重 upsert；`collectionId` 三态：缺省=不动分组、`null`=回未分组、数字=归库且校验归属） |
 | GET | /api/ext/publish/pending | pending job 列表（job 全字段 + `xhsUserId` + draft 全文）。`?all=1` 含未来定时；`?account=<xhsUserId>` 只回该账号任务 |
-| GET | /api/ext/publish/:id | 单条任务+草稿全文。pending 任意认领方可见；running 仅 `?claimer=<SW_ID>` 匹配原认领方可见 |
-| POST | /api/ext/publish/:id/claim | `{claimedBy}` 认领任务（防重） |
-| POST | /api/ext/publish/:id/result | `{status:'done'\|'failed',resultUrl?,error?}`；done → 服务端自动排 `readback` 任务（T+10min） |
-| GET | /api/ext/tasks/pending | 到期 pending 任务 `→ {tasks:ExtTask[]}`（`jobs` 表 type=readback/metrics/account_snapshot + `dueAt`；认领 >30min 的 running 自动回收为 pending） |
-| POST | /api/ext/tasks/:id/claim | `{claimedBy}` 认领任务（409=已被认领） |
-| POST | /api/ext/tasks/:id/result | `{status:'done'\|'failed',outcome?,data?,error?}`。readback：`data.items`=嗅探到的已发列表 → 服务端按标题+时间窗匹配 → `publish_jobs.outcome`（verified→自动排 T+1h/24h/7d `metrics`；unverified→30min 后复读 ≤3 次）；metrics：`data.rows[]` → 落 `note_metrics` 快照；account_snapshot：`data`={followers,likesTotal,notesCount,…} → 落 `account_snapshots`。readback failed → 重排 ≤3 次后定 `readback_error` |
+| GET | /api/ext/publish/:id | pending 返回任务和冻结稿；running 恢复须 `?claimer=<原claimedBy>&capability=browser-execution-v2` 且租约有效；终态只返回状态元数据 |
+| POST | /api/ext/publish/:id/claim | `BrowserExecutionClaimRequest` → 认领行与租约，非 pending 返回 404；不重新认领过期发布 |
+| POST | /api/ext/publish/:id/heartbeat | `BrowserExecutionHeartbeat` → 续租后的状态/租约；过期或不同代次 409 |
+| POST | /api/ext/publish/:id/result | `BrowserExecutionReceipt` + `{status:'done'\|'failed',resultUrl?,error?}` → ACK；done 原子更新终态/草稿/选题并仅排一个 T+10min readback |
+| GET | /api/ext/tasks/pending | 到期 pending 任务 `→ {tasks:ExtTask[]}`，仅 readback/metrics/account_snapshot；已过期或旧版无租约 running 回到 pending |
+| GET | /api/ext/tasks/:id | pending 返回任务；running 恢复要求原 claimer、能力和有效租约；终态仅状态元数据 |
+| POST | /api/ext/tasks/:id/claim | `BrowserExecutionClaimRequest` → 认领行与租约；未到期/已认领 404 |
+| POST | /api/ext/tasks/:id/heartbeat | `BrowserExecutionHeartbeat` → 续租后的状态/租约；过期或不同代次 409 |
+| POST | /api/ext/tasks/:id/result | `BrowserExecutionReceipt` + `{status:'done'\|'failed',outcome?,data?,error?}` → ACK；readback 匹配非空 noteId 的标题/时间窗，verified 排三次 metrics；unverified 30min 后复读，failed 10min 后复读，最多三次；metrics/snapshot 仅写任务绑定的来源 |
+
+### 浏览器执行协议（插件 0.1.9）
+
+共享类型见 `packages/shared/src/browser-execution.ts`。claim 必传 `{capability:'browser-execution-v2',claimedBy}`；租约返回 `{claimedBy,leaseId:UUID,attempt:正整数,leaseUntil:ISO时间}`。heartbeat 在 claim 字段上加 leaseId/attempt；result 再加稳定 UUID receiptId。缺能力 426；非法载荷 400；非本用户 404；当前状态非 running、过期或代次不符 409。认领方必须保留原租约的 claimedBy，不能因浏览器/插件重启换成新的实例 ID。
+
+- 发布租约 10 分钟，回采租约 2 分钟；心跳仅续仍有效的同代租约。发布过期仍为 running，发布列表派生提示结果未知，不写 failed、不自动再发。回采可回收/重领，得到新的 UUID 和递增 attempt。
+- 收据按 userId/receiptId 唯一，正文规范化后做哈希；相同执行、相同正文补报返回**原 ACK**，可在终态/旧代次下补领已提交 ACK，不重复业务副作用。同 ID 换正文或目标 409。收据、业务终态、指标/快照与下游排期同事务；执行失败回滚全部写入。
+- metrics done 只接受与任务 publication/note/account/user 一致的一条 row，缺数据、重复 rows、其他笔记与空指标 400；缺失值保持 null，0 为已观测零。snapshot done 至少有一个合法非负整数指标，不能把空对象当成功。readback 没有笔记 ID 不可 verified；已 verified 的历史证据不被另一回采降级或重复排指标。
+- 插件先持久保存 execution 的授权 epoch/API base、租约、拥有的 tab 和 payload 交付标记，再执行；结果先存 outbox 再 POST，同一次结果补报复用 receiptId/正文。ACK 才清理记录和执行页。授权改变后的旧结果留待原授权核对，不用当前用户补报。
+- 启动先核对旧执行/自有页面再派新任务。已交付的发布不重新交付或再执行；发布超时、执行页丢失、最终点击调用失败/点击后结果未确认，均停在 uncertain 并保留证据，本地 uncertain 不发服务端 failed 回执。服务端 running/过期租约不能证明站点未发布，人工核对入口仍待后续切片。明确点击前失败可报 failed。
+- 真实点击前核对当前授权、服务器租约与实时 XHS 登录身份；lastAccount/过期身份缓存不能授权点击。只允许当前 owner 的 tab。验证页本地先持久阻断，即使 finish 断网也保留页面、停止后续自动任务，直到匹配授权的明确用户控制解除。
+
+升级需同时部署新增 schema/服务端协议并加载 0.1.9；旧插件不能无租约执行。旧版已 running 的发布不能静默回收，应人工核对。取消 API 仍只取消 pending，不承诺撤销已经发送的站点动作。
 
 `PublishJob` 新增字段：`outcome`（verified/unverified/login_required/readback_error）、`noteId`、`verifiedAt`。心跳上报在线账号若 20h 内无快照 → 自动排 `account_snapshot` 任务。插件侧任务页 URL 带 `__v2m_task=<taskId>` 标记；creator 域嗅探 `/api/galaxy/*` 响应透传，www 域嗅探 feed 详情透传，解析均在 `@v2media/shared/galaxy-parse`。
 

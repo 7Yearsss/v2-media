@@ -17,6 +17,7 @@ export async function taskView(db: Db, t: typeof collectionTasks.$inferSelect): 
     else if (i.status === "skipped") counts.skipped++; else if (i.status === "failed") counts.failed++;
     if (i.collectedNoteId !== null) { counts.saved++; if (i.commentCoverage === "partial") counts.partial++; if (!i.alreadyExisted) counts.newNotes++; counts.comments += i.capturedComments; counts.replies += i.capturedReplies; } }
   return { ...t.rules, id: t.id, collectionName: t.collectionName, status: t.status as CollectionTask["status"], revision: t.revision,
+    controlRevision: t.controlRevision, lastControlAction: t.lastControlAction as CollectionTask["lastControlAction"],
     phase: t.phase as CollectionTask["phase"], scrollSteps: t.scrollSteps, reason: t.reason,
     createdAt: t.createdAt.toISOString(), updatedAt: t.updatedAt.toISOString(), leaseUntil: t.leaseUntil?.toISOString() ?? null, counts };
 }

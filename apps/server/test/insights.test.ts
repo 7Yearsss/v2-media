@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { makeApp, authed, registerUser } from "./helpers";
+import { makeApp, authed, claimBrowser, registerUser, reportBrowser } from "./helpers";
+import { randomUUID } from "node:crypto";
+import { BROWSER_EXECUTION_CAPABILITY as capability } from "@v2media/shared";
 import { accountSnapshots, drafts, hostedAccounts, jobs, noteMetrics, postmortemReports, publishJobs, topics } from "../src/db/schema";
 import { runPostmortemJobs } from "../src/lib/postmortem-jobs";
 import type { AiClient } from "../src/modules/ai";
@@ -102,7 +104,7 @@ describe("数据洞察和复盘（内存 PGlite/mock AI）", () => {
     expect(fresh.id).not.toBe(reports[0].id); expect(fresh.evidence.metrics).toHaveLength(2);
     const other = await registerUser(f.app, "other@b.co"); expect((await f.app.request("/api/ai/postmortem", authed(other.token, { method: "POST", body: JSON.stringify({ publishJobId: id }) }))).status).toBe(404);
     const pending = await (await f.request("/api/ext/tasks/pending")).json() as any; expect(pending.tasks.some((t: any) => t.type === "postmortem")).toBe(false);
-    const [job] = await f.db.select().from(jobs).where(eq(jobs.type, "postmortem")); expect((await f.request(`/api/ext/tasks/${job!.id}/result`, { status: "done" })).status).toBe(400);
+    const [job] = await f.db.select().from(jobs).where(eq(jobs.type, "postmortem")); expect((await f.request(`/api/ext/tasks/${job!.id}/result`, { capability, claimedBy: "sw-test", leaseId: randomUUID(), attempt: 1, receiptId: randomUUID(), status: "done" })).status).toBe(400);
   });
   it("无回采/私密/旧原文不足时不让模型编结论；坏引用失败可重试", async () => {
     let calls = 0; const f = await fixture({ complete: async () => { calls++; return JSON.stringify({ evidence: [{ metricIds: [999999], observation: "坏依据" }], hypotheses: [], experiments: [{ change: "x", observe: "y" }] }); } });
@@ -134,10 +136,13 @@ describe("数据洞察和复盘（内存 PGlite/mock AI）", () => {
   it("读回记录平台时间、指标保留排期与实采时刻，非有限/负值缺失而不是零", async () => {
     const f = await fixture(), id = await f.create();
     const [task] = await f.db.insert(jobs).values({ userId: f.userId, type: "readback", payload: { publishJobId: id, title: f.draft.title, publishedAt: at.getTime(), xhsUserId: "one" } }).returning();
-    await f.request(`/api/ext/tasks/${task!.id}/result`, { status: "done", data: { items: [{ noteId: "n1", title: f.draft.title, publishTime: at.getTime(), url: "https://example.com/n1" }] } });
+    await f.db.update(publishJobs).set({ outcome: null, verifiedAt: null, publishedAt: null }).where(eq(publishJobs.id, id));
+    await claimBrowser(f.app, f.token, "tasks", task!.id);
+    await reportBrowser(f.app, f.token, "tasks", task!.id, { status: "done", data: { items: [{ noteId: "n1", title: f.draft.title, publishTime: at.getTime(), url: "https://example.com/n1" }] } });
     const [pj] = await f.db.select().from(publishJobs).where(eq(publishJobs.id, id)); expect(pj!.publishedAt?.toISOString()).toBe(at.toISOString());
     const [metricsTask] = await f.db.insert(jobs).values({ userId: f.userId, type: "metrics", dueAt: at, payload: { publishJobId: id, noteId: "n1" } }).returning();
-    await f.request(`/api/ext/tasks/${metricsTask!.id}/result`, { status: "done", data: { rows: [{ noteId: "n1", likes: -1, views: 0, comments: 2 }] } });
+    await claimBrowser(f.app, f.token, "tasks", metricsTask!.id);
+    await reportBrowser(f.app, f.token, "tasks", metricsTask!.id, { status: "done", data: { rows: [{ noteId: "n1", likes: -1, views: 0, comments: 2 }] } });
     const [m] = await f.db.select().from(noteMetrics).where(eq(noteMetrics.publishJobId, id)); expect(m!.likes).toBeNull(); expect(m!.views).toBe(0); expect(m!.capturedAt.toISOString()).toBe(f.deps.now().toISOString()); expect(m!.extra?.scheduledFor).toBe(at.toISOString());
   });
 });

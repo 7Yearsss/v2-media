@@ -12,16 +12,19 @@
 import type {
   AccountHeartbeat,
   CollectResponse,
+  CollectionTaskClaim,
   ExtTask,
   PendingPublishJobsResponse,
   PendingTasksResponse,
   PublishOutcome,
+  BrowserExecutionLease,
 } from "@v2media/shared";
 import {
   isAuthError,
   metricsRowsFromResponse,
   personalInfoFromResponse,
   postedNotesFromResponse,
+  BROWSER_EXECUTION_CAPABILITY,
 } from "@v2media/shared";
 import type {
   BgMessage,
@@ -34,24 +37,38 @@ import { getSettings, setSettings } from "./lib/settings";
 import { BrowserLane } from "./lib/browser-lane";
 import { KeywordRunner } from "./lib/keyword-runner";
 import { COLLECTION_CAPABILITY, type CollectionPageSnapshot } from "@v2media/shared";
+import { ExecutionStore, type BrowserExecution, type ExecutionContext, type ResultReceipt } from "./lib/execution-store";
 
 const VERSION = chrome.runtime.getManifest().version;
 const browserLane = new BrowserLane();
+const executionStore = new ExecutionStore();
+let recoveryBlocked: string | null = null;
+interface CollectionSafetyBlock {
+  taskId: number; leaseId: string; revision?: number; tabId?: number;
+  context?: ExecutionContext; reason?: string; pendingFinish?: Record<string, unknown>;
+}
 class BrowserBusyError extends Error { constructor() { super("浏览器正在执行其他任务，请稍后重试或先暂停自动采集"); } }
 
 async function collectionSafetyReady() {
-  const block = (await chrome.storage.local.get("collectionSafetyBlock")).collectionSafetyBlock as { taskId: number; leaseId: string } | undefined;
+  const block = (await chrome.storage.local.get("collectionSafetyBlock")).collectionSafetyBlock as CollectionSafetyBlock | undefined;
   if (!block) return true;
+  if (!block.context || !(await matchesContext(block.context))) return false;
   try {
-    const state = await api<{ task: { status: string } }>(`/api/collection-tasks/${block.taskId}`);
-    if (state.task.status === "blocked") return false;
-  } catch (e) { if (!/not found/.test(String(e))) return false; }
+    const state = await api<{ task: { status: string; controlRevision: number; lastControlAction: "pause" | "resume" | "cancel" | null } }>(`/api/collection-tasks/${block.taskId}`, {}, block.context);
+    // Lease expiry also changes revision: only an explicit control action may release a verification stop.
+    if (block.revision === undefined || state.task.controlRevision <= block.revision ||
+        !["resume", "cancel"].includes(state.task.lastControlAction ?? "")) return false;
+  } catch { return false; }
   await chrome.storage.local.remove("collectionSafetyBlock");
-  for (const tab of await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" }))
-    if (tab.id && tab.url?.includes(`__v2m_lease=${block.leaseId}`)) await chrome.tabs.remove(tab.id).catch(() => {});
+  if (block.tabId) await chrome.tabs.remove(block.tabId).catch(() => {});
+  await executionStore.remove("keyword", block.taskId);
+  for (const r of await executionStore.receipts()) if (r.kind === "keyword" && r.id === block.taskId) await executionStore.ack(r.key);
   return true;
 }
 async function reserveBrowser(owner: string) {
+  await reconcileBrowserExecutions();
+  if (browserLane.owns(owner)) return true;
+  if (recoveryBlocked) return false;
   if (!browserLane.acquire(owner)) return false;
   try {
     if (!(await collectionSafetyReady())) { browserLane.release(owner); return false; }
@@ -59,8 +76,6 @@ async function reserveBrowser(owner: string) {
     for (const tab of await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" })) {
       if (!tab.url) continue; const u = new URL(tab.url);
       if (u.searchParams.has("__v2m_collect_task")) {
-        // Only our keyword marker is cleanup-eligible on SW recovery; CAPTCHA tabs are protected by the block above.
-        if (owner === "keyword" && tab.id) { await chrome.tabs.remove(tab.id).catch(() => {}); continue; }
         browserLane.release(owner); return false;
       }
       const job = u.searchParams.get("job_id"), task = u.searchParams.get("__v2m_task");
@@ -72,20 +87,24 @@ async function reserveBrowser(owner: string) {
 }
 
 /**
- * 认领标识：storage.session 持久 → SW 重启后同一浏览器仍是同一认领方
+ * 认领标识：storage.local 持久 → Chrome 重启后仍保留认领方
  * （GET /publish/:id?claimer= 校验用）；换浏览器则 id 不同，防止重复执行 running 任务。
  */
+let loadingSwId: Promise<string> | null = null;
 async function swId(): Promise<string> {
-  const { swId } = (await chrome.storage.session.get("swId")) as { swId?: string };
-  if (swId) return swId;
-  const id = `${VERSION}-${Math.random().toString(36).slice(2, 8)}`;
-  await chrome.storage.session.set({ swId: id });
-  return id;
+  if (!loadingSwId) loadingSwId = (async () => {
+    const { swId } = (await chrome.storage.local.get("swId")) as { swId?: string };
+    if (swId) return swId;
+    const id = `${VERSION}-${crypto.randomUUID()}`;
+    await chrome.storage.local.set({ swId: id }); return id;
+  })();
+  return loadingSwId;
 }
 
 interface ExtAuth {
   apiBase: string;
   token: string;
+  epoch: string;
 }
 
 interface TrackedJob {
@@ -95,11 +114,26 @@ interface TrackedJob {
   openedAt: number;
   deadline: number;
   payload: PublishJobPayload;
+  execution: BrowserExecution;
 }
 
+let loadingAuth: Promise<ExtAuth | null> | null = null;
 async function getAuth(): Promise<ExtAuth | null> {
-  const { auth } = await chrome.storage.local.get("auth");
-  return (auth as ExtAuth | undefined) ?? null;
+  if (loadingAuth) return loadingAuth;
+  loadingAuth = (async () => {
+    const { auth } = await chrome.storage.local.get("auth");
+    if (!auth) return null;
+    if (!auth.epoch) { auth.epoch = crypto.randomUUID(); await chrome.storage.local.set({ auth }); }
+    return auth as ExtAuth;
+  })();
+  try { return await loadingAuth; } finally { loadingAuth = null; }
+}
+async function authContext(): Promise<ExecutionContext> {
+  const auth = await getAuth(); if (!auth) throw new NotAuthorizedError();
+  return { apiBase: auth.apiBase, epoch: auth.epoch };
+}
+async function matchesContext(context: ExecutionContext) {
+  const auth = await getAuth(); return !!auth && auth.apiBase === context.apiBase && auth.epoch === context.epoch;
 }
 
 function defaultAppOrigin(): string | null {
@@ -116,9 +150,11 @@ class NotAuthorizedError extends Error {
   }
 }
 
-async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } }
+async function api<T>(path: string, init: { method?: string; body?: unknown } = {}, context?: ExecutionContext): Promise<T> {
   const auth = await getAuth();
   if (!auth) throw new NotAuthorizedError();
+  if (context && (context.apiBase !== auth.apiBase || context.epoch !== auth.epoch)) throw new NotAuthorizedError("执行属于之前的授权，需要原账号核对");
   const res = await fetch(`${auth.apiBase}${path}`, {
     method: init.method ?? (init.body !== undefined ? "POST" : "GET"),
     headers: {
@@ -128,11 +164,12 @@ async function api<T>(path: string, init: { method?: string; body?: unknown } = 
     body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
   });
   const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (context && !(await matchesContext(context))) throw new NotAuthorizedError("执行期间授权已变化，结果保留待核对");
   if (res.status === 401) {
-    await chrome.storage.local.remove("auth");
+    if (await matchesContext({ apiBase: auth.apiBase, epoch: auth.epoch })) await chrome.storage.local.remove("auth");
     throw new NotAuthorizedError("插件授权已失效，请在工作台重新「授权插件」");
   }
-  if (!res.ok) throw new Error((data?.error as string) ?? `服务端错误 HTTP ${res.status}`);
+  if (!res.ok) throw new ApiError((data?.error as string) ?? `服务端错误 HTTP ${res.status}`, res.status);
   return data as T;
 }
 
@@ -254,16 +291,16 @@ async function fetchPendingJobs(includeFuture = false): Promise<PublishJobPayloa
 let _curAccountCache: { id: string; at: number } | null = null;
 
 /** claim 前的实时账号身份：开着的 xhs tab → 抓首页 __INITIAL_STATE__ → 上次心跳。60s 内复用结果，避免轮询反复抓首页。 */
-async function currentXhsUserId(): Promise<string> {
-  if (_curAccountCache && Date.now() - _curAccountCache.at < 60_000) {
+async function currentXhsUserId(fresh = false): Promise<string> {
+  if (!fresh && _curAccountCache && Date.now() - _curAccountCache.at < 60_000) {
     return _curAccountCache.id;
   }
-  const id = await resolveXhsUserId();
+  const id = await resolveXhsUserId(!fresh);
   _curAccountCache = { id, at: Date.now() };
   return id;
 }
 
-async function resolveXhsUserId(): Promise<string> {
+async function resolveXhsUserId(allowLastKnown = true): Promise<string> {
   const tab = await accountFromOpenTab();
   if (tab?.xhsUserId) return tab.xhsUserId;
   try {
@@ -277,6 +314,7 @@ async function resolveXhsUserId(): Promise<string> {
   } catch {
     // 抓不到就落到 lastAccount
   }
+  if (!allowLastKnown) return "";
   const { lastAccount } = (await chrome.storage.local.get("lastAccount")) as {
     lastAccount?: DetectedAccount;
   };
@@ -294,6 +332,150 @@ async function accountMismatch(job: PublishJobPayload): Promise<string | null> {
     : `任务绑定账号 ${want}，当前浏览器登录 ${cur}`;
 }
 
+function leaseFrom(value: unknown): BrowserExecutionLease {
+  const v = value as Partial<BrowserExecutionLease>;
+  if (!v?.leaseId || !v.claimedBy || !Number.isInteger(v.attempt) || !v.leaseUntil) throw new Error("服务端没有返回执行租约，请更新服务端后重试");
+  return v as BrowserExecutionLease;
+}
+function leaseBody(record: BrowserExecution) {
+  if (!record.lease) throw new Error("执行租约缺失，需要核对");
+  const { claimedBy, leaseId, attempt } = record.lease;
+  return { capability: BROWSER_EXECUTION_CAPABILITY, claimedBy, leaseId, attempt };
+}
+async function clearExecution(record: BrowserExecution) {
+  if (!(await executionStore.remove(record.kind, record.id, record))) return;
+  if (record.kind === "task" && record.tabId) await currentXhsUserId();
+  if (record.tabId) await chrome.tabs.remove(record.tabId).catch(() => {});
+  if (record.kind === "publish") trackedJobs.delete(record.id);
+  if (record.kind === "task") trackedTasks.delete(record.id);
+  browserLane.release(`${record.kind}:${record.id}`);
+}
+async function transmitReceipt(receipt: ResultReceipt) {
+  await api(receipt.path, { body: receipt.body }, receipt.context);
+  // ACK is the only success path that removes execution state and its owned tab.
+  const record = (await executionStore.executions()).find(r => r.kind === receipt.kind && r.id === receipt.id &&
+    r.context.epoch === receipt.context.epoch && r.context.apiBase === receipt.context.apiBase &&
+    (receipt.kind === "keyword" ? (r.payload as { leaseId?: string }).leaseId === receipt.body.leaseId : r.lease?.leaseId === receipt.body.leaseId));
+  if (record && receipt.kind !== "keyword") await clearExecution(record);
+  if (record && receipt.kind === "keyword" && receipt.body.outcome !== "blocked") await clearExecution(record);
+  await executionStore.ack(receipt.key);
+}
+async function queueResult(record: BrowserExecution, body: Record<string, unknown>) {
+  const key = `${record.kind}:${record.id}:${record.lease?.leaseId ?? "legacy"}`;
+  const receipt = await executionStore.enqueue({ key, kind: record.kind, id: record.id, context: record.context,
+    path: `/api/ext/${record.kind === "publish" ? "publish" : "tasks"}/${record.id}/result`,
+    body: { ...body, ...leaseBody(record), receiptId: crypto.randomUUID() } });
+  record.phase = "awaiting_ack"; await executionStore.put(record);
+  await transmitReceipt(receipt);
+}
+let reconciling: Promise<void> | null = null;
+let keywordContext: ExecutionContext | null = null;
+async function reconcileBrowserExecutions() {
+  if (reconciling) return reconciling;
+  reconciling = reconcileExecutions();
+  try { await reconciling; } finally { reconciling = null; }
+}
+async function reconcileExecutions() {
+  recoveryBlocked = null;
+  const auth = await getAuth(); if (!auth) { recoveryBlocked = "插件未授权"; return; }
+  await collectionSafetyReady();
+  for (const receipt of await executionStore.receipts()) {
+    if (!(await matchesContext(receipt.context))) { recoveryBlocked = "之前授权的执行结果尚待核对"; continue; }
+    try { await transmitReceipt(receipt); }
+    catch (e) {
+      if (e instanceof ApiError && [404, 409].includes(e.status)) {
+        const record = (await executionStore.executions()).find(r => r.kind === receipt.kind && r.id === receipt.id);
+        if (receipt.kind === "task" && record) { await clearExecution(record); await executionStore.ack(receipt.key); continue; }
+        // A rejected publish receipt cannot prove that no note was posted.
+        if (record && receipt.kind === "publish") { record.phase = "uncertain"; await executionStore.put(record); }
+      }
+      recoveryBlocked = "执行结果等待服务端确认";
+    }
+  }
+  const tabs = await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" });
+  const block = (await chrome.storage.local.get("collectionSafetyBlock")).collectionSafetyBlock as CollectionSafetyBlock | undefined;
+  for (const record of await executionStore.executions()) {
+    if (!(await matchesContext(record.context))) {
+      record.phase = "authorization_changed"; await executionStore.put(record);
+      recoveryBlocked = "执行属于之前的授权，请使用原账号核对"; continue;
+    }
+    if (record.phase === "awaiting_ack") { recoveryBlocked = "执行结果等待服务端确认"; continue; }
+    if (record.phase === "uncertain" || record.phase === "authorization_changed") { recoveryBlocked = "发布结果不明确，需要核对"; continue; }
+    if (record.kind === "keyword") {
+      if (keywordContext || block?.taskId === record.id) continue;
+      // Read-only collection pages may be retired before priority dispatch, including a replaced lease.
+      try {
+        await api(`/api/ext/collection-tasks/${record.id}/finish`, { body: { ...(record.payload as object), outcome: "yield", reason: "插件重启，恢复服务端进度" } }, record.context);
+      } catch (e) { if (!(e instanceof ApiError && [404, 409].includes(e.status))) { recoveryBlocked = "采集恢复等待网络"; continue; } }
+      await clearExecution(record); continue;
+    }
+    const tracked = record.kind === "publish" ? trackedJobs.get(record.id) : trackedTasks.get(record.id);
+    if (tracked) continue;
+    let remote: (PublishJobPayload | ExtTask) & Partial<BrowserExecutionLease>;
+    try {
+      if (!record.lease?.claimedBy) throw new Error("原认领身份缺失，执行需要核对");
+      remote = await api(`/api/ext/${record.kind === "publish" ? "publish" : "tasks"}/${record.id}?claimer=${encodeURIComponent(record.lease.claimedBy)}&capability=${BROWSER_EXECUTION_CAPABILITY}`, {}, record.context);
+    } catch (e) {
+      if (record.kind === "task" && e instanceof ApiError && [404, 409].includes(e.status)) { await clearExecution(record); continue; }
+      recoveryBlocked = "发布执行状态尚未核对"; continue;
+    }
+    if (["done", "failed", "canceled"].includes(remote.status ?? "")) { await clearExecution(record); continue; }
+    if (["pending", "queued"].includes(remote.status ?? "")) {
+      if (record.kind === "task") { await clearExecution(record); continue; }
+      record.phase = "uncertain"; await executionStore.put(record); recoveryBlocked = "发布状态发生变化，需要人工核对"; continue;
+    }
+    const lease = leaseFrom(remote);
+    if (lease.leaseId !== record.lease?.leaseId || lease.attempt !== record.lease.attempt) {
+      if (record.kind === "task") { await clearExecution(record); continue; }
+      recoveryBlocked = "发布租约已变化，需要核对"; continue;
+    }
+    record.lease = lease;
+    let ownedTab = tabs.find(t => t.id === record.tabId);
+    if (!ownedTab && record.kind === "publish" && !record.delivered) {
+      const candidates = tabs.filter(t => t.url && new URL(t.url).searchParams.get("__v2m_execution") === record.lease?.leaseId);
+      if (candidates.length === 1) { ownedTab = candidates[0]; record.tabId = ownedTab!.id; }
+    }
+    if (record.kind === "publish") {
+      if (!ownedTab) {
+        record.phase = "uncertain"; await executionStore.put(record);
+        recoveryBlocked = "发布页已关闭，执行结果未知，请核对"; continue;
+      }
+      if (!browserLane.acquire(`publish:${record.id}`) && !browserLane.owns(`publish:${record.id}`)) { recoveryBlocked = "存在多个未完成执行"; continue; }
+      trackedJobs.set(record.id, { jobId: record.id, tabId: record.tabId, state: record.delivered ? "running" : "opening",
+        openedAt: Date.now(), deadline: record.deadline, payload: record.payload as PublishJobPayload, execution: record });
+    } else {
+      if (!browserLane.acquire(`task:${record.id}`) && !browserLane.owns(`task:${record.id}`)) { recoveryBlocked = "存在多个未完成执行"; continue; }
+      if (!ownedTab) {
+        const url = taskTabUrl(remote as ExtTask); if (!url) { await clearExecution(record); continue; }
+        const tab = await chrome.tabs.create({ url, active: false }); record.tabId = tab.id;
+      }
+      trackedTasks.set(record.id, { taskId: record.id, tabId: record.tabId, type: (remote as ExtTask).type,
+        deadline: record.deadline, payload: (remote as ExtTask).payload as Record<string, unknown>, sawGalaxy: false,
+        loginSuspected: false, done: false, execution: record });
+    }
+    await executionStore.put(record);
+  }
+  // URL markers identify cleanup candidates; a live execution record is the authority to resume them.
+  const records = await executionStore.executions();
+  for (const tab of tabs) {
+    if (!tab.id || !tab.url || records.some(r => r.tabId === tab.id) || block?.tabId === tab.id) continue;
+    const u = new URL(tab.url);
+    const job = u.searchParams.get("job_id");
+    if (job) {
+      try {
+        const remote = await api<{ status: string }>(`/api/ext/publish/${Number(job)}?claimer=${encodeURIComponent(await swId())}&capability=${BROWSER_EXECUTION_CAPABILITY}`);
+        if (["done", "failed", "canceled"].includes(remote.status)) { await chrome.tabs.remove(tab.id).catch(() => {}); continue; }
+      } catch { /* Lack of a durable owner remains an explicit reconciliation stop. */ }
+      recoveryBlocked = "旧发布页没有可靠执行记录，请人工核对并关闭"; continue;
+    }
+    if (u.searchParams.has("__v2m_task") || u.searchParams.has("__v2m_collect_task")) {
+      if (block && (u.searchParams.get("__v2m_lease") === block.leaseId || isChallengeUrl(tab.url))) continue;
+      await currentXhsUserId();
+      await chrome.tabs.remove(tab.id).catch(() => {});
+    }
+  }
+}
+
 async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
   if (trackedJobs.has(job.id)) return true;
   const mismatch = await accountMismatch(job);
@@ -303,20 +485,25 @@ async function claimAndOpen(job: PublishJobPayload): Promise<boolean> {
   }
   if (!(await reserveBrowser(`publish:${job.id}`))) throw new BrowserBusyError();
   try {
-  await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: await swId() } });
+  const context = await authContext();
+  const lease = leaseFrom(await api(`/api/ext/publish/${job.id}/claim`, { body: { capability: BROWSER_EXECUTION_CAPABILITY, claimedBy: await swId() } }, context));
+  const execution: BrowserExecution = { kind: "publish", id: job.id, context, lease, payload: job, deadline: Date.now() + JOB_TIMEOUT_MS, phase: "opening" };
+  await executionStore.put(execution);
   const tracked: TrackedJob = {
     jobId: job.id,
     state: "opening",
     openedAt: Date.now(),
     deadline: Date.now() + JOB_TIMEOUT_MS,
     payload: job,
+    execution,
   };
   trackedJobs.set(job.id, tracked);
   const tab = await chrome.tabs.create({
-    url: `https://creator.xiaohongshu.com/publish/publish?job_id=${job.id}`,
+    url: `https://creator.xiaohongshu.com/publish/publish?job_id=${job.id}&__v2m_execution=${lease.leaseId}`,
     active: false,
   });
   tracked.tabId = tab.id;
+  execution.tabId = tab.id; await executionStore.put(execution);
   return true;
   } catch (e) { browserLane.release(`publish:${job.id}`); trackedJobs.delete(job.id); throw e; }
 }
@@ -325,16 +512,15 @@ async function pollPendingJobs() {
   // 超时兜底先做：停用期间也要回收卡死的已认领任务，不随总开关停
   for (const [id, t] of trackedJobs) {
     if ((t.state === "opening" || t.state === "running") && Date.now() > t.deadline) {
-      trackedJobs.delete(id);
-      browserLane.release(`publish:${id}`);
-      await api(`/api/ext/publish/${id}/result`, {
-        body: { status: "failed", error: "插件执行超时（发布页未回传结果）" },
-      }).catch(() => {});
-      if (t.tabId) chrome.tabs.remove(t.tabId).catch(() => {});
+      // Silence cannot prove the irreversible platform action failed. Keep the evidence and
+      // the server claim intact; a timeout must never manufacture a retryable failed publish.
+      t.execution.phase = "uncertain";
+      await executionStore.put(t.execution);
+      recoveryBlocked = `发布任务 #${id} 超时，结果未知，请核对站点；不会自动重发`;
     }
   }
   if (!(await getSettings()).enabled) return; // 总开关关闭：不领发布任务
-  if (browserLane.busy || !(await collectionSafetyReady())) return;
+  if (browserLane.busy || recoveryBlocked || !(await collectionSafetyReady())) return;
   const auth = await getAuth();
   if (!auth) return;
   let jobs: PublishJobPayload[];
@@ -354,33 +540,54 @@ async function pollPendingJobs() {
   }
 }
 
-async function payloadForJob(jobId: number): Promise<PublishJobPayload> {
+async function payloadForJob(jobId: number, tabId?: number): Promise<PublishJobPayload> {
   // 总开关关：JOB_READY / 手动打开发布页 / tabs.onUpdated 推 payload 都从这里进，先拦住
   if (!(await getSettings()).enabled) throw new Error("插件已停用");
   // 已认领的任务优先用内存里的 payload（pending 列表不再返回它）。
+  await reconcileBrowserExecutions();
   const tracked = trackedJobs.get(jobId);
-  if (tracked) return tracked.payload;
+  if (tracked) {
+    if (tabId === undefined || tracked.tabId !== tabId) throw new Error("发布页与执行记录不匹配");
+    if (!(await matchesContext(tracked.execution.context))) throw new NotAuthorizedError("此发布属于之前的授权");
+    if (tracked.execution.delivered) throw new Error("发布任务已开始；重新加载后请核对结果，不能再次执行");
+    tracked.execution.delivered = true; tracked.execution.phase = "running";
+    await executionStore.put(tracked.execution); return tracked.payload;
+  }
   // 未认领（手动打开 ?job_id=N 或 SW 重启丢了状态）：单条接口能恢复 pending/running 任务
   const job = await api<PublishJobPayload>(
-    `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}`,
-  ).catch(async () => (await fetchPendingJobs()).find((j) => j.id === jobId));
+    `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}&capability=${BROWSER_EXECUTION_CAPABILITY}`,
+  );
   if (!job) throw new Error(`服务端没有 job ${jobId} 的待发布任务`);
-  if (!(await reserveBrowser(`publish:${job.id}`))) throw new BrowserBusyError();
+  if (job.status !== "pending") throw new Error("发布任务没有本地执行记录，不能重复执行；请先核对站点");
+  if (!tabId) throw new Error("发布任务必须绑定标签页");
+  // A manually opened pending page may claim only when no durable unknown execution exists.
+  const previousBlock = recoveryBlocked; recoveryBlocked = null;
+  const tabs = await chrome.tabs.query({ url: "*://*.xiaohongshu.com/*" });
+  const senderTab = tabs.find(t => t.id === tabId);
+  if (!senderTab?.url || new URL(senderTab.url).hostname !== "creator.xiaohongshu.com" || new URL(senderTab.url).searchParams.get("job_id") !== String(job.id)) throw new Error("发布页标记与任务不匹配");
+  if ((await executionStore.executions()).length || tabs.some(t => t.id !== tabId && /job_id=|__v2m_task=|__v2m_collect_task=/.test(t.url ?? "")) || !(await collectionSafetyReady())) { recoveryBlocked = previousBlock; throw new BrowserBusyError(); }
+  const mismatch = await accountMismatch(job); if (mismatch) throw new Error(mismatch);
+  // This pending page is the current sender, so its marker may reserve its own owner.
+  if (!browserLane.acquire(`publish:${job.id}`)) throw new BrowserBusyError();
   try {
   // Run Now 标记持久在 storage.session：SW 重启后恢复 payload 时重新覆盖掉原定时
   const runNowKey = `runNow:${job.id}`;
   if ((await chrome.storage.session.get(runNowKey))[runNowKey]) {
     job.scheduledAt = undefined;
   }
-  if (job.status === "pending") {
-    await api(`/api/ext/publish/${job.id}/claim`, { body: { claimedBy: await swId() } });
-  }
+  const context = await authContext();
+  const lease = leaseFrom(await api(`/api/ext/publish/${job.id}/claim`, { body: { capability: BROWSER_EXECUTION_CAPABILITY, claimedBy: await swId() } }, context));
+  const execution: BrowserExecution = { kind: "publish", id: job.id, context, lease, tabId, delivered: true,
+    phase: "running", deadline: Date.now() + JOB_TIMEOUT_MS, payload: job };
+  await executionStore.put(execution);
   trackedJobs.set(job.id, {
     jobId: job.id,
     state: "running",
     openedAt: Date.now(),
     deadline: Date.now() + JOB_TIMEOUT_MS,
     payload: job,
+    tabId,
+    execution,
   });
   return job;
   } catch (e) { browserLane.release(`publish:${job.id}`); throw e; }
@@ -392,7 +599,7 @@ async function runPublishJobById(jobId: number) {
   const job =
     (await fetchPendingJobs(true).then((js) => js.find((j) => j.id === jobId))) ??
     (await api<PublishJobPayload>(
-      `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}`,
+      `/api/ext/publish/${jobId}?claimer=${encodeURIComponent(await swId())}&capability=${BROWSER_EXECUTION_CAPABILITY}`,
     ).catch(() => null));
   if (!job) throw new Error(`任务 ${jobId} 不在待发布列表（可能已被认领/执行）`);
   job.scheduledAt = undefined; // Run Now 语义：忽略定时，立即发
@@ -417,6 +624,7 @@ interface TrackedTask {
   sawGalaxy: boolean;
   loginSuspected: boolean;
   done: boolean;
+  execution: BrowserExecution;
 }
 const trackedTasks = new Map<number, TrackedTask>();
 const TASK_TIMEOUT_MS = 90_000;
@@ -453,12 +661,9 @@ async function finishTask(
 ) {
   if (t.done) return;
   t.done = true;
-  trackedTasks.delete(t.taskId);
-  if (t.tabId) void chrome.tabs.remove(t.tabId).catch(() => {});
-  await api(`/api/ext/tasks/${t.taskId}/result`, { body }).catch((e) => {
+  await queueResult(t.execution, body).catch((e) => {
     console.warn(`[v2m] task ${t.taskId} result report failed:`, e);
   });
-  browserLane.release(`task:${t.taskId}`);
 }
 
 /** galaxy 响应 → 该任务要的数据（不匹配返回 null 继续等）。 */
@@ -492,7 +697,7 @@ async function pollTasks() {
     }
   }
   if (!(await getSettings()).enabled) return; // 总开关关：不领任务
-  if (browserLane.busy || !(await collectionSafetyReady())) return;
+  if (browserLane.busy || recoveryBlocked || !(await collectionSafetyReady())) return;
   if (!(await getAuth())) return;
   let tasks: ExtTask[];
   try {
@@ -512,21 +717,19 @@ async function pollTasks() {
     // 串行 + 间隔：一轮最多领一个（下一个等下一分钟轮询）
     if (now - lastTaskOpenAt < TASK_SPACING_MS) break;
     if (!(await reserveBrowser(`task:${task.id}`))) break;
-    let claimed = false;
+    let lease: BrowserExecutionLease;
+    const context = await authContext();
     try {
-      await api(`/api/ext/tasks/${task.id}/claim`, { body: { claimedBy: await swId() } });
-      claimed = true;
+      lease = leaseFrom(await api(`/api/ext/tasks/${task.id}/claim`, { body: { capability: BROWSER_EXECUTION_CAPABILITY, claimedBy: await swId() } }, context));
     } catch {
       browserLane.release(`task:${task.id}`);
       continue;
     }
-    if (!claimed) continue;
+    const execution: BrowserExecution = { kind: "task", id: task.id, context, lease, deadline: now + TASK_TIMEOUT_MS, payload: task, phase: "opening" };
+    await executionStore.put(execution);
     const url = taskTabUrl(task);
     if (!url) {
-      browserLane.release(`task:${task.id}`);
-      await api(`/api/ext/tasks/${task.id}/result`, {
-        body: { status: "failed", error: `未知任务类型 ${task.type}` },
-      }).catch(() => {});
+      await queueResult(execution, { status: "failed", error: `未知任务类型 ${task.type}` }).catch(() => {});
       continue;
     }
     const tracked: TrackedTask = {
@@ -537,12 +740,14 @@ async function pollTasks() {
       sawGalaxy: false,
       loginSuspected: false,
       done: false,
+      execution,
     };
     trackedTasks.set(task.id, tracked);
     lastTaskOpenAt = now;
     try {
       const tab = await chrome.tabs.create({ url, active: false });
       tracked.tabId = tab.id;
+      execution.tabId = tab.id; execution.phase = "running"; await executionStore.put(execution);
       break;
     } catch (e) {
       await finishTask(tracked, { status: "failed", error: String(e) });
@@ -567,10 +772,14 @@ chrome.runtime.onMessage.addListener(
       case "EXT_COLLECT":
         return reply(
           getSettings()
-            .then((s) => {
+            .then(async (s) => {
               // 停用中拒绝入库：报错而非假成功，content 侧会把未成功的批次塞回 pending
               if (!s.enabled) throw new Error("插件已停用");
-              return api<CollectResponse>("/api/ext/collect", { body: msg.batch }).catch(
+              const owned = (await executionStore.executions()).find(r => r.tabId === sender.tab?.id);
+              const tabContexts = ((await chrome.storage.local.get("collectionTabContexts")).collectionTabContexts ?? {}) as Record<string, ExecutionContext>;
+              const context = owned?.context ?? [...collectWaiters.values()].find(w => w.tabId === sender.tab?.id)?.context ?? tabContexts[String(sender.tab?.id)];
+              if (!context && /__v2m_collect|__v2m_task/.test(sender.tab?.url ?? sender.url ?? "")) throw new Error("自动任务页面缺少原授权上下文，等待恢复核对");
+              return api<CollectResponse>("/api/ext/collect", { body: msg.batch }, context).catch(
                 async (e) => {
                   // 所选库已被工作台删除：自愈回「不分组」并重试（批次不能丢）
                   if (!/collection not found/.test(String((e as Error)?.message ?? e))) throw e;
@@ -578,7 +787,7 @@ chrome.runtime.onMessage.addListener(
                   const { collectionId: _drop, ...rest } = msg.batch;
                   return api<CollectResponse>("/api/ext/collect", {
                     body: { ...rest, collectionId: null },
-                  });
+                  }, context);
                 },
               );
             })
@@ -610,6 +819,10 @@ chrome.runtime.onMessage.addListener(
               appUrl: auth?.apiBase ?? defaultAppOrigin(),
               collected: stats?.collected ?? 0,
               lastDeepCollectFailure,
+              execution: { owner: [...trackedJobs.keys()].map(id => `publish:${id}`)[0] ?? [...trackedTasks.keys()].map(id => `task:${id}`)[0] ?? (keywordContext ? "keyword" : null),
+                blockedReason: recoveryBlocked ?? ((await chrome.storage.local.get("collectionSafetyBlock")).collectionSafetyBlock ? "采集验证需用户明确继续" : null),
+                pendingReceipts: (await executionStore.receipts()).length,
+                uncertain: (await executionStore.executions()).filter(r => ["uncertain", "authorization_changed"].includes(r.phase ?? "")).map(r => ({ kind: r.kind, id: r.id, phase: r.phase })) },
             };
           }),
           sendResponse,
@@ -618,7 +831,7 @@ chrome.runtime.onMessage.addListener(
       // --- 发布链路 ---
       case "JOB_READY":
         return reply(
-          payloadForJob(Number(msg.jobId)).then((payload) => {
+          payloadForJob(Number(msg.jobId), sender.tab?.id).then((payload) => {
             const t = trackedJobs.get(payload.id);
             if (t) t.state = "running";
             return { payload };
@@ -627,15 +840,23 @@ chrome.runtime.onMessage.addListener(
         );
 
       case "JOB_RESULT": {
-        trackedJobs.delete(msg.jobId);
         return reply(
-          api(`/api/ext/publish/${msg.jobId}/result`, {
-            body: { status: msg.status, resultUrl: msg.resultUrl, error: msg.error },
-          }).then(async () => {
+          (async () => {
+            await reconcileBrowserExecutions();
+            const t = trackedJobs.get(msg.jobId);
+            if (!t || sender.tab?.id !== t.tabId || !t.execution.delivered || !(await matchesContext(t.execution.context))) throw new Error("发布回执与当前执行不匹配");
+            if (msg.status === "uncertain") {
+              if (t.execution.phase !== "awaiting_ack") {
+                t.execution.phase = "uncertain"; await executionStore.put(t.execution);
+                recoveryBlocked = `发布任务 #${msg.jobId} 结果未知，请核对站点；不会自动重发`;
+              }
+              return { reported: true, reconciliationRequired: true };
+            }
+            await queueResult(t.execution, { status: msg.status, resultUrl: msg.resultUrl, error: msg.error });
             const previous = ((await chrome.storage.session.get("finishedPublishJobs")).finishedPublishJobs ?? []) as number[];
             await chrome.storage.session.set({ finishedPublishJobs: [...previous.filter(id => id !== msg.jobId), msg.jobId].slice(-100) });
             return { reported: true };
-          }).finally(() => { browserLane.release(`publish:${msg.jobId}`); void dispatchBrowserWork(); }),
+          })().then(r => { void dispatchBrowserWork(); return r; }),
           sendResponse,
         );
       }
@@ -695,7 +916,12 @@ chrome.runtime.onMessage.addListener(
           });
         } else if (sid) {
           // 旧生命周期的孤儿页回执（或 waiter 已失配）：采集页自己上传已完成，收掉发件页
-          setTimeout(() => chrome.tabs.remove(sid).catch(() => {}), 1000);
+          setTimeout(() => { void (async () => {
+            const block = (await chrome.storage.local.get("collectionSafetyBlock")).collectionSafetyBlock as CollectionSafetyBlock | undefined;
+            if (block?.tabId === sid) return;
+            const tab = await chrome.tabs.get(sid).catch(() => null);
+            if (tab?.url && new URL(tab.url).searchParams.get("__v2m_collect") === "1") await chrome.tabs.remove(sid).catch(() => {});
+          })(); }, 1000);
         }
         sendResponse({ ok: true });
         return false;
@@ -723,7 +949,7 @@ chrome.runtime.onMessage.addListener(
       // --- site-bridge（工作台 origin 限定） ---
       case "SITE_PING":
         return reply(
-          getAuth().then((auth) => ({ version: VERSION, authorized: !!auth, capabilities: [COLLECTION_CAPABILITY] })),
+          getAuth().then((auth) => ({ version: VERSION, authorized: !!auth, capabilities: [COLLECTION_CAPABILITY, BROWSER_EXECUTION_CAPABILITY] })),
           sendResponse,
         );
       case "SITE_SET_AUTH": {
@@ -735,11 +961,16 @@ chrome.runtime.onMessage.addListener(
           return false;
         }
         return reply(
-          chrome.storage.local.set({ auth: { apiBase, token } satisfies ExtAuth }).then(async () => {
+          (async () => {
+            const old = await getAuth();
+            const epoch = old?.apiBase === apiBase && old.token === token ? old.epoch : crypto.randomUUID();
+            await chrome.storage.local.set({ auth: { apiBase, token, epoch } satisfies ExtAuth });
+            _curAccountCache = null;
+            await reconcileBrowserExecutions();
             void heartbeat();
             void dispatchBrowserWork();
             return { ok: true };
-          }),
+          })(),
           sendResponse,
         );
       }
@@ -756,14 +987,19 @@ chrome.runtime.onMessage.addListener(
       case "SITE_COLLECT_URL":
         return reply(collectByUrl(String(msg.url ?? "")), sendResponse);
       case "TRUSTED_CLICK":
-        if (browserLane.busy) { sendResponse({ ok: true, data: { ok: false, diag: "浏览器正在执行其他自动任务" } }); return false; }
         // 内容脚本的 .click() 是不可信事件，XHS 的弹窗 handler 会忽略；
         // 用 chrome.debugger 派发真实鼠标点击来打开笔记详情弹窗
         return reply(
-          Promise.resolve(sender?.tab?.id).then(async (tid) =>
-            tid == null
-              ? { ok: false }
-              : await (async () => {
+          Promise.resolve(sender?.tab?.id).then(async (tid) => {
+              if (tid == null || !(await getSettings()).enabled) return { ok: false };
+              const execution = (await executionStore.executions()).find(r => r.tabId === tid);
+              const collect = [...collectWaiters.entries()].find(([, w]) => w.tabId === tid);
+              const owner = execution ? `${execution.kind}:${execution.id}` : collect?.[0];
+              const owns = execution ? browserLane.owns(owner!) && await matchesContext(execution.context) && !["awaiting_ack", "uncertain", "authorization_changed"].includes(execution.phase ?? "")
+                : !!owner && browserLane.owns(`collect:${owner}`) && !!collect?.[1].context && await matchesContext(collect[1].context);
+              if (recoveryBlocked || (browserLane.busy && !owns)) return { ok: false, diag: "浏览器正在执行其他自动任务" };
+              if (execution && !owns) return { ok: false, diag: "执行上下文已变化" };
+              return await (async () => {
                   const diag: string[] = [];
                   const ok = await trustedClick(
                     tid,
@@ -771,22 +1007,33 @@ chrome.runtime.onMessage.addListener(
                     Number(msg.y),
                     Array.isArray(msg.selectors) ? msg.selectors.map(String) : undefined,
                     diag,
+                    execution ? async () => {
+                      if (execution.kind === "publish") {
+                        const want = (execution.payload as PublishJobPayload).xhsUserId;
+                        const current = await currentXhsUserId(true);
+                        if (want && current !== want) throw new Error("浏览器小红书账号已变化或无法实时核对，不能点击发布");
+                      }
+                      if (!(await matchesContext(execution.context)) || !execution.lease || Date.parse(execution.lease.leaseUntil) <= Date.now()) throw new Error("执行租约失效，不能点击发布");
+                      const lease = leaseFrom(await api(`/api/ext/${execution.kind === "publish" ? "publish" : "tasks"}/${execution.id}/heartbeat`, { body: leaseBody(execution) }, execution.context));
+                      if (!(await matchesContext(execution.context)) || Date.parse(lease.leaseUntil) <= Date.now()) throw new Error("执行授权或租约失效，不能点击发布");
+                      execution.lease = lease; await executionStore.put(execution);
+                    } : undefined,
                   );
                   return { ok, diag: diag.join("；") };
-                })(),
-          ),
+                })();
+          }),
           sendResponse,
         );
       case "DEEP_COLLECT":
         // 总开关约束同样适用：停用期间不开任何隐藏标签页。
         // 失败不回传错误：深度采集是尽力而为的补充通道；进顺序队列逐篇执行
         return reply(
-          getSettings().then((s) => {
+          getSettings().then(async (s) => {
             if (!s.enabled || (msg.automatic && (!s.autoCollect || !s.deepCollect)))
               return { queued: false };
             const url = new URL(String(msg.url ?? ""));
             if (msg.automatic) url.searchParams.set("__v2m_auto", "1");
-            return { queued: queueDeepCollect(url.href) };
+            return { queued: await queueDeepCollect(url.href) };
           }),
           sendResponse,
         );
@@ -826,9 +1073,11 @@ async function trustedClick(
   y: number,
   selectors?: string[],
   diag: string[] = [],
+  beforePress?: () => Promise<void>,
 ): Promise<boolean> {
   const target = { tabId };
   const press = async (px: number, py: number) => {
+    await beforePress?.();
     // 先 mouseMoved：真实点击都有悬停，部分下拉组件靠它建立 hover 状态
     for (const type of ["mouseMoved", "mousePressed", "mouseReleased"] as const) {
       await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
@@ -937,6 +1186,7 @@ const collectWaiters = new Map<
     challengeTabOpened?: boolean;
     challengeRetryId?: ReturnType<typeof setInterval>;
     collectUrl?: string;
+    context?: ExecutionContext;
   }
 >();
 
@@ -962,6 +1212,17 @@ function armCollectWaiterTimeout(
 }
 
 type CollectWaiter = typeof collectWaiters extends Map<string, infer V> ? V : never;
+let collectContextWrites = Promise.resolve();
+function setCollectTabContext(id: number, context?: ExecutionContext) {
+  const next = collectContextWrites.then(async () => {
+    const contexts = ((await chrome.storage.local.get("collectionTabContexts")).collectionTabContexts ?? {}) as Record<string, ExecutionContext>;
+    if (context) contexts[id] = context; else delete contexts[id];
+    await chrome.storage.local.set({ collectionTabContexts: contexts });
+  });
+  collectContextWrites = next.catch(() => {});
+  return next;
+}
+chrome.tabs.onRemoved.addListener(id => { void setCollectTabContext(id).catch(() => {}); });
 
 function isChallengeUrl(url: string) {
   return /\/404\/sec_|\/sec_[a-z]|\/404\?source=/i.test(url);
@@ -979,8 +1240,8 @@ async function onCollectChallenge(noteId: string, w: CollectWaiter, tabId: numbe
       void chrome.tabs
         .get(tabId)
         .then((t) => {
-          if (w.collectUrl && isChallengeUrl(t.url ?? "")) {
-            void chrome.tabs.update(tabId, { url: w.collectUrl }).catch(() => {});
+          if (w.collectUrl && isChallengeUrl(t.url ?? "") && w.context) {
+            void matchesContext(w.context).then(match => { if (match) return chrome.tabs.update(tabId, { url: w.collectUrl }); }).catch(() => {});
           }
         })
         .catch(() => {});
@@ -1008,18 +1269,20 @@ function onCollectChallengeCleared(noteId: string, w: CollectWaiter) {
 }
 
 async function collectByUrl(url: string) {
+  const context = await authContext();
   const owner = `collect:${url.match(/[0-9a-f]{24}/i)?.[0] ?? "manual"}`;
   if (!(await reserveBrowser(owner))) throw new BrowserBusyError();
-  try { return await performCollectByUrl(url); } finally { browserLane.release(owner); }
+  try { return await performCollectByUrl(url, context); } finally { browserLane.release(owner); }
 }
-async function performCollectByUrl(url: string) {
+async function performCollectByUrl(url: string, context: ExecutionContext) {
+  if (!(await matchesContext(context))) throw new NotAuthorizedError();
   if (!/^https:\/\/(www\.)?xiaohongshu\.com\//.test(url)) {
     throw new Error("仅支持 xiaohongshu.com 链接");
   }
   const noteId = url.match(/\/(?:explore|search_result|discovery\/item)\/([0-9a-f]{24})/i)?.[1] ?? "";
   const marker = `__v2m_collect=1`;
   const target = url + (url.includes("?") ? "&" : "?") + marker;
-  const waiter: CollectWaiter = { resolve: () => {}, collectUrl: target };
+  const waiter: CollectWaiter = { resolve: () => {}, collectUrl: target, context };
   const done = new Promise<Parameters<typeof waiter.resolve>[0]>((resolve) => {
     waiter.resolve = resolve;
     collectWaiters.set(noteId, waiter);
@@ -1046,6 +1309,9 @@ async function performCollectByUrl(url: string) {
   }
   const tab = await chrome.tabs.create({ url: target, active: false });
   waiter.tabId = tab.id; // 绑定 tab：回执只能由它完成（重启后旧页回执不顶包）
+  if (tab.id) {
+    await setCollectTabContext(tab.id, context);
+  }
   const r = await done;
   if (!r.ok) {
     if (tab.id && r.error?.includes("验证码")) {
@@ -1074,20 +1340,27 @@ const deepQueuedIds = new Set<string>();
 const deepAttempts = new Map<string, number>();
 let deepPumping = false;
 let deepQueueLoaded = false;
+let deepQueueLoading: Promise<void> | null = null;
+let deepQueueContext: ExecutionContext | null = null;
 
 // persist 串行化：多次连续写不同步会乱序，旧快照可能盖掉新入队项
 let persistTail = Promise.resolve();
 function persistDeepQueue() {
   persistTail = persistTail
-    .then(() => chrome.storage.session.set({ [DEEP_Q_KEY]: deepQueue }))
+    .then(() => chrome.storage.session.set({ [DEEP_Q_KEY]: deepQueue, deepQueueContext }))
     .catch(() => {});
   return persistTail;
 }
 
 async function loadDeepQueue() {
+  if (deepQueueLoading) return deepQueueLoading;
   if (deepQueueLoaded) return;
-  deepQueueLoaded = true;
-  const stored = (await chrome.storage.session.get(DEEP_Q_KEY))[DEEP_Q_KEY];
+  deepQueueLoading = loadStoredDeepQueue();
+  try { await deepQueueLoading; deepQueueLoaded = true; } finally { deepQueueLoading = null; }
+}
+async function loadStoredDeepQueue() {
+  const snapshot = await chrome.storage.session.get([DEEP_Q_KEY, "deepQueueContext"]);
+  const stored = snapshot[DEEP_Q_KEY]; deepQueueContext = snapshot.deepQueueContext ?? deepQueueContext;
   if (Array.isArray(stored)) {
     // 合并不覆盖：本生命周期已入队（还没持久化）的项不能被清掉
     for (const u of stored) {
@@ -1115,7 +1388,11 @@ async function cancelDeepCollect(noteId: string): Promise<number> {
   return before - deepQueue.length;
 }
 
-function queueDeepCollect(url: string): boolean {
+async function queueDeepCollect(url: string): Promise<boolean> {
+  await loadDeepQueue();
+  const context = await authContext();
+  if (deepQueue.length && (!deepQueueContext || deepQueueContext.epoch !== context.epoch || deepQueueContext.apiBase !== context.apiBase)) throw new Error("深采队列属于之前的授权，请先取消原队列");
+  deepQueueContext = context;
   const id = url.match(/([0-9a-f]{24})/)?.[1] ?? url;
   if (deepQueuedIds.has(id) || deepQueue.length >= 30) return false;
   deepQueuedIds.add(id);
@@ -1131,6 +1408,7 @@ async function pumpDeepQueue() {
   try {
     await loadDeepQueue(); // 恢复上次 SW 生命周期里没跑完的队列
     while (deepQueue.length) {
+      if (!deepQueueContext || !(await matchesContext(deepQueueContext))) { recoveryBlocked = "深采队列属于之前的授权，等待核对"; break; }
       if (!(await getAuth()) || browserLane.busy || !(await collectionSafetyReady()) || await highPriorityWaiting()) break;
       // 停用中断：中途关总开关 → 清空剩余队列，不再开页
       if (!(await getSettings()).enabled) {
@@ -1144,7 +1422,7 @@ async function pumpDeepQueue() {
       const settings = await getSettings();
       if (new URL(url).searchParams.has("__v2m_auto") &&
           (!settings.autoCollect || !settings.deepCollect)) {
-        deepQueue.shift();
+        deepQueue = deepQueue.filter(u => (u.match(/([0-9a-f]{24})/)?.[1] ?? u) !== id);
         deepQueuedIds.delete(id);
         await persistDeepQueue();
         continue;
@@ -1173,7 +1451,7 @@ async function pumpDeepQueue() {
         deepAttempts.delete(id);
       }
       // 先跑完再出队：处理中若 SW 重启，该 URL 仍在队列里会被重试（幂等）
-      deepQueue.shift();
+      deepQueue = deepQueue.filter(u => (u.match(/([0-9a-f]{24})/)?.[1] ?? u) !== id);
       deepQueuedIds.delete(id);
       await persistDeepQueue();
     }
@@ -1182,8 +1460,7 @@ async function pumpDeepQueue() {
   }
 }
 
-// SW 启动即恢复队列（storage.session 在 SW 挂起/重启间存活）
-void pumpDeepQueue();
+// Startup reconciles durable executions before any queue can reserve the browser.
 
 // ---------- 图片下载（creator-publish 用，绕 CORS） ----------
 
@@ -1225,21 +1502,7 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
       onCollectChallengeCleared(noteId, w);
     }
   }
-  if (info.status !== "complete") return;
-  for (const [jobId, t] of trackedJobs) {
-    if (t.tabId !== tabId || t.state !== "opening") continue;
-    // content script document_idle 注入，complete 时一定已就位
-    void (async () => {
-      try {
-        const payload = await payloadForJob(jobId);
-        await chrome.tabs.sendMessage(tabId, { type: "JOB_PAYLOAD", payload });
-        t.state = "running";
-      } catch (e) {
-        // 页面可能还在等 JOB_READY 主动拉取，不视为失败
-        console.warn(`[v2m] push payload to tab ${tabId} failed:`, e);
-      }
-    })();
-  }
+  // JOB_READY is the single durable handoff. Reloading a delivered page must not replay platform actions.
 });
 
 // ---------- alarms ----------
@@ -1257,21 +1520,51 @@ async function highPriorityWaiting() {
   const current = await currentXhsUserId();
   return tasks.some(t => !needsAccountMatch(t.type) || !(t.payload as Record<string, unknown>).xhsUserId || (t.payload as Record<string, unknown>).xhsUserId === current);
 }
+let keywordExecution: BrowserExecution | null = null;
 const keywordRunner = new KeywordRunner({
-  api: (path, body) => api(path, { body }), ownerId: swId, enabled: async () => (await getSettings()).enabled && !!(await getAuth()),
-  reserve: reserveBrowser, release: owner => browserLane.release(owner), priorityWaiting: highPriorityWaiting,
-  open: async url => { const tab = await chrome.tabs.create({ url, active: false }); if (!tab.id) throw new Error("无法创建任务页"); return tab.id; },
+  api: async <T>(path: string, body?: unknown): Promise<T> => {
+    if (!keywordContext) keywordContext = await authContext();
+    if (path.endsWith("/finish") && keywordExecution) {
+      const receipt = await executionStore.enqueue({ key: `keyword:${keywordExecution.id}:${(body as { leaseId: string }).leaseId}`,
+        kind: "keyword", id: keywordExecution.id, context: keywordContext, path, body: body as Record<string, unknown> });
+      await transmitReceipt(receipt); return {} as T;
+    }
+    const result = await api<T>(path, { body }, keywordContext);
+    if (path.endsWith("/claim")) {
+      const claim = (result as { claim?: CollectionTaskClaim }).claim;
+      if (claim) {
+        keywordExecution = { kind: "keyword", id: claim.task.id, context: keywordContext, deadline: Date.now() + 30 * 60_000,
+          payload: { leaseId: claim.leaseId, revision: claim.task.revision }, phase: "running" };
+        await executionStore.put(keywordExecution);
+      }
+    }
+    return result;
+  }, ownerId: swId, enabled: async () => (await getSettings()).enabled && !!(await getAuth()) && (!keywordContext || await matchesContext(keywordContext)),
+  reserve: reserveBrowser, release: async owner => { browserLane.release(owner); keywordContext = null; keywordExecution = null; }, priorityWaiting: highPriorityWaiting,
+  open: async url => {
+    if (!keywordContext || !(await matchesContext(keywordContext))) throw new NotAuthorizedError();
+    const tab = await chrome.tabs.create({ url, active: false }); if (!tab.id) throw new Error("无法创建任务页");
+    if (keywordExecution) { keywordExecution.tabId = tab.id; await executionStore.put(keywordExecution); }
+    return tab.id;
+  },
   close: async id => { await chrome.tabs.remove(id).catch(() => {}); }, focus: async id => { await chrome.tabs.update(id, { active: true }); },
   page: async (id, leaseId, action, noteId) => {
+    if (!keywordContext || !(await matchesContext(keywordContext))) throw new NotAuthorizedError();
     const response = await chrome.tabs.sendMessage(id, { type: "COLLECTION_PAGE", leaseId, action, noteId }) as BgResponse<CollectionPageSnapshot>;
     if (!response?.ok || !response.data) throw new Error(response?.error ?? "任务页尚未就绪"); return response.data;
   }, sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), now: Date.now,
-  block: async (taskId, leaseId) => { await chrome.storage.local.set({ collectionSafetyBlock: { taskId, leaseId } }); },
+  block: async (taskId, leaseId, revision, tabId, reason) => {
+    if (!keywordContext) throw new NotAuthorizedError();
+    await chrome.storage.local.set({ collectionSafetyBlock: { taskId, leaseId, revision, tabId, reason, context: keywordContext,
+      pendingFinish: { leaseId, revision, outcome: "blocked", reason } } satisfies CollectionSafetyBlock });
+  },
 });
 let dispatching = false;
 async function dispatchBrowserWork() {
   if (dispatching) return; dispatching = true;
-  try { await pollPendingJobs(); await pollTasks(); if (browserLane.busy) return;
+  try { await reconcileBrowserExecutions(); await collectionSafetyReady();
+    if (recoveryBlocked) return;
+    await pollPendingJobs(); await pollTasks(); if (browserLane.busy) return;
     await pumpDeepQueue(); if (!browserLane.busy && !deepQueue.length) { await keywordRunner.run(); if (await highPriorityWaiting()) { await pollPendingJobs(); await pollTasks(); } }
   } catch (e) { console.warn("[v2m] automation dispatch failed", e); } finally { dispatching = false; }
 }

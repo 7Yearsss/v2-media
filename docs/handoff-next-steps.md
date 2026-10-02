@@ -2,7 +2,7 @@
 
 2026-10-02。写给接手的 AI。先读 `AGENTS.md`，再读本文件和 `docs/publish-smoke-test.md`。
 
-2026-10-02 架构复审新增发布门槛：基线 `ffd7c0e` 的 T5 单槽会阻止发布自身真实点击；SW 孤儿页恢复、旧发布/归因回执 fencing、前端会话/编辑状态及历史删除还有确认缺口。155 项离线测试不等于这些组合或生产闭环通过。先读 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R0–R2；本次只做审查，问题尚未修复，最新分支不应直接部署。
+2026-10-02 架构复审指出基线 `ffd7c0e` 的发布自身点击、SW 恢复、验证码断网与回执可靠性缺口。R0 已在 `codex/r0-execution-reliability` 修复并补正式回归：持久执行/授权上下文、租约/代次、稳定收据与事务来源绑定，插件升级到 0.1.9；详见 [`r0-execution-verification.md`](r0-execution-verification.md)。前端会话/编辑/人设链路（R1）、历史保留（R2）及真实 Chrome 联合验收（R5）仍未完成，最新分支不应直接部署。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R1–R6 顺序推进。
 
 ## 现状（一句话）
 

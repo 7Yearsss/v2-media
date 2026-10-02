@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Deps } from "../context";
 import { drafts, hostedAccounts, mediaAssets, publishJobs, topics } from "../db/schema";
 import { snapshotPersona } from "../lib/account-persona";
+import { hasLiveLease } from "../lib/browser-execution";
 
 const createSchema = z.object({
   draftId: z.number().int(),
@@ -24,7 +25,9 @@ export function publishModule(deps: Deps) {
       .where(eq(publishJobs.userId, c.get("userId")))
       .orderBy(desc(publishJobs.id))
       .limit(200);
-    return c.json(rows);
+    return c.json(rows.map(row => row.status === "running" && !hasLiveLease(row, deps.now())
+      ? { ...row, error: `${row.error ? `${row.error}；` : ""}发布执行租约已失效，执行结果未知，请人工核对，勿直接重发` }
+      : row));
   });
 
   app.post("/jobs", async (c) => {

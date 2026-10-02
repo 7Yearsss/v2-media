@@ -6,6 +6,9 @@ export interface CollectionTaskRules {
   commentLimit: number; intervalMs: number;
 }
 export interface CollectionTask extends CollectionTaskRules {
+  /** Explicit human control, separate from automatic lease-recovery revision. */
+  controlRevision: number;
+  lastControlAction: "pause" | "resume" | "cancel" | null;
   id: number; collectionName: string; status: CollectionTaskStatus; revision: number;
   phase: "search" | "details"; scrollSteps: number; reason: string | null;
   createdAt: string; updatedAt: string; leaseUntil: string | null;

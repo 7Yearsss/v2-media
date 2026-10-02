@@ -44,10 +44,14 @@ describe("持久关键词任务 + 插件执行器（离线模拟）", () => {
     const f = await fixture(); const t = await f.create(); const c = (await f.claim())!;
     await f.json(`/api/ext/collection-tasks/${t.id}/discover`, { ...lease(c), cards: [taskCard()], scrollSteps: 2, exhausted: true });
     const paused = await f.json(`/api/collection-tasks/${t.id}/control`, { revision: c.task.revision, action: "pause" });
+    expect(paused).toMatchObject({ controlRevision: paused.revision, lastControlAction: "pause" });
     expect((await f.request(`/api/ext/collection-tasks/${t.id}/item`, { ...lease(c), noteId: noteId(1), detail: detail() })).status).toBe(409);
     const queued = await f.json(`/api/collection-tasks/${t.id}/control`, { revision: paused.revision, action: "resume" }); expect(queued.counts.discovered).toBe(1);
+    expect(queued).toMatchObject({ controlRevision: queued.revision, lastControlAction: "resume" });
     const fresh = (await f.claim())!; expect(fresh.leaseId).not.toBe(c.leaseId); expect(fresh.task.scrollSteps).toBe(2); expect(fresh.pending).toHaveLength(1);
     f.setNow(new Date("2026-10-02T08:03:00Z")); const recovered = (await f.claim())!; expect(recovered.leaseId).not.toBe(fresh.leaseId);
+    expect(recovered.task).toMatchObject({ controlRevision: queued.controlRevision, lastControlAction: "resume" });
+    expect(recovered.task.revision).toBeGreaterThan(recovered.task.controlRevision);
     expect((await f.request(`/api/ext/collection-tasks/${t.id}/heartbeat`, lease(fresh))).status).toBe(409);
     await f.json(`/api/collection-tasks/${t.id}/control`, { revision: recovered.task.revision, action: "cancel" });
     expect((await f.request(`/api/ext/collection-tasks/${t.id}/item`, { ...lease(recovered), noteId: noteId(1), detail: detail() })).status).toBe(409);

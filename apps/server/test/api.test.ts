@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { authed, makeApp, registerUser } from "./helpers";
+import { authed, claimBrowser, makeApp, registerUser, reportBrowser } from "./helpers";
 
 describe("auth", () => {
   it("register → login → authed access", async () => {
@@ -437,12 +437,8 @@ describe("drafts + ai + publish", () => {
     expect(pending.jobs).toHaveLength(1);
     expect(pending.jobs[0].draft.title).toBe("原始标题");
 
-    expect((await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw-test" }),
-    }))).status).toBe(200);
-    expect((await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done", resultUrl: "https://xhs/n1" }),
-    }))).status).toBe(200);
+    expect((await claimBrowser(app, token, "publish", job.id)).status).toBe(200);
+    expect((await reportBrowser(app, token, "publish", job.id, { status: "done", resultUrl: "https://xhs/n1" })).status).toBe(200);
 
     const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
     expect(jobs[0].status).toBe("done");
@@ -529,12 +525,8 @@ describe("topics 选题池", () => {
     const job = (await (await app.request("/api/publish/jobs", authed(token, {
       method: "POST", body: JSON.stringify({ draftId: r1.draft.id, accountId: accounts[0]!.id }),
     }))).json()) as any;
-    await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw-test" }),
-    }));
-    await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done", resultUrl: "https://xhs/x" }),
-    }));
+    await claimBrowser(app, token, "publish", job.id);
+    await reportBrowser(app, token, "publish", job.id, { status: "done", resultUrl: "https://xhs/x" });
     const topics = (await (await app.request("/api/topics", authed(token))).json()) as any;
     expect(topics.items[0].status).toBe("published");
     expect(topics.items[0].publishJobId).toBe(job.id);
@@ -630,25 +622,15 @@ describe("归因任务管道（readback / metrics / account_snapshot）", () => 
     const job = (await (await app.request("/api/publish/jobs", authed(token, {
       method: "POST", body: JSON.stringify({ draftId: draft.id, accountId: accounts[0].id }),
     }))).json()) as any;
-    await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw" }),
-    }));
-    await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done" }),
-    }));
+    await claimBrowser(app, token, "publish", job.id, "sw");
+    await reportBrowser(app, token, "publish", job.id, { status: "done" });
     return { job, accounts };
   }
 
   const pendingTasks = async (app: any, token: string) =>
     ((await (await app.request("/api/ext/tasks/pending", authed(token))).json()) as any).tasks as any[];
-  const claimTask = (app: any, token: string, id: number) =>
-    app.request(`/api/ext/tasks/${id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw" }),
-    }));
-  const reportTask = (app: any, token: string, id: number, body: unknown) =>
-    app.request(`/api/ext/tasks/${id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify(body),
-    }));
+  const claimTask = (app: any, token: string, id: number) => claimBrowser(app, token, "tasks", id, "sw");
+  const reportTask = (app: any, token: string, id: number, body: unknown) => reportBrowser(app, token, "tasks", id, body);
 
   it("发布 done → readback 到期 → verified 匹配 → metrics×3 排定 + 快照落库", async () => {
     const { app, db, deps } = await makeApp();
@@ -743,7 +725,7 @@ describe("归因任务管道（readback / metrics / account_snapshot）", () => 
     const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
     expect(jobs[0].outcome).toBe("readback_error");
 
-    // stale 回收：claimedAt >30min 的 running 回 pending
+    // legacy running 没有有效租约，回 pending 后必须重新认领新代次
     const { jobs: jobsTable } = await import("../src/db/schema");
     await db.insert(jobsTable).values({
       userId, type: "metrics", status: "running",

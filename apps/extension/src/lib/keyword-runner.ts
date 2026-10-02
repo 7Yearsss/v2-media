@@ -1,10 +1,10 @@
 import { COLLECTION_CAPABILITY, markXhsCollectionUrl, xhsCollectionUrl, type CollectionTaskClaim, type CollectionPageSnapshot, type CollectionTask, type NoteCard } from "@v2media/shared";
 interface Driver {
   api<T>(path: string, body?: unknown): Promise<T>; ownerId(): Promise<string>; enabled(): Promise<boolean>;
-  reserve(owner: string): Promise<boolean>; release(owner: string): void; priorityWaiting(): Promise<boolean>;
+  reserve(owner: string): Promise<boolean>; release(owner: string): void | Promise<void>; priorityWaiting(): Promise<boolean>;
   open(url: string): Promise<number>; close(id: number): Promise<void>; focus(id: number): Promise<void>;
   page(id: number, lease: string, action: "read" | "scroll", noteId?: string): Promise<CollectionPageSnapshot>;
-  sleep(ms: number): Promise<void>; now(): number; block(taskId: number, leaseId: string): Promise<void>;
+  sleep(ms: number): Promise<void>; now(): number; block(taskId: number, leaseId: string, revision?: number, tabId?: number, reason?: string): Promise<void>;
 }
 class PageBlocked extends Error {}
 export class KeywordRunner {
@@ -87,15 +87,21 @@ export class KeywordRunner {
     } catch (e) {
       if (claim) {
         const blocked = e instanceof PageBlocked;
+        const reason = String(e instanceof Error ? e.message : e).slice(0, 1000);
+        // Verification is a local safety boundary even when the server cannot ACK the stop.
+        if (blocked) {
+          keepTab = tabId !== undefined;
+          await this.d.block(claim.task.id, claim.leaseId, claim.task.revision, tabId, reason);
+          if (tabId !== undefined) await this.d.focus(tabId).catch(() => {});
+        }
         try {
           await this.d.api(`/api/ext/collection-tasks/${claim.task.id}/finish`, { leaseId: claim.leaseId, revision: claim.task.revision,
-            outcome: blocked ? "blocked" : "failed", reason: String(e instanceof Error ? e.message : e).slice(0, 1000) });
-          if (blocked) { await this.d.block(claim.task.id, claim.leaseId); if (tabId !== undefined) { await this.d.focus(tabId); keepTab = true; } }
+            outcome: blocked ? "blocked" : "failed", reason });
         } catch { /* Lost/canceled lease: no late writes, no resurrection. */ }
       }
     } finally {
       if (tabId !== undefined && !keepTab) await this.d.close(tabId).catch(() => {});
-      if (reserved) this.d.release(owner); this.busy = false;
+      if (reserved) await this.d.release(owner); this.busy = false;
     }
   }
 }

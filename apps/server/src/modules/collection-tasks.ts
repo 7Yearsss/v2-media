@@ -79,6 +79,7 @@ export function collectionTasksModule(deps: Deps, extension = false) {
         if (p.data.action === "resume" && !task.collectionId) return { error: "目标库已删除，不能恢复；请新建任务", code: 409 as const };
         if (p.data.action === "resume") await tx.update(collectionTaskItems).set({ status: "pending", reason: null }).where(and(eq(collectionTaskItems.taskId, task.id), inArray(collectionTaskItems.status, ["failed", "partial"])));
         const [updated] = await tx.update(collectionTasks).set({ status: p.data.action === "resume" ? "queued" : p.data.action === "pause" ? "paused" : "canceled",
+          controlRevision: task.revision + 1, lastControlAction: p.data.action,
           ...clearLease, revision: task.revision + 1, reason: p.data.action === "resume" ? null : p.data.action === "pause" ? "用户暂停" : "用户取消", updatedAt: deps.now() }).where(eq(collectionTasks.id, task.id)).returning();
         return { task: await taskView(tx as unknown as Db, updated!) };
       });

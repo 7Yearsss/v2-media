@@ -1,6 +1,7 @@
 export * from "./types";
 export * from "./insights";
 export * from "./collection-tasks";
+export * from "./browser-execution";
 export * from "./xhs-collection";
 export * from "./xhs-parse";
 export * from "./galaxy-parse";

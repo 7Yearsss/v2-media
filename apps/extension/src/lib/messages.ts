@@ -11,6 +11,7 @@ import type {
   NoteComment,
   NoteDetail,
   PendingPublishJobsResponse,
+  PublishExecutionOutcome,
 } from "@v2media/shared";
 
 // ---------- MAIN <-> isolated CustomEvent ----------
@@ -128,7 +129,7 @@ export type BgMessage =
   | {
       type: "JOB_RESULT";
       jobId: number;
-      status: "done" | "failed";
+      status: PublishExecutionOutcome;
       resultUrl?: string;
       error?: string;
     }

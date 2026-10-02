@@ -12,6 +12,7 @@ import type {
   Topic,
   TopicStatus,
 } from "./types";
+import type { BrowserExecutionClaimRequest, BrowserExecutionLease, BrowserExecutionReceipt } from "./browser-execution";
 
 // ---------- window.postMessage 桥（site-bridge.ts 实现） ----------
 
@@ -153,11 +154,11 @@ export interface CollectionAnalyzeRequest { accountId?: number; positioning?: st
 
 /** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。xhsUserId 供插件比对当前浏览器登录的托管账号。 */
 export interface PendingPublishJobsResponse {
-  jobs: Array<PublishJob & { xhsUserId: string; draft: { title: string; content: string; tags: string[]; images: { url: string }[] } }>;
+  jobs: Array<PublishJob & Partial<BrowserExecutionLease> & { xhsUserId: string; draft: { title: string; content: string; tags: string[]; images: { url: string }[] } }>;
 }
 
 /** POST /api/ext/publish/:id/result */
-export interface PublishResultRequest {
+export interface PublishResultRequest extends BrowserExecutionReceipt {
   status: "done" | "failed";
   resultUrl?: string;
   error?: string;
@@ -247,7 +248,13 @@ export interface ExtTask {
   id: number;
   type: ExtTaskType | string;
   payload: ExtTaskPayload;
+  claimedBy?: string | null;
+  leaseId?: string | null;
+  attempt?: number;
+  leaseUntil?: string | null;
+  status?: string;
 }
+export type ClaimedExtTask = ExtTask & BrowserExecutionLease;
 
 /** GET /api/ext/tasks/pending?limit= —— dueAt<=now 的待执行任务。 */
 export interface PendingTasksResponse {
@@ -255,9 +262,7 @@ export interface PendingTasksResponse {
 }
 
 /** POST /api/ext/tasks/:id/claim */
-export interface TaskClaimRequest {
-  claimedBy: string;
-}
+export interface TaskClaimRequest extends BrowserExecutionClaimRequest {}
 
 /**
  * POST /api/ext/tasks/:id/result —— data 按 type 分形状：
@@ -265,7 +270,7 @@ export interface TaskClaimRequest {
  *  metrics: MetricsData（该账号已发笔记的指标行）
  *  account_snapshot: AccountSnapshotData
  */
-export interface TaskResultRequest {
+export interface TaskResultRequest extends BrowserExecutionReceipt {
   status: "done" | "failed";
   outcome?: PublishOutcome; // readback 专用：插件侧判定的粗结果（login 页也算 login_required）
   error?: string;
