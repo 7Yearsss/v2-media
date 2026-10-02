@@ -1,14 +1,14 @@
 import { and, desc, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
-import { IMAGE_UPLOAD_LIMITS, type CoverSpec, type TopicToDraftRequest } from "@v2media/shared";
+import { IMAGE_UPLOAD_LIMITS, type CoverSpec, type TopicToDraftRequest, type TopicAnalysisSource } from "@v2media/shared";
 import type { Deps } from "../context";
 import type { Db } from "../db";
-import { collectedNotes, collectionAnalyses, drafts, jobs, topics } from "../db/schema";
+import { collectedNotes, collectionAnalyses, drafts, hostedAccounts, jobs, topics } from "../db/schema";
 import { generateDraft, type DraftSource } from "./draft-gen";
 import { automaticCoverSpec } from "./cover-spec";
 import { queueCover, runCoverJobs } from "./cover-jobs";
 import { resolveAccountPersona } from "./account-persona";
 
-interface Payload { draftId: number; revision: number; textVersion: number; source: DraftSource; referenceKind: string; base: string; positioningOverride?: string }
+interface Payload { draftId: number; revision: number; textVersion: number; source: DraftSource; referenceKind: string; base: string; positioningOverride?: string; analysisSource?: TopicAnalysisSource | null }
 
 export async function createTopicDraft(deps: Deps, userId: number, id: number, opts: TopicToDraftRequest, base: string) {
   return deps.db.transaction(async tx => {
@@ -20,10 +20,35 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
       if (draft) return { draft, topic, code: 200 as const };
     }
     if (opts.ai && !deps.r2) return { error: "自动成稿需要 R2 图片存储，请配置后再生成", code: 503 as const };
-    const persona = await resolveAccountPersona(tx as unknown as Db, userId, topic.accountId, opts.positioning);
+    let sourceAnalysis: typeof collectionAnalyses.$inferSelect | undefined;
+    if (topic.analysisSource) {
+      await tx.execute(sql`SELECT id FROM collection_analyses WHERE id = ${topic.analysisSource.analysisId} AND user_id = ${userId} FOR SHARE`);
+      [sourceAnalysis] = await tx.select().from(collectionAnalyses).where(and(
+        eq(collectionAnalyses.id, topic.analysisSource.analysisId), eq(collectionAnalyses.userId, userId)));
+      if (!sourceAnalysis) return { error: "来源分析已不存在，请重新选择来源", code: 404 as const };
+      const idea = sourceAnalysis.data.insight?.ideas?.[topic.analysisSource.ideaIndex];
+      if (sourceAnalysis.status !== "done" || sourceAnalysis.collectionId !== topic.analysisSource.collectionId
+        || topic.collectionId !== topic.analysisSource.collectionId || !idea)
+        return { error: "来源分析已变化，请重新分析后成稿", code: 409 as const };
+      // A foreign-key SET NULL after deletion is not an intentional request for a generic draft.
+      if (idea.refs?.[0]?.id !== (topic.sourceNoteId ?? undefined))
+        return { error: "来源笔记已不存在，请重新选择来源", code: 404 as const };
+      if (topic.accountId === null && topic.analysisSource.persona?.accountId) {
+        const [original] = await tx.select({ id: hostedAccounts.id }).from(hostedAccounts).where(and(
+          eq(hostedAccounts.id, topic.analysisSource.persona.accountId), eq(hostedAccounts.userId, userId)));
+        if (!original) return { error: "分析目标账号已解绑，请明确选择新的写作账号", code: 409 as const };
+      }
+    }
+    const positioningOverride = opts.positioning ?? (topic.analysisSource
+      && topic.accountId === (topic.analysisSource.persona?.accountId ?? null) ? topic.analysisSource.positioning : undefined);
+    if (topic.accountId) await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${topic.accountId} AND user_id = ${userId} FOR SHARE`);
+    const persona = await resolveAccountPersona(tx as unknown as Db, userId, topic.accountId, positioningOverride);
     if ("error" in persona) return { error: persona.error, code: 404 as const };
+    if (topic.sourceNoteId) await tx.execute(sql`SELECT id FROM collected_notes WHERE id = ${topic.sourceNoteId} AND user_id = ${userId} FOR SHARE`);
     const [note] = topic.sourceNoteId ? await tx.select().from(collectedNotes)
       .where(and(eq(collectedNotes.id, topic.sourceNoteId), eq(collectedNotes.userId, userId))) : [];
+    if (topic.analysisSource && note?.collectionId !== topic.analysisSource.collectionId && topic.sourceNoteId)
+      return { error: "来源笔记已移出分析库，请重新分析", code: 409 as const };
     const [draft] = await tx.insert(drafts).values({
       userId, collectedNoteId: topic.sourceNoteId, accountId: topic.accountId,
       title: topic.title, content: opts.ai ? "" : topic.angle || topic.title,
@@ -34,10 +59,10 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
       .where(eq(topics.id, topic.id)).returning();
     if (!opts.ai) return { draft: draft!, topic: updatedTopic!, code: 201 as const };
     const collectionId = topic.collectionId ?? note?.collectionId;
-    const [analysis] = collectionId ? await tx.select({ data: collectionAnalyses.data }).from(collectionAnalyses)
+    const [latestAnalysis] = !sourceAnalysis && collectionId ? await tx.select({ data: collectionAnalyses.data }).from(collectionAnalyses)
       .where(and(eq(collectionAnalyses.collectionId, collectionId), eq(collectionAnalyses.userId, userId), eq(collectionAnalyses.status, "done")))
       .orderBy(desc(collectionAnalyses.id)).limit(1) : [];
-    const visuals = analysis?.data.visual ?? [];
+    const visuals = (sourceAnalysis ?? latestAnalysis)?.data.visual ?? [];
     const referenceKind = (visuals.find(v => v.id === topic.sourceNoteId) ?? visuals.find(v => v.hit))?.kind ?? "";
     const [hook = "", ...rest] = (topic.angle || "").split("\n");
     const source: DraftSource = {
@@ -45,7 +70,8 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
       ...(note ? { note: { title: note.title, content: note.content, tags: note.tags } } : {}),
     };
     const [job] = await tx.insert(jobs).values({ userId, type: "draft_generate", status: "queued",
-      payload: { draftId: draft!.id, revision: 1, textVersion: draft!.textVersion, source, referenceKind, base, positioningOverride: opts.positioning } satisfies Payload }).returning();
+      payload: { draftId: draft!.id, revision: 1, textVersion: draft!.textVersion, source, referenceKind, base,
+        positioningOverride, analysisSource: topic.analysisSource } satisfies Payload }).returning();
     return { draft: draft!, topic: updatedTopic!, jobId: job!.id, code: 202 as const };
   });
 }

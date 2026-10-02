@@ -1,14 +1,16 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
+import type { Db } from "../db";
 import { createTopicDraft } from "../lib/draft-jobs";
 import { publicBase } from "../lib/media-store";
 import { draftWithUploads } from "../lib/draft-media";
-import { ACCOUNT_PERSONA_LIMITS } from "@v2media/shared";
+import { ACCOUNT_PERSONA_LIMITS, type TopicAnalysisSource } from "@v2media/shared";
 import {
   collectedNotes,
+  collectionAnalyses,
   collections,
   hostedAccounts,
   topics,
@@ -19,17 +21,19 @@ const TOPIC_STATUSES = ["idea", "planned", "drafted", "published", "archived"] a
 const createSchema = z.object({
   title: z.string().trim().min(1, "title required").max(512),
   angle: z.string().max(4000).default(""),
-  collectionId: z.number().int().optional(),
-  sourceNoteId: z.number().int().optional(),
-  accountId: z.number().int().optional(),
+  collectionId: z.number().int().positive().optional(),
+  sourceNoteId: z.number().int().positive().optional(),
+  accountId: z.number().int().positive().optional(),
+  analysisId: z.number().int().positive().optional(),
+  analysisIdeaIndex: z.number().int().nonnegative().optional(),
   plannedAt: z.number().int().optional(),
-});
+}).refine(p => (p.analysisId === undefined) === (p.analysisIdeaIndex === undefined), "analysisId and analysisIdeaIndex must be supplied together");
 
 const updateSchema = z.object({
   title: z.string().trim().min(1).max(512).optional(),
   angle: z.string().max(4000).optional(),
   status: z.enum(TOPIC_STATUSES).optional(),
-  accountId: z.number().int().nullable().optional(),
+  accountId: z.number().int().positive().nullable().optional(),
   plannedAt: z.number().int().nullable().optional(),
 });
 
@@ -57,9 +61,10 @@ export function topicsModule(deps: Deps) {
   const checkRefs = async (
     userId: number,
     refs: { collectionId?: number | null; sourceNoteId?: number | null; accountId?: number | null },
+    db: Db = deps.db,
   ) => {
     if (refs.collectionId) {
-      const [r] = await deps.db
+      const [r] = await db
         .select({ id: collections.id })
         .from(collections)
         .where(and(eq(collections.id, refs.collectionId), eq(collections.userId, userId)))
@@ -67,7 +72,7 @@ export function topicsModule(deps: Deps) {
       if (!r) return "collection not found";
     }
     if (refs.sourceNoteId) {
-      const [r] = await deps.db
+      const [r] = await db
         .select({ id: collectedNotes.id })
         .from(collectedNotes)
         .where(and(eq(collectedNotes.id, refs.sourceNoteId), eq(collectedNotes.userId, userId)))
@@ -75,7 +80,7 @@ export function topicsModule(deps: Deps) {
       if (!r) return "source note not found";
     }
     if (refs.accountId) {
-      const [r] = await deps.db
+      const [r] = await db
         .select({ id: hostedAccounts.id })
         .from(hostedAccounts)
         .where(and(eq(hostedAccounts.id, refs.accountId), eq(hostedAccounts.userId, userId)))
@@ -114,24 +119,57 @@ export function topicsModule(deps: Deps) {
     const userId = c.get("userId");
     const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
-    const p = parsed.data;
-    const refErr = await checkRefs(userId, p);
-    if (refErr) return c.json({ error: refErr }, 404);
-    const [row] = await deps.db
-      .insert(topics)
-      .values({
-        userId,
-        title: p.title,
-        angle: p.angle,
-        sourceType: p.sourceNoteId ? "note" : p.collectionId ? "collection" : "manual",
-        collectionId: p.collectionId,
-        sourceNoteId: p.sourceNoteId,
-        accountId: p.accountId,
-        plannedAt: p.plannedAt ? new Date(p.plannedAt) : null,
-        status: p.plannedAt ? "planned" : "idea",
-      })
-      .returning();
-    return c.json(row, 201);
+    const result = await deps.db.transaction(async tx => {
+      const p = parsed.data;
+      let analysisSource: TopicAnalysisSource | null = null;
+      let accountId = p.accountId;
+      if (p.analysisId !== undefined) {
+        await tx.execute(sql`SELECT id FROM collection_analyses WHERE id = ${p.analysisId} AND user_id = ${userId} FOR SHARE`);
+        const [analysis] = await tx.select().from(collectionAnalyses)
+          .where(and(eq(collectionAnalyses.id, p.analysisId), eq(collectionAnalyses.userId, userId)));
+        if (!analysis) return { error: "来源分析不存在，请重新打开报告", code: 404 as const };
+        if (analysis.status !== "done") return { error: "来源分析尚未完成或已失败", code: 409 as const };
+        const idea = analysis.data.insight?.ideas?.[p.analysisIdeaIndex!];
+        if (!idea || p.collectionId !== analysis.collectionId || p.title !== idea.title.trim()
+          || p.angle !== `${idea.hook}\n${idea.angle}` || p.sourceNoteId !== idea.refs?.[0]?.id)
+          return { error: "分析建议与来源不一致，请重新打开报告", code: 409 as const };
+        const target = analysis.data.persona?.accountId ?? null;
+        if (p.accountId !== undefined && p.accountId !== target)
+          return { error: "分析建议的目标账号不一致，请先入池再明确更换写作账号", code: 409 as const };
+        accountId = target ?? undefined;
+        analysisSource = { analysisId: analysis.id, collectionId: analysis.collectionId, ideaIndex: p.analysisIdeaIndex!,
+          positioning: analysis.data.positioning ?? analysis.data.persona?.positioning,
+          persona: analysis.data.persona ?? null };
+      }
+      if (accountId) await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${accountId} AND user_id = ${userId} FOR SHARE`);
+      if (p.sourceNoteId) await tx.execute(sql`SELECT id FROM collected_notes WHERE id = ${p.sourceNoteId} AND user_id = ${userId} FOR SHARE`);
+      const refErr = await checkRefs(userId, { ...p, accountId }, tx as unknown as Db);
+      if (refErr) return { error: refErr, code: 404 as const };
+      if (analysisSource && p.sourceNoteId) {
+        const [note] = await tx.select({ collectionId: collectedNotes.collectionId }).from(collectedNotes)
+          .where(and(eq(collectedNotes.id, p.sourceNoteId), eq(collectedNotes.userId, userId)));
+        if (note?.collectionId !== analysisSource.collectionId)
+          return { error: "来源笔记已移出分析库，请重新分析", code: 409 as const };
+      }
+      const [row] = await tx
+        .insert(topics)
+        .values({
+          userId,
+          title: p.title,
+          angle: p.angle,
+          sourceType: p.sourceNoteId ? "note" : p.collectionId ? "collection" : "manual",
+          collectionId: p.collectionId,
+          sourceNoteId: p.sourceNoteId,
+          accountId,
+          analysisSource,
+          plannedAt: p.plannedAt ? new Date(p.plannedAt) : null,
+          status: p.plannedAt ? "planned" : "idea",
+        })
+        .returning();
+      return { row: row!, code: 201 as const };
+    });
+    if ("error" in result) return c.json({ error: result.error }, result.code);
+    return c.json(result.row, result.code);
   });
 
   app.patch("/:id", async (c) => {

@@ -105,6 +105,8 @@ export interface DraftCreateRequest {
   images?: { url: string }[];
 }
 export interface DraftUpdateRequest {
+  /** Required for title/content/tags/accountId changes; stale versions return 409. */
+  textVersion?: number;
   accountId?: number | null;
   title?: string;
   content?: string;
@@ -143,6 +145,9 @@ export interface AiTagsRequest {
 
 /** POST /api/publish/jobs */
 export interface PublishJobCreateRequest {
+  /** Versions of the current draft shown in the confirmation UI. */
+  draftTextVersion?: number;
+  draftImagesVersion?: number;
   /** 发布前展示的人设版本；冲突时应重新读取目标账号。 */
   personaVersion?: number;
   draftId: number;
@@ -150,6 +155,8 @@ export interface PublishJobCreateRequest {
   scheduledAt?: number;
   visibility?: "public" | "private" | "friends";
 }
+/** POST /api/publish/jobs/:id/retry: one stable ID for retries of the same command. */
+export interface PublishJobRetryRequest { operationId: string }
 export interface CollectionAnalyzeRequest { accountId?: number; positioning?: string; withVideo?: boolean }
 
 /** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。xhsUserId 供插件比对当前浏览器登录的托管账号。 */
@@ -168,6 +175,9 @@ export interface PublishResultRequest extends BrowserExecutionReceipt {
 
 /** POST /api/topics */
 export interface TopicCreateRequest {
+  /** Together identify an owned completed report idea; server freezes its provenance. */
+  analysisId?: number;
+  analysisIdeaIndex?: number;
   title: string;
   angle?: string;
   collectionId?: number;

@@ -17,6 +17,7 @@ const createSchema = z.object({
 });
 
 const updateSchema = z.object({
+  textVersion: z.number().int().nonnegative().optional(),
   accountId: z.number().int().positive().nullable().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
@@ -88,7 +89,11 @@ export function draftsModule(deps: Deps) {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`);
       const [existing] = await tx.select().from(drafts).where(and(eq(drafts.id, id), eq(drafts.userId, userId)));
       if (!existing) return { error: "not found", code: 404 as const };
-      const { imagesVersion, ...patch } = parsed.data;
+      const { imagesVersion, textVersion, ...patch } = parsed.data;
+      const editsText = patch.title !== undefined || patch.content !== undefined || patch.tags !== undefined || patch.accountId !== undefined;
+      if (editsText && textVersion === undefined) return { error: "修改文字或写作账号需要 textVersion", code: 428 as const };
+      if (textVersion !== undefined && textVersion !== existing.textVersion)
+        return { error: "草稿文字或写作账号已更新，请核对最新版本后保存；本地编辑应保留", code: 409 as const };
       if (patch.accountId) {
         const [account] = await tx.select({ id: hostedAccounts.id }).from(hostedAccounts).where(and(eq(hostedAccounts.id, patch.accountId), eq(hostedAccounts.userId, userId)));
         if (!account) return { error: "account not found", code: 404 as const };

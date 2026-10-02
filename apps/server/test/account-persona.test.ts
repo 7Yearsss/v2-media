@@ -5,7 +5,7 @@ import { hostedAccounts, jobs, topics } from "../src/db/schema";
 import { runDraftJobs } from "../src/lib/draft-jobs";
 import { personaForPrompt } from "../src/lib/account-persona";
 import { migrate } from "../src/db/migrate";
-import { authed, makeApp, registerUser } from "./helpers";
+import { authed, editDraft, makeApp, registerUser } from "./helpers";
 
 const details = { traffic: 8, fit: 8, diff: 7, monetization: 5, evergreen: 6, cost: 8, risk: 9 };
 const report = JSON.stringify({
@@ -106,7 +106,7 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     const draft = await f.createDraft(f.a.id);
     await f.app.request("/api/ai/rewrite", authed(f.token, { method: "POST", body: JSON.stringify({ draftId: draft.id, title: "正在编辑的标题", content: "正在编辑的正文" }) }));
     expect(textCalls(f.complete)[0]).toContain("家庭备餐");
-    await f.app.request("/api/drafts/" + draft.id, authed(f.token, { method: "PATCH", body: JSON.stringify({ accountId: f.b.id }) }));
+    expect((await editDraft(f.app, f.token, draft.id, { accountId: f.b.id })).status).toBe(200);
     for (const route of ["rewrite", "titles", "tags"]) {
       const result = await f.app.request("/api/ai/" + route, authed(f.token, { method: "POST", body: JSON.stringify({ draftId: draft.id, title: "当前标题", content: "当前正文", count: 2 }) }));
       expect(result.status).toBe(200);
@@ -177,7 +177,7 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     const f = await fixture();
     const topic = await f.createTopic(f.a.id);
     const created = await (await f.app.request("/api/topics/" + topic.id + "/to-draft", authed(f.token, { method: "POST", body: JSON.stringify({ ai: true }) }))).json() as any;
-    await f.app.request("/api/drafts/" + created.draft.id, authed(f.token, { method: "PATCH", body: JSON.stringify({ accountId: f.b.id }) }));
+    expect((await editDraft(f.app, f.token, created.draft.id, { accountId: f.b.id })).status).toBe(200);
     await runDraftJobs(f.deps);
     const draft = await (await f.app.request("/api/drafts/" + created.draft.id, authed(f.token))).json() as Draft;
     expect(draft.generationState).toBe("failed"); expect(f.complete).not.toHaveBeenCalled();
@@ -197,7 +197,7 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     await migrate(f.db);
     let current = await (await f.app.request("/api/drafts/" + draft.id, authed(f.token))).json() as Draft;
     expect(current.accountId).toBe(f.a.id);
-    await f.app.request("/api/drafts/" + draft.id, authed(f.token, { method: "PATCH", body: JSON.stringify({ accountId: null }) }));
+    expect((await editDraft(f.app, f.token, draft.id, { accountId: null })).status).toBe(200);
     await migrate(f.db);
     current = await (await f.app.request("/api/drafts/" + draft.id, authed(f.token))).json() as Draft;
     expect(current.accountId).toBeNull();

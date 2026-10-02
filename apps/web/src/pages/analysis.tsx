@@ -21,6 +21,7 @@ import { api } from "@/lib/api";
 import { formatCount, timeAgo } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/lib/toast";
+import { captureUserStorage } from "@/lib/user-storage";
 
 type AnalysisMeta = Omit<CollectionAnalysis, "report" | "data">;
 
@@ -330,21 +331,14 @@ export default function AnalysisPage() {
   const [active, setActive] = useState<CollectionAnalysis | null>(null);
   const [accountId, setAccountId] = useState("");
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
+  const [positioningStorage] = useState(() => captureUserStorage("v2m.analysis.positioning"));
   // 目标账号定位：可选，填了建议和选题会贴合它；记在本机
   const [positioning, setPositioning] = useState(() => {
-    try {
-      return localStorage.getItem("v2m.analysis.positioning") ?? "";
-    } catch {
-      return "";
-    }
+    return positioningStorage.getItem() ?? "";
   });
   const updatePositioning = (v: string) => {
     setPositioning(v);
-    try {
-      localStorage.setItem("v2m.analysis.positioning", v);
-    } catch {
-      /* 隐私模式等：不记就不记 */
-    }
+    positioningStorage.setItem(v);
   };
   // 当前选中库的快照：异步返回时用它丢弃过期结果（换库后旧库报告不顶上来）
   const colIdRef = useRef<number | null>(null);

@@ -1,10 +1,10 @@
 import { ArrowLeft, ArrowRight, ImagePlus, Loader2, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { IMAGE_UPLOAD_LIMITS, type Draft, type NoteImage } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
-import { api, ApiError, mediaUrl } from "@/lib/api";
+import { api, ApiError, captureSession, mediaUrl } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
 export function DraftImages({ draftId, onImagesChange, onDraftChange }: {
@@ -13,6 +13,7 @@ export function DraftImages({ draftId, onImagesChange, onDraftChange }: {
 }) {
   const client = useQueryClient();
   const toast = useToast();
+  const session = useMemo(() => captureSession(), []);
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -49,7 +50,7 @@ export function DraftImages({ draftId, onImagesChange, onDraftChange }: {
   const saveImages = async (next: NoteImage[]) => {
     if (!draft || busy) return;
     setBusy(true);
-    try { accept(await api.updateDraft(draftId, { images: next, imagesVersion: draft.imagesVersion })); }
+    try { accept(await api.updateDraft(draftId, { images: next, imagesVersion: draft.imagesVersion }, session)); }
     catch (e) { fail(e); }
     finally { if (mounted.current) setBusy(false); }
   };
@@ -69,16 +70,16 @@ export function DraftImages({ draftId, onImagesChange, onDraftChange }: {
     setBusy(true);
     try {
       // Sequential acceptance reserves the user's selection order. Server processing is asynchronous.
-      let current = await api.draft(draftId);
+      let current = await api.draft(draftId, session);
       for (const file of files) {
         if (!mounted.current) break;
         const uploadId = crypto.randomUUID();
-        try { current = (await api.uploadImage(draftId, current.imagesVersion, file, uploadId)).draft; }
+        try { current = (await api.uploadImage(draftId, current.imagesVersion, file, uploadId, session)).draft; }
         catch (e) {
           if (!(e instanceof ApiError) || e.status !== 409) throw e;
           // Worker completion may advance version while the next upload request is being sent.
-          current = await api.draft(draftId);
-          current = (await api.uploadImage(draftId, current.imagesVersion, file, uploadId)).draft;
+          current = await api.draft(draftId, session);
+          current = (await api.uploadImage(draftId, current.imagesVersion, file, uploadId, session)).draft;
         }
         accept(current);
       }

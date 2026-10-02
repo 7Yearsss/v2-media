@@ -457,7 +457,16 @@ export interface TopicScoreDetail {
   risk?: number;
 }
 
+export interface TopicAnalysisSource {
+  analysisId: number;
+  collectionId: number;
+  ideaIndex: number;
+  positioning?: string;
+  persona: AccountPersonaSnapshot | null;
+}
+
 export interface Topic {
+  analysisSource?: TopicAnalysisSource | null;
   id: number;
   personaSnapshot?: AccountPersonaSnapshot | null;
   title: string;
@@ -501,6 +510,12 @@ export type PublishOutcome =
   | "readback_error"; // 其他读回失败（超时/页面结构变了）
 
 export interface PublishJob {
+  accountSnapshot?: { accountId: number; xhsUserId: string; nickname: string } | null;
+  draftSnapshot?: { title: string; content: string; tags: string[]; images: NoteImage[] } | null;
+  coverSnapshot?: CoverSpec | null;
+  retryOfJobId?: number | null;
+  retryOperationId?: string | null;
+  retryEligibility?: { allowed: boolean; reason?: string };
   publishedAt?: string | null;
   reportedAt?: string | null;
   planningSnapshot?: import("./insights").PlanningSnapshot | null;

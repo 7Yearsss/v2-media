@@ -6,7 +6,7 @@ import {
   SendHorizontal,
   XCircle,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BANNED_KIND_META, checkBannedWords, checkDraftLimits, summarizeBanned } from "@v2media/shared";
 import { useBannedWords } from "@/lib/hooks/use-banned-words";
@@ -36,8 +36,9 @@ import {
 } from "@/components/motion/select";
 import { Table, type TableColumn } from "@/components/motion/table";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
-import { api } from "@/lib/api";
+import { api, mediaUrl } from "@/lib/api";
 import { bridge } from "@/lib/bridge";
+import { comparePublishVersion, publishVersionLabels, selectOriginalRetry, submitOriginalRetry, type RetrySelection } from "@/lib/publish-version";
 import {
   fmtDateTime,
   JOB_STATUS_META,
@@ -47,6 +48,7 @@ import {
 import { useToast } from "@/lib/toast";
 
 type JobRow = PublishJob & { draftTitle: string; accountName: string };
+type PublishSeed = Pick<PublishJobCreateRequest, "draftId" | "accountId" | "visibility">;
 
 function NewJobDrawer({
   open,
@@ -54,12 +56,14 @@ function NewJobDrawer({
   drafts,
   accounts,
   onCreated,
+  initial,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   drafts: Draft[];
   accounts: HostedAccount[];
   onCreated: () => void;
+  initial?: PublishSeed;
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -69,12 +73,19 @@ function NewJobDrawer({
     useState<PublishJobCreateRequest["visibility"]>("public");
   const [schedule, setSchedule] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    setDraftId(initial ? String(initial.draftId) : "");
+    setAccountId(initial ? String(initial.accountId) : "");
+    setVisibility(initial?.visibility ?? "public");
+    setSchedule("");
+  }, [open, initial]);
 
   const draft = drafts.find((d) => String(d.id) === draftId);
   const account = accounts.find((a) => String(a.id) === accountId);
   const imagesReady = Boolean(draft?.images.length && draft.images.every(i => i.url));
   const draftGenerating = !!draft && (["queued", "writing"].includes(draft.generationState) || ["queued", "processing"].includes(draft.coverState));
-  const ready = Boolean(draftId && accountId && imagesReady && !draftGenerating);
+  const ready = Boolean(draft?.title.trim() && account && account.status !== "expired" && imagesReady && !draftGenerating);
   // 发布前自查：不经过草稿页的人也能看到风险（命中只提醒，不拦截）
   const { words: customWords } = useBannedWords();
   const risks = useMemo(() => {
@@ -95,6 +106,8 @@ function NewJobDrawer({
         draftId: Number(draftId),
         accountId: Number(accountId),
         personaVersion: account?.personaVersion,
+        draftTextVersion: draft?.textVersion,
+        draftImagesVersion: draft?.imagesVersion,
         visibility,
         scheduledAt:
           scheduledAt && Number.isFinite(scheduledAt) ? scheduledAt : undefined,
@@ -109,6 +122,7 @@ function NewJobDrawer({
     } catch (err) {
       toast.error("创建失败", err instanceof Error ? err.message : undefined);
       void queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      void queryClient.invalidateQueries({ queryKey: ["drafts"] });
     } finally {
       setSubmitting(false);
     }
@@ -125,8 +139,8 @@ function NewJobDrawer({
       <div className="flex h-full flex-col">
         <div className="border-b border-border px-6 py-4">
           <h2 className="text-base font-semibold text-foreground">新建发布</h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            选择草稿与账号，由插件在浏览器里执行发布
+            <p className="mt-0.5 text-xs text-muted-foreground">
+            {initial ? "将使用当前草稿和当前账号人设建立新的发布版本，请重新核对" : "选择草稿与账号，由插件在浏览器里执行发布"}
           </p>
         </div>
 
@@ -253,11 +267,71 @@ function NewJobDrawer({
   );
 }
 
+function RetryJobDrawer({ selection, accounts, drafts, submitting, onClose, onRetry, onCurrentDraft }: {
+  selection: RetrySelection | null;
+  accounts: HostedAccount[];
+  drafts: Draft[];
+  submitting: boolean;
+  onClose: () => void;
+  onRetry: () => void;
+  onCurrentDraft: (job: PublishJob) => void;
+}) {
+  if (!selection) return null;
+  const { job } = selection;
+  const snapshot = job.draftSnapshot;
+  const account = accounts.find(item => item.id === job.accountId);
+  const draft = drafts.find(item => item.id === job.draftId);
+  const persona = job.personaSnapshot;
+  const { personaChanged, draftChanged } = comparePublishVersion(job, draft, account);
+  const allowed = job.retryEligibility?.allowed === true;
+  return <Drawer open onOpenChange={open => { if (!open && !submitting) onClose(); }} side="right" ariaLabel="重试原发布版本" className="w-full max-w-lg">
+    <div className="flex h-full flex-col">
+      <div className="border-b border-border px-6 py-4">
+        <h2 className="text-base font-semibold text-foreground">重试原发布版本 #{job.id}</h2>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">确认后会立即重新排队，沿用下方原稿、图片、封面、账号人设与可见性。</p>
+      </div>
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6 text-sm">
+        {!allowed && <p role="alert" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">{job.retryEligibility?.reason ?? "该任务尚未确认可以安全重试，请刷新并核对原结果。"}</p>}
+        {draftChanged && <p role="status" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">当前草稿已修改。本次重试仍使用原发布版本；要采用修改后的内容，请选择“用当前稿新建”。</p>}
+        {personaChanged && <p role="status" className="rounded-xl bg-amber-500/10 p-3 text-xs leading-5 text-amber-600">账号人设已从 v{persona?.version} 更新到 v{account?.personaVersion}，请重新核对当前红线。本次重试保留原人设记录。</p>}
+        <dl className="grid grid-cols-[5rem_1fr] gap-x-3 gap-y-2 text-xs leading-5">
+          <dt className="text-muted-foreground">原账号</dt><dd>{job.accountSnapshot?.nickname || job.accountSnapshot?.xhsUserId || persona?.nickname || `账号 #${job.accountId}`}<span className="ml-1 text-muted-foreground">（{job.accountSnapshot?.xhsUserId || "历史身份未保存"}）</span></dd>
+          <dt className="text-muted-foreground">可见性</dt><dd>{VISIBILITY_LABEL[job.visibility]}</dd>
+          <dt className="text-muted-foreground">原排期</dt><dd>{fmtDateTime(job.scheduledAt)}；本次改为立即排队</dd>
+          <dt className="text-muted-foreground">原封面</dt><dd>{job.coverSnapshot ? `${job.coverSnapshot.templateId} · ${job.coverSnapshot.headline}` : "未记录系统封面，沿用原图集"}</dd>
+          <dt className="text-muted-foreground">原人设</dt><dd>v{persona?.version ?? "未知"}</dd>
+        </dl>
+        {snapshot && <section className="space-y-3 rounded-xl border border-border p-4">
+          <h3 className="font-medium">{snapshot.title}</h3>
+          <p className="whitespace-pre-wrap text-xs leading-6 text-muted-foreground">{snapshot.content}</p>
+          {snapshot.tags.length > 0 && <p className="text-xs text-primary">{snapshot.tags.map(tag => `#${tag}`).join(" ")}</p>}
+          <div className="grid grid-cols-3 gap-2">{snapshot.images.map((image, index) => <img key={`${index}:${image.url}`} src={mediaUrl(image.url)} alt={`原发布图片 ${index + 1}`} className="aspect-[3/4] w-full rounded-lg bg-muted object-cover" />)}</div>
+        </section>}
+        {persona && <section className="space-y-2 rounded-xl border border-border p-4 text-xs leading-5">
+          <h3 className="font-medium">原人设与红线</h3>
+          <p className="whitespace-pre-wrap">定位：{persona.positioning || "未设置"}</p>
+          <p className="whitespace-pre-wrap">风格：{persona.styleNotes || "未设置"}</p>
+          <p className="whitespace-pre-wrap">红线：{persona.redlines || "未设置"}</p>
+          {personaChanged && <p className="whitespace-pre-wrap text-amber-600">当前红线：{account?.redlines || "未设置"}</p>}
+        </section>}
+        {draft && <Button variant="secondary" size="sm" disabled={submitting} onClick={() => onCurrentDraft(job)}>用当前稿新建</Button>}
+        <p className="text-[11px] leading-5 text-muted-foreground">若已有笔记发布成功或结果未知，请先到小红书核对，避免重复发布。</p>
+      </div>
+      <div className="shrink-0 border-t border-border p-4">
+        {allowed ? <ApprovalCard title="确认重试原版本" description={`「${snapshot?.title}」 · ${VISIBILITY_LABEL[job.visibility]} · 立即排队`} status={submitting ? "submitting" : "pending"} approveLabel="确认重试原版本" onApprove={onRetry} onDismiss={submitting ? undefined : onClose} />
+          : <Button variant="ghost" onClick={onClose}>关闭</Button>}
+      </div>
+    </div>
+  </Drawer>;
+}
+
 export default function PublishPage() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(searchParams.get("new") === "1");
+  const [createSeed, setCreateSeed] = useState<PublishSeed>();
+  const [retrySelection, setRetrySelection] = useState<RetrySelection | null>(null);
 
   const jobsQuery = useQuery({
     queryKey: ["publish-jobs"],
@@ -283,20 +357,17 @@ export default function PublishPage() {
       toast.error("取消失败", err instanceof Error ? err.message : undefined),
   });
 
-  // TODO(契约缺口)：契约没有独立的 retry 端点——重试按同参数重新 POST /api/publish/jobs
   const retry = useMutation({
-    mutationFn: (job: PublishJob) =>
-      api.createJob({
-        draftId: job.draftId,
-        accountId: job.accountId,
-        visibility: job.visibility,
-      }),
+    mutationFn: submitOriginalRetry,
     onSuccess: () => {
       invalidateJobs();
-      toast.success("已重新排队发布");
+      setRetrySelection(null);
+      toast.success("原发布版本已重新排队");
     },
-    onError: (err) =>
-      toast.error("重试失败", err instanceof Error ? err.message : undefined),
+    onError: (err) => {
+      invalidateJobs();
+      toast.error("重试失败", err instanceof Error ? err.message : undefined);
+    },
   });
 
   const runNow = useMutation({
@@ -316,12 +387,7 @@ export default function PublishPage() {
     );
     return (jobsQuery.data ?? []).map((j) => ({
       ...j,
-      draftTitle:
-        draftMap.get(j.draftId)?.title || `草稿 #${j.draftId}`,
-      accountName:
-        accountMap.get(j.accountId)?.nickname ||
-        accountMap.get(j.accountId)?.xhsUserId ||
-        `账号 #${j.accountId}`,
+      ...publishVersionLabels(j, draftMap.get(j.draftId), accountMap.get(j.accountId)),
     }));
   }, [jobsQuery.data, draftsQuery.data, accountsQuery.data]);
 
@@ -334,7 +400,7 @@ export default function PublishPage() {
         sortable: true,
         cell: (row) => (
           <span className="block truncate font-medium text-foreground">
-            {row.draftTitle}
+            {row.draftTitle}{!row.draftSnapshot && <span className="ml-1 text-[10px] font-normal text-muted-foreground">（当前稿，历史原文未保存）</span>}
           </span>
         ),
       },
@@ -400,7 +466,7 @@ export default function PublishPage() {
         header: "结果",
         width: "1.6fr",
         cell: (row) => {
-          if (row.status === "failed" && row.error)
+          if ((row.status === "failed" || row.status === "running") && row.error)
             return (
               <span
                 className="block truncate text-destructive"
@@ -468,11 +534,11 @@ export default function PublishPage() {
                 size="sm"
                 variant="ghost"
                 disabled={retry.isPending}
-                onClick={() => retry.mutate(row)}
-                title="按同参数重新发布"
+                onClick={() => setRetrySelection(selectOriginalRetry(row))}
+                title={row.retryEligibility?.allowed ? "核对后重试原发布版本" : row.retryEligibility?.reason ?? "核对原发布版本"}
               >
                 <RotateCcw className="size-3.5" />
-                重试
+                核对重试
               </Button>
             ) : null}
           </span>
@@ -483,6 +549,7 @@ export default function PublishPage() {
   );
 
   const openCreate = () => {
+    setCreateSeed(undefined);
     setCreateOpen(true);
     if (!searchParams.has("new")) {
       searchParams.set("new", "1");
@@ -544,7 +611,11 @@ export default function PublishPage() {
         drafts={draftsQuery.data ?? []}
         accounts={accountsQuery.data ?? []}
         onCreated={invalidateJobs}
+        initial={createSeed}
       />
+      <RetryJobDrawer selection={retrySelection} accounts={accountsQuery.data ?? []} drafts={draftsQuery.data ?? []} submitting={retry.isPending}
+        onClose={() => setRetrySelection(null)} onRetry={() => { if (retrySelection && !retry.isPending) retry.mutate(retrySelection); }}
+        onCurrentDraft={job => { setRetrySelection(null); setCreateSeed({ draftId: job.draftId, accountId: job.accountId, visibility: job.visibility }); setCreateOpen(true); }} />
     </div>
   );
 }

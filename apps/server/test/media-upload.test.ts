@@ -99,7 +99,7 @@ describe("草稿图片上传（内存 PGlite + mock R2，无外网）", () => {
     }) }));
     expect(jobResponse.status).toBe(200);
     const published = await jobResponse.json() as any;
-    expect((await f.patch({ title: "后来改的标题", images: [], imagesVersion: current.imagesVersion })).status).toBe(200);
+    expect((await f.patch({ textVersion: current.textVersion, title: "后来改的标题", images: [], imagesVersion: current.imagesVersion })).status).toBe(200);
     const payload = await (await f.app.request("/api/ext/publish/" + published.id, authed(f.token))).json() as any;
     expect(payload.draft.title).toBe("我的图片"); expect(payload.draft.images.map((i: any) => i.assetId)).toEqual(ids);
     const originalCap = env.r2MaxBytes; env.r2MaxBytes = 1;
@@ -124,7 +124,7 @@ describe("草稿图片上传（内存 PGlite + mock R2，无外网）", () => {
     expect((await f.upload(f.draft, f.png)).status).toBe(409);
     expect((await f.patch({ images: [], imagesVersion: 0 })).status).toBe(409);
     expect((await f.patch({ images: [] })).status).toBe(428);
-    expect((await f.patch({ title: "编辑文字" })).status).toBe(200);
+    expect((await f.patch({ textVersion: (await f.get()).textVersion, title: "编辑文字" })).status).toBe(200);
     expect((await f.get()).images[0]!.assetId).toBe(a.asset.id);
   });
 

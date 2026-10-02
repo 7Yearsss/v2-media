@@ -39,6 +39,12 @@ export function authed(token: string, init: RequestInit = {}): RequestInit {
   };
 }
 
+/** Simulates an editor reading its base version before an intentional text/account change. */
+export async function editDraft(app: ReturnType<typeof createApp>, token: string, id: number, patch: object) {
+  const current = await (await app.request(`/api/drafts/${id}`, authed(token))).json() as { textVersion: number };
+  return app.request(`/api/drafts/${id}`, authed(token, { method: "PATCH", body: JSON.stringify({ textVersion: current.textVersion, ...patch }) }));
+}
+
 const testLeases = new WeakMap<object, Map<string, any>>();
 /** Tests exercise the real capability-aware claim before reporting a result. */
 export async function claimBrowser(app: ReturnType<typeof createApp>, token: string, domain: "publish" | "tasks", id: number, claimedBy = "sw-test") {

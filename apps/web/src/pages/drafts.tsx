@@ -7,7 +7,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -35,13 +35,12 @@ import { DraftAccount } from "@/components/app/draft-account";
 import { AiPanel } from "@/components/app/ai-panel";
 import { RiskTextarea } from "@/components/app/risk-textarea";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
-import { api, mediaUrl } from "@/lib/api";
+import { api, captureSession, isCurrentSession, mediaUrl } from "@/lib/api";
+import { DraftEditSession, type DraftEditView, type DraftText } from "@/lib/draft-edit-session";
 import { useBannedWords } from "@/lib/hooks/use-banned-words";
 import { timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-
-type SaveState = "saved" | "dirty" | "saving" | "error";
 
 export default function DraftsPage() {
   const navigate = useNavigate();
@@ -49,6 +48,19 @@ export default function DraftsPage() {
   const selectedId = params.id ? Number(params.id) : null;
   const toast = useToast();
   const queryClient = useQueryClient();
+  const session = useMemo(() => captureSession(), []);
+  const editor = useMemo(() => new DraftEditSession({
+    userId: session.user!.id, writerId: crypto.randomUUID(), storage: localStorage,
+    active: () => isCurrentSession(session), load: id => api.draft(id, session),
+    save: async (id, patch) => {
+      const saved = await api.updateDraft(id, patch, session);
+      if (isCurrentSession(session)) {
+        queryClient.setQueryData(["draft-media", id], saved);
+        queryClient.setQueryData<Draft[]>(["drafts"], current => current?.map(d => d.id === id ? saved : d));
+      }
+      return saved;
+    },
+  }), [session, queryClient]);
 
   const draftsQuery = useQuery({ queryKey: ["drafts"], queryFn: api.drafts });
   const drafts = useMemo(() => draftsQuery.data ?? [], [draftsQuery.data]);
@@ -87,43 +99,40 @@ export default function DraftsPage() {
   const limits = useMemo(() => checkDraftLimits({ title, content, tags }), [title, content, tags]);
   const [images, setImages] = useState<NoteImage[]>([]);
   const [tagInput, setTagInput] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [editView, setEditView] = useState<DraftEditView | null>(null);
+  const saveState = editView?.state ?? "saved";
+  const savedAt = editView?.savedAt ? new Date(editView.savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : null;
   const timerRef = useRef<number | undefined>(undefined);
   const editingIdRef = useRef<number | null>(null);
-  const loadedTextVersion = useRef(0);
-  const saveQueues = useRef(new Map<number, Promise<void>>());
-  const failedSaves = useRef(new Map<number, Partial<{ title: string; content: string; tags: string[] }>>());
-  const pendingSaveRef = useRef<{
-    draftId: number;
-    fields: Partial<{ title: string; content: string; tags: string[] }>;
-  } | null>(null);
+  const showEdit = useCallback((view: DraftEditView) => {
+    setEditView(view); setTitle(view.fields.title); setContent(view.fields.content); setTags(view.fields.tags);
+  }, []);
 
   // 切换草稿 → 先把上一个草稿未落盘的编辑立即保存，再装载字段
-  useEffect(() => {
+  useLayoutEffect(() => {
     window.clearTimeout(timerRef.current);
-    const pending = pendingSaveRef.current;
-    pendingSaveRef.current = null;
-    if (pending) void persist(pending.draftId, pending.fields);
+    const previousId = editingIdRef.current;
+    if (previousId !== null && previousId !== selected?.id) void editor.flush(previousId);
     if (selected) {
       editingIdRef.current = selected.id;
-      loadedTextVersion.current = selected.textVersion;
-      setTitle(selected.title);
-      setContent(selected.content);
-      setTags(selected.tags);
+      const view = editor.open(selected); showEdit(view);
       setImages(selected.images);
-      setSaveState("saved");
-      setSavedAt(null);
+      if (view.state === "dirty") timerRef.current = window.setTimeout(() => { void editor.flush(selected.id); }, 900);
     } else {
       editingIdRef.current = null;
       setTitle("");
       setContent("");
       setTags([]);
       setImages([]);
-      setSaveState("saved");
+      setEditView(null);
     }
-    setTagInput("");
-  }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (previousId !== selected?.id) setTagInput("");
+  }, [selected, editor, showEdit]);
+
+  useEffect(() => editor.subscribe(() => {
+    const id = editingIdRef.current; const view = id === null ? null : editor.view(id);
+    if (view) showEdit(view);
+  }), [editor, showEdit]);
 
   // 路由无 id 时自动选第一篇
   useEffect(() => {
@@ -137,86 +146,39 @@ export default function DraftsPage() {
     [queryClient],
   );
 
-  const persist = useCallback(
-    async (draftId: number, next: Partial<{ title: string; content: string; tags: string[] }>) => {
-      const previous = saveQueues.current.get(draftId) ?? Promise.resolve();
-      const saving = previous.then(async () => {
-        if (editingIdRef.current === draftId) setSaveState("saving");
-        const fields = { ...failedSaves.current.get(draftId), ...next };
-        try {
-          const saved = await api.updateDraft(draftId, fields);
-          queryClient.setQueryData(["draft-media", draftId], saved);
-          failedSaves.current.delete(draftId);
-          if (editingIdRef.current === draftId) {
-            setSaveState(pendingSaveRef.current?.draftId === draftId ? "dirty" : "saved");
-            setSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
-          }
-          invalidate();
-        } catch {
-          failedSaves.current.set(draftId, fields);
-          if (editingIdRef.current === draftId) setSaveState("error");
-        }
-      });
-      saveQueues.current.set(draftId, saving);
-      await saving;
-    },
-    [invalidate, queryClient],
-  );
-
   const syncGeneratedDraft = (draft: Draft) => {
     if (editingIdRef.current !== draft.id) return;
     queryClient.setQueryData<Draft[]>(["drafts"], current => current?.map(d => d.id === draft.id ? draft : d));
-    if (draft.textVersion !== loadedTextVersion.current && saveState === "saved" && !pendingSaveRef.current && !failedSaves.current.has(draft.id)) {
-      setTitle(draft.title); setContent(draft.content); setTags(draft.tags);
-      loadedTextVersion.current = draft.textVersion;
-    }
+    showEdit(editor.open(draft));
   };
   const beforeGenerate = async () => {
     const draftId = editingIdRef.current;
     if (draftId === null) return false;
     window.clearTimeout(timerRef.current);
-    const pending = pendingSaveRef.current;
-    pendingSaveRef.current = null;
-    if (pending) await persist(pending.draftId, pending.fields);
-    await saveQueues.current.get(draftId);
-    return !failedSaves.current.has(draftId);
+    return isCurrentSession(session) && await editor.flush(draftId) && isCurrentSession(session);
   };
 
   /** 更新字段并触发防抖自动保存。 */
   const update = useCallback(
-    (patch: Partial<{
-      title: string;
-      content: string;
-      tags: string[];
-    }>) => {
+    (patch: Partial<DraftText>) => {
       const draftId = editingIdRef.current;
       if (draftId === null) return;
-      setTitle((cur) => patch.title ?? cur);
-      setContent((cur) => patch.content ?? cur);
-      setTags((cur) => patch.tags ?? cur);
-      setSaveState("dirty");
+      showEdit(editor.change(draftId, patch));
       window.clearTimeout(timerRef.current);
-      const fields = {
-        ...(pendingSaveRef.current?.draftId === draftId ? pendingSaveRef.current.fields : {}),
-        ...patch,
-      };
-      pendingSaveRef.current = { draftId, fields }; // 切换草稿时立即落盘
       timerRef.current = window.setTimeout(() => {
-        pendingSaveRef.current = null;
-        void persist(draftId, fields);
+        void editor.flush(draftId);
       }, 900);
     },
-    [persist],
+    [editor, showEdit],
   );
 
   useEffect(
     () => () => {
       window.clearTimeout(timerRef.current);
-      const pending = pendingSaveRef.current;
-      pendingSaveRef.current = null;
-      if (pending) void persist(pending.draftId, pending.fields);
+      const id = editingIdRef.current;
+      if (id !== null) void editor.flush(id);
     },
-    [persist],
+    [editor],
   );
 
   const addTag = () => {
@@ -239,6 +201,7 @@ export default function DraftsPage() {
   const remove = useMutation({
     mutationFn: (id: number) => api.deleteDraft(id),
     onSuccess: (_v, id) => {
+      editor.forget(id);
       invalidate();
       toast.success("草稿已删除");
       if (selectedId === id) navigate("/drafts", { replace: true });
@@ -418,10 +381,10 @@ export default function DraftsPage() {
                   {saveState === "dirty" && "未保存更改"}
                   {saveState === "error" && (
                     <button type="button" className="text-destructive underline" onClick={() => {
-                      const fields = failedSaves.current.get(selected.id);
-                      if (fields) void persist(selected.id, fields);
+                      void editor.flush(selected.id);
                     }}>保存失败，点击重试</button>
                   )}
+                  {saveState === "conflict" && <span className="text-destructive">版本冲突，本地改动已保留</span>}
                 </span>
               </div>
               {selected.status !== "published" ? (
@@ -437,6 +400,17 @@ export default function DraftsPage() {
             </div>
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-8 py-6">
+              {editView?.recovered && saveState !== "saved" && <p className="text-xs text-amber-600">已恢复本地编辑，保存成功前请保留这些改动。</p>}
+              {editView?.error && <div role="alert" className="space-y-2 rounded-xl border border-amber-400/40 p-3 text-xs">
+                <p>{editView.error}</p>
+                {saveState === "conflict" && <>
+                  {editView.server && <details><summary className="cursor-pointer">查看服务器最新版本</summary><pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{editView.server.title}{"\n\n"}{editView.server.content}{"\n"}{editView.server.tags.map(t => `#${t}`).join(" ")}</pre></details>}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" onClick={() => { void editor.resolve(selected.id, "local"); }}>保留我的改动并保存</Button>
+                    <Button size="sm" variant="outline" onClick={() => { void editor.resolve(selected.id, "server"); }}>使用服务器版本</Button>
+                  </div>
+                </>}
+              </div>}
               <DraftAccount key={`account-${selected.id}`} draftId={selected.id} beforeChange={beforeGenerate} />
               <input
                 value={title}

@@ -279,6 +279,11 @@ CREATE TABLE IF NOT EXISTS browser_execution_receipts (
   created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS browser_execution_receipts_user_receipt ON browser_execution_receipts(user_id, receipt_id);
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS account_snapshot jsonb;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id integer;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS retry_operation_id varchar(36);
+CREATE UNIQUE INDEX IF NOT EXISTS publish_jobs_user_retry_operation ON publish_jobs(user_id, retry_operation_id);
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS analysis_source jsonb;
 `;
 
 export async function migrate(db: Db) {

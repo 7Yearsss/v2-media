@@ -1,12 +1,13 @@
 import { Loader2, PenLine, Plus } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AnalysisSignals, AnalysisVisualItem, CollectionAnalysis, InsightFinding, InsightRef } from "@v2media/shared";
 import { TextShimmer } from "@/components/motion/text-shimmer";
 import { AnalysisProgressView } from "@/components/app/analysis-progress";
-import { api } from "@/lib/api";
+import { api, captureSession, isCurrentSession, SessionChangedError } from "@/lib/api";
+import { topicFromAnalysis } from "@/lib/analysis-topic-flow";
 import { formatCount } from "@/lib/format";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -372,44 +373,61 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
   const navigate = useNavigate();
   const [added, setAdded] = useState<Set<number>>(new Set());
   const topicIds = useRef(new Map<number, number>());
+  const activeAnalysis = useRef(a.id);
+  activeAnalysis.current = a.id;
   const [writingIdx, setWritingIdx] = useState<number | null>(null);
+  useEffect(() => {
+    setAdded(new Set()); topicIds.current.clear(); setWritingIdx(null);
+  }, [a.id]);
+  const isActive = (session: ReturnType<typeof captureSession>, analysisId: number) =>
+    isCurrentSession(session) && activeAnalysis.current === analysisId;
   const addTopic = useMutation({
-    mutationFn: async (i: number) => {
-      const idea = insight!.ideas![i]!;
-      const t = await api.createTopic({
-        title: idea.title,
-        angle: `${idea.hook}\n${idea.angle}`,
-        collectionId: a.collectionId,
-        sourceNoteId: idea.refs?.[0]?.id,
-      });
-      topicIds.current.set(i, t.id);
-      return i;
+    mutationFn: async ({ i, session, analysis }: { i: number; session: ReturnType<typeof captureSession>; analysis: CollectionAnalysis }) => {
+      const t = await api.createTopic(topicFromAnalysis(analysis, i), session);
+      if (isActive(session, analysis.id)) topicIds.current.set(i, t.id);
+      return { i, session, analysisId: analysis.id };
     },
-    onSuccess: (i) => {
+    onSuccess: ({ i, session, analysisId }) => {
+      if (!isActive(session, analysisId)) return;
       setAdded((s) => new Set(s).add(i));
       onTopicAdded?.();
     },
-    onError: (e) => toast.error("入池失败", e instanceof Error ? e.message : undefined),
+    onError: (e, { session, analysis }) => {
+      if (!(e instanceof SessionChangedError) && isActive(session, analysis.id))
+        toast.error("入池失败", e instanceof Error ? e.message : undefined);
+    },
   });
   // 选题 → AI 成稿 → 跳到草稿页（还没入池的先入池，保留来源关联）
   const writeDraft = async (i: number) => {
+    const session = captureSession();
+    const analysis = a;
     setWritingIdx(i);
     try {
-      if (!topicIds.current.has(i)) await addTopic.mutateAsync(i);
-      const r = await api.topicToDraft(topicIds.current.get(i)!, { ai: true, positioning: a.data.positioning });
+      if (!topicIds.current.has(i)) await addTopic.mutateAsync({ i, session, analysis });
+      if (!isActive(session, analysis.id)) return;
+      // The server restores the report's positioning and freezes all current target-account rules.
+      const r = await api.topicToDraft(topicIds.current.get(i)!, { ai: true }, session);
+      if (!isActive(session, analysis.id)) return;
       void queryClient.invalidateQueries({ queryKey: ["drafts"] });
       const note = [r.coverText ? `封面大字：${r.coverText}` : "", r.warnings?.length ? `仍有 ${r.warnings.length} 处可能被限流的词` : ""].filter(Boolean).join("；");
-      toast.success("草稿已生成", note || undefined);
+      toast.success(r.jobId ? "已开始成稿" : "已打开草稿", note || undefined);
       navigate(`/drafts/${r.draft.id}`);
     } catch (e) {
-      toast.error("成稿失败", e instanceof Error ? e.message : undefined);
+      if (!(e instanceof SessionChangedError) && isActive(session, analysis.id))
+        toast.error("成稿失败", e instanceof Error ? e.message : undefined);
     } finally {
-      setWritingIdx(null);
+      if (isActive(session, analysis.id)) setWritingIdx(null);
     }
   };
   const addAll = async () => {
-    for (const [i] of (insight?.ideas ?? []).entries()) if (!added.has(i)) await addTopic.mutateAsync(i).catch(() => {});
-    toast.success("已全部入选题池");
+    const session = captureSession();
+    const analysis = a;
+    let failures = 0;
+    for (const [i] of (insight?.ideas ?? []).entries()) {
+      if (!isActive(session, analysis.id)) return;
+      if (!added.has(i)) await addTopic.mutateAsync({ i, session, analysis }).catch(() => { failures++; });
+    }
+    if (isActive(session, analysis.id) && !failures) toast.success("已全部入选题池");
   };
 
   const lowCoverage = sig.sample.withDetail < sig.sample.total * 0.6;
@@ -438,6 +456,10 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
           {a.data.positioning ? `按「${a.data.positioning}」的定位来写。` : ""}
           {lowCoverage ? "多数笔记没进详情页，结论偏保守。" : ""}
         </p>
+        {a.data.persona?.accountId && <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+          分析使用「{a.data.persona.nickname || `账号 #${a.data.persona.accountId}`}」的人设 v{a.data.persona.version}。
+          入池会保留此账号与来源定位；成稿使用该账号当前的风格和红线，历史报告保持原样。账号已解绑时需重新选择。
+        </p>}
       </header>
 
       {a.data.visual?.length ? (
@@ -522,7 +544,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => addTopic.mutate(i)}
+                    onClick={() => addTopic.mutate({ i, session: captureSession(), analysis: a })}
                     disabled={added.has(i) || addTopic.isPending}
                     className="flex h-9 items-center gap-1.5 rounded-full border border-border px-4 text-sm transition-colors hover:border-foreground/40 disabled:opacity-50"
                   >

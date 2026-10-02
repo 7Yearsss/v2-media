@@ -2,7 +2,7 @@
 
 2026-10-02。写给接手的 AI。先读 `AGENTS.md`，再读本文件和 `docs/publish-smoke-test.md`。
 
-2026-10-02 架构复审指出基线 `ffd7c0e` 的发布自身点击、SW 恢复、验证码断网与回执可靠性缺口。R0 已在 `codex/r0-execution-reliability` 修复并补正式回归：持久执行/授权上下文、租约/代次、稳定收据与事务来源绑定，插件升级到 0.1.9；详见 [`r0-execution-verification.md`](r0-execution-verification.md)。前端会话/编辑/人设链路（R1）、历史保留（R2）及真实 Chrome 联合验收（R5）仍未完成，最新分支不应直接部署。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R1–R6 顺序推进。
+2026-10-02 架构复审指出基线 `ffd7c0e` 的发布自身点击、SW 恢复、验证码断网与回执可靠性缺口。R0 已在 `8873195` 修复，插件 0.1.9；详见 [`r0-execution-verification.md`](r0-execution-verification.md)。R1 已在 `codex/r1-content-context` 完成会话/个人本地数据隔离、草稿持久编辑与文字 CAS、分析来源/目标账号传递、原版本重试及新建确认版本检查，详见 [`r1-content-context-verification.md`](r1-content-context-verification.md)。历史保留（R2）及真实 Chrome/XHS/R2/模型联合验收（R5）仍未完成，最新分支不应直接部署。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R2–R6 顺序推进，生产测试痕迹保持原样。
 
 ## 现状（一句话）
 

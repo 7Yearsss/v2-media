@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { api } from "@/lib/api";
+import { useMemo, useState } from "react";
+import { api, captureSession } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
 export function DraftAccount({ draftId, beforeChange }: { draftId: number; beforeChange: () => Promise<boolean> }) {
   const client = useQueryClient();
   const toast = useToast();
+  const session = useMemo(() => captureSession(), []);
   const accounts = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
   const draft = useQuery({ queryKey: ["draft-media", draftId], queryFn: () => api.draft(draftId) }).data;
   const [saving, setSaving] = useState(false);
@@ -14,7 +15,8 @@ export function DraftAccount({ draftId, beforeChange }: { draftId: number; befor
     setSaving(true);
     try {
       if (!(await beforeChange())) { toast.error("请先重试保存文字"); return; }
-      const updated = await api.updateDraft(draftId, { accountId: value ? Number(value) : null });
+      const current = await api.draft(draftId, session);
+      const updated = await api.updateDraft(draftId, { textVersion: current.textVersion, accountId: value ? Number(value) : null }, session);
       client.setQueryData(["draft-media", draftId], updated);
       void client.invalidateQueries({ queryKey: ["drafts"] });
     } catch (e) { toast.error("写作账号更新失败", e instanceof Error ? e.message : undefined); }

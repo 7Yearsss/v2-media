@@ -1,4 +1,4 @@
-import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight, CollectionTaskRules, NoteCard } from "@v2media/shared";
+import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight, CollectionTaskRules, NoteCard, TopicAnalysisSource } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -123,6 +123,9 @@ export const drafts = pgTable("drafts", {
 });
 
 export const publishJobs = pgTable("publish_jobs", {
+  accountSnapshot: jsonb("account_snapshot").$type<{ accountId: number; xhsUserId: string; nickname: string }>(),
+  retryOfJobId: integer("retry_of_job_id"),
+  retryOperationId: varchar("retry_operation_id", { length: 36 }),
   planningSnapshot: jsonb("planning_snapshot").$type<PlanningSnapshot>(),
   coverSnapshot: jsonb("cover_snapshot").$type<CoverSpec>(),
   publishedAt: timestamp("published_at"),
@@ -149,7 +152,7 @@ export const publishJobs = pgTable("publish_jobs", {
   verifiedAt: timestamp("verified_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => [uniqueIndex("publish_jobs_user_retry_operation").on(t.userId, t.retryOperationId)]);
 
 /** 元数据留库，源文件持久暂存到 uploads，R2 完成后删除源文件。 */
 export const mediaAssets = pgTable("media_assets", {
@@ -172,6 +175,7 @@ export const mediaAssets = pgTable("media_assets", {
 
 /** 选题池（策划层）：一条"想写/计划写"的内容方向，串联 draft → publish_job。 */
 export const topics = pgTable("topics", {
+  analysisSource: jsonb("analysis_source").$type<TopicAnalysisSource>(),
   scoreMethod: text("score_method"),
   scoreModel: text("score_model"),
   scoredAt: timestamp("scored_at"),

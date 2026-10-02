@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { captureUserStorage } from "../user-storage";
 
 const KEY = "v2media:library-collection-prefs";
 const RECENT_MAX = 12;
@@ -9,9 +10,9 @@ interface Prefs {
   recent: number[];
 }
 
-function load(): Prefs {
+function load(storage: ReturnType<typeof captureUserStorage>): Prefs {
   try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<Prefs> | null;
+    const raw = JSON.parse(storage.getItem() ?? "null") as Partial<Prefs> | null;
     return { pinned: raw?.pinned ?? [], recent: raw?.recent ?? [] };
   } catch {
     return { pinned: [], recent: [] };
@@ -20,15 +21,16 @@ function load(): Prefs {
 
 /** 采集库的置顶 / 最近使用（仅存本地浏览器，不同步）。 */
 export function useCollectionPrefs() {
-  const [prefs, setPrefs] = useState<Prefs>(load);
+  const [storage] = useState(() => captureUserStorage(KEY));
+  const [prefs, setPrefs] = useState<Prefs>(() => load(storage));
 
   const update = useCallback((fn: (p: Prefs) => Prefs) => {
     setPrefs((p) => {
       const next = fn(p);
-      try { localStorage.setItem(KEY, JSON.stringify(next)); } catch { /* Storage can be unavailable. */ }
+      storage.setItem(JSON.stringify(next));
       return next;
     });
-  }, []);
+  }, [storage]);
 
   const touch = useCallback(
     (id: number) => update((p) => ({ ...p, recent: [id, ...p.recent.filter((x) => x !== id)].slice(0, RECENT_MAX) })),

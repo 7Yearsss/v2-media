@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RotateCcw, Sparkles } from "lucide-react";
 import { COVER_TEMPLATES, checkBannedWords, type CoverSpec, type CoverTemplateId } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
-import { api } from "@/lib/api";
+import { api, captureSession } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +20,7 @@ function TemplateSymbol({ id }: { id: CoverTemplateId }) {
 export function DraftCover({ draftId, beforeGenerate }: { draftId: number; beforeGenerate: () => Promise<boolean> }) {
   const client = useQueryClient();
   const toast = useToast();
+  const session = useMemo(() => captureSession(), []);
   const query = useQuery({ queryKey: ["draft-media", draftId], queryFn: () => api.draft(draftId) });
   const draft = query.data;
   const [template, setTemplate] = useState<CoverTemplateId>("poster");
@@ -56,7 +57,7 @@ export function DraftCover({ draftId, beforeGenerate }: { draftId: number; befor
     setSending(true);
     try {
       if (!(await beforeGenerate())) { toast.error("文字尚未保存，请先重试保存"); return; }
-      const result = await api.generateCover(draftId, { spec: pendingSpec, revision: draft.coverRevision });
+      const result = await api.generateCover(draftId, { spec: pendingSpec, revision: draft.coverRevision }, session);
       client.setQueryData(["draft-media", draftId], result.draft);
       void client.invalidateQueries({ queryKey: ["drafts"] });
       toast.success("封面已进入生成队列");
@@ -68,7 +69,7 @@ export function DraftCover({ draftId, beforeGenerate }: { draftId: number; befor
     setSending(true);
     try {
       if (!(await beforeGenerate())) { toast.error("文字尚未保存，请先重试保存"); return; }
-      const result = await api.retryGeneration(draftId);
+      const result = await api.retryGeneration(draftId, session);
       client.setQueryData(["draft-media", draftId], result.draft);
       void client.invalidateQueries({ queryKey: ["drafts"] });
       toast.success("开始重新成稿");

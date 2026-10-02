@@ -6,7 +6,7 @@ import type { R2Storage } from "../src/lib/r2";
 import { collectionAnalyses, drafts, jobs, mediaAssets } from "../src/db/schema";
 import { runDraftJobs, startDraftWorker } from "../src/lib/draft-jobs";
 import { runCoverJobs } from "../src/lib/cover-jobs";
-import { authed, makeApp, registerUser } from "./helpers";
+import { authed, editDraft, makeApp, registerUser } from "./helpers";
 
 export function coverStorage() {
   const objects = new Map<string, { bytes: ArrayBuffer; type: string }>();
@@ -87,7 +87,7 @@ describe("一键成稿 → 自动封面（持久 jobs + mock AI/R2）", () => {
     const f = await fixture(complete);
     const created = await (await f.create()).json() as any;
     const running = runDraftJobs(f.deps); await begin;
-    await f.app.request("/api/drafts/" + created.draft.id, authed(f.token, { method: "PATCH", body: JSON.stringify({ content: "用户手工写的正文" }) }));
+    expect((await editDraft(f.app, f.token, created.draft.id, { content: "用户手工写的正文" })).status).toBe(200);
     release(); await running;
     let draft = await f.get(created.draft.id);
     expect(draft.content).toBe("用户手工写的正文");

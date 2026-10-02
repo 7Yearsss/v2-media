@@ -5,6 +5,8 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 插件走同一 token：工作台「授权插件」按钮经 site-bridge `SET_AUTH` 写入插件 storage。
 所有业务数据按当前登录用户隔离。
 
+工作台会话使用原子本地记录和授权 epoch。换用户、换 token 或另一标签页授权变化会中止旧请求、清空旧 query/mutation 缓存并重新挂载应用；JSON、CSV、上传的迟到响应均拒绝，旧 401 不退出新用户。多步编辑/分析/重试动作捕获原会话，不在等待后套用新用户 token。屏蔽词、库偏好、已看笔记、分析定位按 userId 保存，旧无归属本地记录保留且不自动归给当前用户。
+
 ## 工作台 API
 
 时间排序扩展：`sort=savedAt|publishedAt`，默认降序。savedAt 是最近一次采集/补采时间；publishedAt 是小红书详情返回的原笔记发布时间，未采到时为 null。两种方向均把缺失发布时间放在最后；时间游标使用毫秒值（数据库排序也统一毫秒精度），末尾缺失值用 null + id 继续分页。
@@ -46,6 +48,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/publish/jobs | `{draftId,accountId,scheduledAt?,visibility?}` → `PublishJob` |
 | GET | /api/publish/jobs | 任务列表 |
 | POST | /api/publish/jobs/:id/cancel | |
+| POST | /api/publish/jobs/:id/retry | `{operationId:UUID}` 原版本重试；同一操作重复返回同一新任务；不接受当前稿替代参数 |
 | GET | /api/overview | 仪表盘计数 |
 
 ## 账号人设与创作上下文
@@ -53,10 +56,14 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 - `HostedAccount` 增加 `positioning`、`styleNotes`、`redlines`（默认空字符串）、`personaVersion`（默认 0）。PATCH 至少一个人设字段，每项最多 1000 字符，首尾空白裁去；拒绝其他字段，空字符串表示清空。必须提交当前 version，旧版本 409、跨用户 404；有实际变更才增加版本，重复保存不增加。插件心跳不覆盖这些字段。
 - `AccountPersonaSnapshot` 为 `{accountId,nickname,version,positioning,styleNotes,redlines}`。选题生成/评分、成稿、分析、发布分别保存调用时的快照，后续编辑人设不会改写历史。无账号且无人设时使用通用风格。
 - `Draft` 增加可空 `accountId`（写作账号）与 `personaSnapshot`（成稿时人设）。创建/PATCH 可以指定或清空 accountId；校验归属，更换写作账号增加 textVersion，防止迟到 AI 覆盖。首次新增此列时，从同用户最近关联选题继承账号；之后明确清空不被启动迁移回填。
+- PATCH title/content/tags/accountId 必须带非负整数 `textVersion`；缺版本 428、旧版本 409，锁草稿后比较再写。图片继续用独立 imagesVersion；文字与图片在同一请求时两个版本都校验。就绪状态等仅元数据可省略文字版本。客户端按 userId/draftId/编辑窗口持久保存待写 patch 与基础版本；切稿、刷新、断网保留 dirty/error，409 明确保留本地并展示服务器版本，只有用户选择才按最新版本重存或采用服务器文字。迟到 ACK 不丢掉等待期间的新编辑。
 - `/api/ai/rewrite|titles|tags` 可接收 `draftId`、可空 `accountId`：省略账号继承草稿写作账号，明确 null 使用通用风格；即使同时提供原始 title/content，draftId 仍校验归属。每次读取当前人设，注入改写、标题、标签提示词。选题生成/评分使用选题目标账号；评分中途换账号时拒绝旧结果回写（409）。
 - `POST /api/collections/:id/analyze` 可接收 `{accountId?,positioning?,withVideo?}`，定位最多 1000 字符。定位覆盖只影响本次定位，账号风格/红线仍保留。报告 `data.persona` 保存快照，注入假设与深度复核，客观视觉描述不随人设改写。
 - `to-draft {ai:true,positioning?}` 冻结目标账号三字段，定位覆盖语义同分析；任务执行前后检查写作账号和文字版本。成稿重试读取当前写作账号人设；原定位覆盖仅在仍是原账号时复用。
+- 分析建议入池可提交 `analysisId` + `analysisIdeaIndex`（同时给出）。服务端从本用户 done 报告核验库/建议/引用和报告目标账号，缺省继承目标、显式错目标 409，生成不可伪造的 `Topic.analysisSource`（报告/库/索引/本次定位/报告人设）；不接收客户端历史快照。成稿使用具体来源报告的证据与当前目标三字段，仍是原账号时沿用本次定位；明确换目标不沿用旧定位。来源报告删除、引用删除/移库、目标解绑不能静默降级为通用稿，须重新选择有效来源/目标。旧报告人设与来源快照不改写。
 - `POST /api/publish/jobs` 可增加 `personaVersion`，过期返回 409；创建时锁实际目标账号与草稿，并冻结 `PublishJob.personaSnapshot` 与正文图集快照。旧客户端省略版本仍兼容。发布页展示目标账号红线与成稿账号不一致提示；自然语言红线是提示词/人工自查上下文，确定性违禁词校验仍沿用已有机制。
+- 新建发布还可提交 `draftTextVersion` / `draftImagesVersion`；工作台提交确认时展示的两个版本，锁草稿后比较，任一变化 409，刷新后重新核对。省略仅保留旧客户端兼容。新增任务冻结 `accountSnapshot={accountId,xhsUserId,nickname}`；列表标题/账号优先来自冻结快照，历史缺字段才明确回退当前关联数据。
+- 原版本重试复制 draft/persona/account/cover/planning 五种快照与原 visibility，清原排期立即入队，记录 retryOfJobId/retryOperationId。只允许执行前取消（attempt=0、未认领）或有 R0 收据证明的明确失败；done/running/过期未知、有发布证据、缺完整历史快照或原账号身份已变化均 409。同 user/operationId 唯一并事务锁定；同目标重复操作返回原新任务，跨目标复用 409；另一 operationId 不可重复克隆已有 pending/running/done 子任务的来源。确认页展示原稿/图序/人设/可见性/排期差异，另有“用当前稿新建”，后者走普通新建与当前版本核对。
 
 ## 数据洞察与单篇复盘
 
