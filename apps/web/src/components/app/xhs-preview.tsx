@@ -29,7 +29,7 @@ export function XhsNotePreview({
         className,
       )}
     >
-      <div className="relative aspect-[4/3] w-full overflow-hidden bg-muted">
+      <div className="relative aspect-[3/4] w-full overflow-hidden bg-muted">
         {cover ? (
           <img
             src={mediaUrl(cover)}

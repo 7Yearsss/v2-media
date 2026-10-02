@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { authed, makeApp, registerUser } from "./helpers";
+import { authed, drainAiRuns, claimBrowser, makeApp, registerUser, reportBrowser } from "./helpers";
 
 describe("auth", () => {
   it("register → login → authed access", async () => {
@@ -180,7 +180,7 @@ describe("collect + notes", () => {
   });
 
   it("collection analyze: AI 报告落库 + 越权 404 + 空库 400", async () => {
-    const { app } = await makeApp();
+    const { app, deps } = await makeApp({ complete: async () => JSON.stringify({ summary: "训练样本值得继续观察", findings: [], needs: [], traps: [], ideas: [{ title: "训练准备步骤", hook: "先准备", angle: "保留样本依据", refs: [1] }] }) });
     const { token } = await registerUser(app);
     const col = (await (await app.request("/api/collections", authed(token, {
       method: "POST", body: JSON.stringify({ name: "健身" }),
@@ -203,6 +203,7 @@ describe("collect + notes", () => {
     expect(started.status).toBe(202);
     const run = (await started.json()) as any;
     expect(run.status).toBe("running");
+    await drainAiRuns(deps);
     let ana: any = run;
     for (let i = 0; i < 100 && ana.status === "running"; i++) {
       await new Promise((r) => setTimeout(r, 50));
@@ -437,12 +438,8 @@ describe("drafts + ai + publish", () => {
     expect(pending.jobs).toHaveLength(1);
     expect(pending.jobs[0].draft.title).toBe("原始标题");
 
-    expect((await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw-test" }),
-    }))).status).toBe(200);
-    expect((await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done", resultUrl: "https://xhs/n1" }),
-    }))).status).toBe(200);
+    expect((await claimBrowser(app, token, "publish", job.id)).status).toBe(200);
+    expect((await reportBrowser(app, token, "publish", job.id, { status: "done", resultUrl: "https://xhs/n1" })).status).toBe(200);
 
     const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
     expect(jobs[0].status).toBe("done");
@@ -467,6 +464,9 @@ describe("topics 选题池", () => {
     }))).json()) as any;
     expect(t.status).toBe("idea");
     expect(t.sourceType).toBe("manual");
+    const detail = await app.request(`/api/topics/${t.id}`, authed(token));
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ id: t.id, title: "露营装备清单" });
     // plannedAt → planned；清空 → idea
     const planned = (await (await app.request(`/api/topics/${t.id}`, authed(token, {
       method: "PATCH", body: JSON.stringify({ plannedAt: Date.now() + 86400_000 }),
@@ -490,6 +490,7 @@ describe("topics 选题池", () => {
     expect(inArchived.items).toHaveLength(1);
     // 越权
     const { token: t2 } = await registerUser(app, "other@x.yz");
+    expect((await app.request(`/api/topics/${t.id}`, authed(t2))).status).toBe(404);
     expect((await app.request(`/api/topics/${t.id}`, authed(t2, { method: "DELETE" }))).status).toBe(404);
   });
 
@@ -529,12 +530,8 @@ describe("topics 选题池", () => {
     const job = (await (await app.request("/api/publish/jobs", authed(token, {
       method: "POST", body: JSON.stringify({ draftId: r1.draft.id, accountId: accounts[0]!.id }),
     }))).json()) as any;
-    await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw-test" }),
-    }));
-    await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done", resultUrl: "https://xhs/x" }),
-    }));
+    await claimBrowser(app, token, "publish", job.id);
+    await reportBrowser(app, token, "publish", job.id, { status: "done", resultUrl: "https://xhs/x" });
     const topics = (await (await app.request("/api/topics", authed(token))).json()) as any;
     expect(topics.items[0].status).toBe("published");
     expect(topics.items[0].publishJobId).toBe(job.id);
@@ -551,11 +548,11 @@ describe("topics 选题池", () => {
               scoreDetail: { traffic: 10, fit: 10, diff: 10, monetization: 10, evergreen: 10, cost: 10, risk: 10 },
               reason: "燃脂训练 9k 赞验证了赛道",
             },
-            { title: "极简版" }, // 维度缺失 → 兜底 5 分
+            { title: "极简版", scoreDetail: { traffic: 5, fit: 5, diff: 5, monetization: 5, evergreen: 5, cost: 5, risk: 5 } },
           ],
         }),
     };
-    const { app } = await makeApp(ai);
+    const { app, deps } = await makeApp(ai);
     const { token } = await registerUser(app);
     const col = (await (await app.request("/api/collections", authed(token, {
       method: "POST", body: JSON.stringify({ name: "健身" }),
@@ -574,12 +571,18 @@ describe("topics 选题池", () => {
     const res = (await (await app.request("/api/ai/topics", authed(token, {
       method: "POST", body: JSON.stringify({ collectionId: col.id, count: 5 }),
     }))).json()) as any;
+    expect(res.status).toBe("queued");
+    await drainAiRuns(deps);
+    const done = await (await app.request(`/api/ai/runs/${res.id}`, authed(token))).json() as any;
+    expect(done.status).toBe("done");
+    const generated = await (await app.request("/api/topics", authed(token))).json() as any;
+    res.items = generated.items.sort((a: any, b: any) => a.id - b.id);
     expect(res.items).toHaveLength(2);
     expect(res.items[0].score).toBe(100);
     expect(res.items[0].sourceType).toBe("ai");
     expect(res.items[0].collectionId).toBe(col.id);
     expect(res.items[0].angle).toContain("推荐理由");
-    expect(res.items[1].score).toBe(50); // 全维度兜底 5 → 50
+    expect(res.items[1].score).toBe(50); // 模型明确给七维5分 → 50
     // 越权 collection → 404
     const { token: t2 } = await registerUser(app, "other@x.yz");
     expect((await app.request("/api/ai/topics", authed(t2, {
@@ -596,7 +599,7 @@ describe("topics 选题池", () => {
           advice: "先发一条测试流量",
         }),
     };
-    const { app } = await makeApp(ai);
+    const { app, deps } = await makeApp(ai);
     const { token } = await registerUser(app);
     const topic = (await (await app.request("/api/topics", authed(token, {
       method: "POST", body: JSON.stringify({ title: "早八穿搭" }),
@@ -604,7 +607,13 @@ describe("topics 选题池", () => {
     const res = (await (await app.request("/api/ai/topic-score", authed(token, {
       method: "POST", body: JSON.stringify({ topicId: topic.id }),
     }))).json()) as any;
-    expect(res.verdict).toBe("做");
+    expect(res.status).toBe("queued");
+    await drainAiRuns(deps);
+    const done = await (await app.request(`/api/ai/runs/${res.id}`, authed(token))).json() as any;
+    expect(done.status).toBe("done");
+    const scored = await (await app.request("/api/topics", authed(token))).json() as any;
+    res.topic = scored.items[0];
+    expect(done.result.verdict).toBe("做");
     // 加权校验：80/10*25 + 90/10*20 + 60/10*15 + 50/10*15 + 70/10*10 + 80/10*8 + 90/10*7 = 20+18+9+7.5+7+6.4+6.3=74.2 → 74
     expect(res.topic.score).toBe(74);
     expect(res.topic.scoreDetail.fit).toBe(9);
@@ -630,25 +639,15 @@ describe("归因任务管道（readback / metrics / account_snapshot）", () => 
     const job = (await (await app.request("/api/publish/jobs", authed(token, {
       method: "POST", body: JSON.stringify({ draftId: draft.id, accountId: accounts[0].id }),
     }))).json()) as any;
-    await app.request(`/api/ext/publish/${job.id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw" }),
-    }));
-    await app.request(`/api/ext/publish/${job.id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify({ status: "done" }),
-    }));
+    await claimBrowser(app, token, "publish", job.id, "sw");
+    await reportBrowser(app, token, "publish", job.id, { status: "done" });
     return { job, accounts };
   }
 
   const pendingTasks = async (app: any, token: string) =>
     ((await (await app.request("/api/ext/tasks/pending", authed(token))).json()) as any).tasks as any[];
-  const claimTask = (app: any, token: string, id: number) =>
-    app.request(`/api/ext/tasks/${id}/claim`, authed(token, {
-      method: "POST", body: JSON.stringify({ claimedBy: "sw" }),
-    }));
-  const reportTask = (app: any, token: string, id: number, body: unknown) =>
-    app.request(`/api/ext/tasks/${id}/result`, authed(token, {
-      method: "POST", body: JSON.stringify(body),
-    }));
+  const claimTask = (app: any, token: string, id: number) => claimBrowser(app, token, "tasks", id, "sw");
+  const reportTask = (app: any, token: string, id: number, body: unknown) => reportBrowser(app, token, "tasks", id, body);
 
   it("发布 done → readback 到期 → verified 匹配 → metrics×3 排定 + 快照落库", async () => {
     const { app, db, deps } = await makeApp();
@@ -743,7 +742,7 @@ describe("归因任务管道（readback / metrics / account_snapshot）", () => 
     const jobs = (await (await app.request("/api/publish/jobs", authed(token))).json()) as any;
     expect(jobs[0].outcome).toBe("readback_error");
 
-    // stale 回收：claimedAt >30min 的 running 回 pending
+    // legacy running 没有有效租约，回 pending 后必须重新认领新代次
     const { jobs: jobsTable } = await import("../src/db/schema");
     await db.insert(jobsTable).values({
       userId, type: "metrics", status: "running",

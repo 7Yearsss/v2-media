@@ -1,7 +1,10 @@
+import { fileURLToPath } from "node:url";
+import { runtimeMode } from "./runtime";
+
 export const env = {
+  runtimeMode: runtimeMode(process.env.V2MEDIA_RUNTIME_MODE),
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: process.env.DATABASE_URL ?? "",
-  skipDbMigrations: process.env.SKIP_DB_MIGRATIONS === "1",
   disableMediaMaintenance: process.env.DISABLE_MEDIA_MAINTENANCE === "1",
   aiBaseUrl: (process.env.AI_BASE_URL ?? "").replace(/\/$/, ""),
   aiApiKey: process.env.AI_API_KEY ?? "",
@@ -14,12 +17,14 @@ export const env = {
   aiTimeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 300_000),
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
   authSecret: process.env.AUTH_SECRET ?? "dev-only-secret",
-  dataDir: process.env.DATA_DIR ?? new URL("../data", import.meta.url).pathname,
+  dataDir: process.env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url)),
   // R2（S3 兼容）媒体转存；四个变量任一缺失则停用，图片继续走 /api/media/proxy
   r2Endpoint: (process.env.R2_ENDPOINT ?? "").replace(/\/$/, ""),
   r2Bucket: process.env.R2_BUCKET ?? "",
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+  r2Configured: [process.env.R2_ENDPOINT, process.env.R2_BUCKET, process.env.R2_ACCESS_KEY_ID, process.env.R2_SECRET_ACCESS_KEY].every(Boolean),
+  localR2Bucket: process.env.LOCAL_R2_BUCKET ?? "",
   // 对外可达的站点地址（生成给插件用的绝对媒体 URL）；空则用请求 origin
   publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
   // 媒体 GC：周期分钟数（默认每小时），桶容量上限字节（默认 ~5GB，R2 免费额度 10GB）

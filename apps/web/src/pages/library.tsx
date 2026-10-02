@@ -30,6 +30,9 @@ import {
 } from "@/components/motion/morphing-search";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { LibraryNoteDetail } from "@/components/app/library-note-detail";
+import { useWorkspaceAccount } from "@/lib/account-context";
+import { useRuntime } from "@/lib/hooks/use-runtime";
+import { captureSession, isCurrentSession, SessionChangedError } from "@/lib/api";
 import { FilterSelect } from "@/components/app/filter-select";
 import { LibraryBulkBar } from "@/components/app/library-bulk-bar";
 import { LibraryFilterBar, rangeFilterActive } from "@/components/app/library-filter-bar";
@@ -73,12 +76,13 @@ const SOURCE_OPTIONS = [
 const UNDO_MS = 5000;
 
 export default function LibraryPage() {
+  const workspaceAccount = useWorkspaceAccount(), { readOnly } = useRuntime();
   const toast = useToast();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
   const [params, setParams] = useSearchParams();
-  const [keyword, setKeyword] = useState("");
+  const keyword = params.get("keyword") ?? "";
   // 筛选 / 排序 / 当前打开的笔记都放进 URL：可分享、可刷新恢复、返回键能关闭详情
   const source = params.get("source") ?? "";
   const collection = params.get("col") ?? ""; // "" | "none" | id 字符串
@@ -117,6 +121,7 @@ export default function LibraryPage() {
     [setParams, location.state],
   );
   const setSource = (v: string) => patch({ source: v || undefined });
+  const setKeyword = (v: string) => patch({ keyword: v || undefined });
   const setCollection = (v: string) => patch({ col: v || undefined });
   const setTag = (v: string) => patch({ tag: v || undefined });
   const setRange = (r: NoteRangeFilter) =>
@@ -417,22 +422,28 @@ export default function LibraryPage() {
   };
   const bulkDraft = () =>
     runBulk("送入草稿", async () => {
+      if (readOnly || !workspaceAccount.canCreate) { toast.info("请先确认有效写作账号或选择通用风格"); return; }
+      const session = captureSession(), accountId = workspaceAccount.accountId ?? undefined, selectedIds = ids();
+      const created: number[] = [];
       let ok = 0;
-      for (const id of ids()) {
+      for (const id of selectedIds) {
+        if (!isCurrentSession(session)) return;
         try {
-          await api.createDraft({ collectedNoteId: id });
+          await api.createDraft({ collectedNoteId: id, accountId }, session);
+          created.push(id);
           ok++;
         } catch { /* 逐条统计，单条失败不中断其余 */ }
       }
+      if (!isCurrentSession(session)) return;
       void queryClient.invalidateQueries({ queryKey: ["drafts"] });
-      const failed = checked.size - ok;
+      const failed = selectedIds.length - ok;
       toast.toast({
         title: failed ? `已送入 ${ok} 条草稿，${failed} 条失败` : `已送入草稿工坊 ${ok} 条`,
         status: failed ? "error" : "success",
         action: { label: "打开", onClick: () => navigate("/drafts") },
       });
       if (ok > 0) {
-        setDrafted((d) => new Set([...d, ...ids()]));
+        setDrafted((d) => new Set([...d, ...created]));
         setChecked(new Set());
       }
     });
@@ -447,9 +458,14 @@ export default function LibraryPage() {
     });
 
   const enqueue = useMutation({
-    mutationFn: (noteId: number) =>
-      api.createDraft({ collectedNoteId: noteId }),
-    onSuccess: (draft, noteId) => {
+    mutationFn: async (noteId: number) => {
+      if (readOnly || !workspaceAccount.canCreate) throw new Error("请先确认有效写作账号或选择通用风格");
+      const session = captureSession();
+      const draft = await api.createDraft({ collectedNoteId: noteId, accountId: workspaceAccount.accountId ?? undefined }, session);
+      return { draft, noteId, session };
+    },
+    onSuccess: ({ draft, noteId, session }) => {
+      if (!isCurrentSession(session)) return;
       setDrafted((d) => new Set(d).add(noteId));
       void queryClient.invalidateQueries({ queryKey: ["drafts"] });
       toast.toast({
@@ -462,8 +478,7 @@ export default function LibraryPage() {
         },
       });
     },
-    onError: (err) =>
-      toast.error("送入草稿失败", err instanceof Error ? err.message : undefined),
+    onError: (err) => { if (!(err instanceof SessionChangedError)) toast.error("送入草稿失败", err instanceof Error ? err.message : undefined); },
   });
 
   const searchItems = useMemo<MorphingSearchItem[]>(
@@ -489,9 +504,11 @@ export default function LibraryPage() {
                 items={searchItems}
                 placeholder="搜索标题 / 作者…"
                 shortcut=""
+                value={keyword}
                 onQueryChange={setKeyword}
                 emptyMessage="没有匹配的笔记"
               />
+              {keyword && <button type="button" aria-label="清除关键词" onClick={() => setKeyword("")} className="ml-2 inline-flex max-w-48 items-center gap-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground"><span className="truncate">关键词：{keyword}</span><span aria-hidden>×</span></button>}
             </div>
           </div>
 

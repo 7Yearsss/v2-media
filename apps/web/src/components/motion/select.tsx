@@ -237,7 +237,7 @@ export function SelectTrigger({ className, children }: SelectTriggerProps) {
         borderBottomRightRadius: isTop ? INSTANT_TRANSITION : kfT,
       }}
       className={cn(
-        "relative z-10 flex w-full items-center justify-between gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors",
+        "relative z-10 flex w-full items-center justify-between gap-2 rounded-[12px] border border-border bg-background px-3 py-2 text-sm text-foreground outline-none transition-colors",
         "hover:border-(--color-border-strong) focus-visible:ring-2 focus-visible:ring-foreground/20",
         "disabled:pointer-events-none disabled:opacity-50",
         className,
@@ -314,7 +314,7 @@ export function SelectContent({ className, children }: SelectContentProps) {
   // stranded square corner when the placement flips between opens.
   const isTop = ctx.placement === "top";
   const nearGap = open ? 8 : 0;
-  const nearRadius = open ? 12 : 0;
+  const nearRadius = open ? 24 : 0;
 
   const gapT: Transition = open
     ? { type: "spring", duration: 0.6, bounce: 0.5, delay: 0.12 }
@@ -344,10 +344,10 @@ export function SelectContent({ className, children }: SelectContentProps) {
               marginTop: isTop ? 0 : nearGap,
               marginBottom: isTop ? nearGap : 0,
               // near corners go flat->round; far corners stay rounded
-              borderTopLeftRadius: isTop ? 12 : nearRadius,
-              borderTopRightRadius: isTop ? 12 : nearRadius,
-              borderBottomLeftRadius: isTop ? nearRadius : 12,
-              borderBottomRightRadius: isTop ? nearRadius : 12,
+              borderTopLeftRadius: isTop ? 24 : nearRadius,
+              borderTopRightRadius: isTop ? 24 : nearRadius,
+              borderBottomLeftRadius: isTop ? nearRadius : 24,
+              borderBottomRightRadius: isTop ? nearRadius : 24,
             }
       }
       transition={
@@ -373,10 +373,10 @@ export function SelectContent({ className, children }: SelectContentProps) {
         overflow: "hidden",
         pointerEvents: open ? "auto" : "none",
       }}
-      // flush against the trigger, then separates into its own rounded pill;
+      // flush against the trigger, then separates into its own rounded panel;
       // sits above or below depending on available space
       className={cn(
-        "absolute left-0 right-0 z-20 rounded-2xl border border-border bg-background shadow-lg",
+        "absolute left-0 right-0 z-20 rounded-[24px] border border-border bg-background shadow-[0_8px_28px_-12px_rgb(0_0_0_/_0.18)]",
         isTop ? "bottom-full" : "top-full",
         className,
       )}
@@ -386,7 +386,7 @@ export function SelectContent({ className, children }: SelectContentProps) {
         variants={ctx.reduce ? undefined : LIST_VARIANTS}
         initial={false}
         animate={open ? "show" : "hidden"}
-        className="p-1"
+        className="p-2"
       >
         {children}
       </motion.div>
@@ -425,7 +425,7 @@ export function SelectItem({
         disabled={disabled}
         onClick={() => ctx.select(value)}
         className={cn(
-          "flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-1.5 text-left text-sm outline-none transition-colors",
+          "flex w-full items-center justify-between gap-2 rounded-[12px] px-2.5 py-1.5 text-left text-sm outline-none transition-colors",
           selected
             ? "bg-muted text-foreground"
             : "text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:bg-muted",

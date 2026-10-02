@@ -1,5 +1,5 @@
-import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight } from "@v2media/shared";
-import { boolean, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import type { AccountPersonaSnapshot, AiRunKind, AiRunProgress, AiRunResult, AiRunStatus, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight, CollectionTaskRules, NoteCard, TopicAnalysisSource } from "@v2media/shared";
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -12,6 +12,7 @@ export const users = pgTable("users", {
 
 export const hostedAccounts = pgTable("hosted_accounts", {
   id: serial("id").primaryKey(),
+  archivedAt: timestamp("archived_at"),
   userId: integer("user_id").notNull().references(() => users.id),
   platform: varchar("platform", { length: 32 }).notNull().default("xhs"),
   subType: varchar("sub_type", { length: 32 }).notNull().default("pc"),
@@ -21,8 +22,14 @@ export const hostedAccounts = pgTable("hosted_accounts", {
   status: varchar("status", { length: 32 }).notNull().default("unknown"),
   statusMessage: text("status_message").notNull().default(""),
   lastSeenAt: timestamp("last_seen_at"),
+  positioning: text("positioning").notNull().default(""),
+  styleNotes: text("style_notes").notNull().default(""),
+  redlines: text("redlines").notNull().default(""),
+  personaVersion: integer("persona_version").notNull().default(0),
+  /** Lifecycle fence: restoring an archived account never authorizes old model results. */
+  executionRevision: integer("execution_revision").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [uniqueIndex("hosted_accounts_identity").on(t.userId, t.platform, t.subType, t.xhsUserId)]);
 
 /** 采集分组：一批采集归到一个库（如「健身」），便于按主题分析。 */
 export const collections = pgTable("collections", {
@@ -35,6 +42,7 @@ export const collections = pgTable("collections", {
 /** AI 分析结果：对某个采集库的一轮分析快照（库被删时随库删除）。 */
 export const collectionAnalyses = pgTable("collection_analyses", {
   id: serial("id").primaryKey(),
+  aiRunId: integer("ai_run_id"),
   userId: integer("user_id").notNull().references(() => users.id),
   collectionId: integer("collection_id").notNull().references(() => collections.id, { onDelete: "cascade" }),
   noteCount: integer("note_count").notNull().default(0),
@@ -44,8 +52,10 @@ export const collectionAnalyses = pgTable("collection_analyses", {
       stats: CollectionAnalysisStats;
       insight: CollectionInsight | null;
       positioning?: string;
+      persona?: AccountPersonaSnapshot | null;
       visual?: AnalysisVisualItem[];
       progress?: AnalysisProgress;
+      warnings?: string[];
     }>()
     .notNull(),
   /** running=后台还在跑 / done / failed。老数据默认 done。 */
@@ -93,26 +103,52 @@ export const collectedNotes = pgTable("collected_notes", {
 
 export const drafts = pgTable("drafts", {
   id: serial("id").primaryKey(),
+  archivedAt: timestamp("archived_at"),
   userId: integer("user_id").notNull().references(() => users.id),
   collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id, { onDelete: "set null" }),
+  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "set null" }),
+  personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
   title: varchar("title", { length: 512 }).notNull().default(""),
   content: text("content").notNull().default(""),
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
-  images: jsonb("images").$type<Array<{ url: string }>>().notNull().default([]),
+  images: jsonb("images").$type<NoteImage[]>().notNull().default([]),
+  imagesVersion: integer("images_version").notNull().default(0),
+  textVersion: integer("text_version").notNull().default(0),
+  generationState: varchar("generation_state", { length: 16 }).notNull().default("idle"),
+  generationRevision: integer("generation_revision").notNull().default(0),
+  generationError: text("generation_error"),
+  generationWarnings: jsonb("generation_warnings").$type<Array<{ word: string; kind: string; count: number }>>().notNull().default([]),
+  coverSpec: jsonb("cover_spec").$type<CoverSpec>(),
+  coverRevision: integer("cover_revision").notNull().default(0),
+  coverState: varchar("cover_state", { length: 16 }).notNull().default("idle"),
+  coverError: text("cover_error"),
+  coverAssetId: integer("cover_asset_id"),
   status: varchar("status", { length: 32 }).notNull().default("draft"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const publishJobs = pgTable("publish_jobs", {
+  accountSnapshot: jsonb("account_snapshot").$type<{ accountId: number; xhsUserId: string; nickname: string }>(),
+  retryOfJobId: integer("retry_of_job_id"),
+  retryOperationId: varchar("retry_operation_id", { length: 36 }),
+  planningSnapshot: jsonb("planning_snapshot").$type<PlanningSnapshot>(),
+  coverSnapshot: jsonb("cover_snapshot").$type<CoverSpec>(),
+  publishedAt: timestamp("published_at"),
+  reportedAt: timestamp("reported_at"),
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
-  accountId: integer("account_id").notNull().references(() => hostedAccounts.id, { onDelete: "cascade" }),
+  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "restrict" }),
+  accountId: integer("account_id").notNull().references(() => hostedAccounts.id, { onDelete: "restrict" }),
   status: varchar("status", { length: 32 }).notNull().default("pending"),
   scheduledAt: timestamp("scheduled_at"),
   visibility: varchar("visibility", { length: 32 }).notNull().default("public"),
+  personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
+  draftSnapshot: jsonb("draft_snapshot").$type<{ title: string; content: string; tags: string[]; images: NoteImage[] }>(),
   claimedBy: varchar("claimed_by", { length: 128 }),
+  leaseId: varchar("lease_id", { length: 36 }),
+  attempt: integer("attempt").notNull().default(0),
+  leaseUntil: timestamp("lease_until"),
   error: text("error"),
   resultUrl: text("result_url"),
   /** 读回对账结论：verified | unverified | login_required | readback_error */
@@ -122,12 +158,36 @@ export const publishJobs = pgTable("publish_jobs", {
   verifiedAt: timestamp("verified_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+}, (t) => [uniqueIndex("publish_jobs_user_retry_operation").on(t.userId, t.retryOperationId)]);
+
+/** 元数据留库，源文件持久暂存到 uploads，R2 完成后删除源文件。 */
+export const mediaAssets = pgTable("media_assets", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "restrict" }),
+  uploadId: varchar("upload_id", { length: 36 }).notNull(),
+  filename: varchar("filename", { length: 255 }).notNull(),
+  kind: varchar("kind", { length: 16 }).notNull().default("upload"),
+  sourceFile: varchar("source_file", { length: 64 }).notNull(),
+  sourceHash: varchar("source_hash", { length: 64 }).notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("queued"),
+  key: text("key"),
+  url: text("url"),
+  width: integer("width"),
+  height: integer("height"),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [uniqueIndex("media_assets_user_upload").on(t.userId, t.uploadId)]);
 
 /** 选题池（策划层）：一条"想写/计划写"的内容方向，串联 draft → publish_job。 */
 export const topics = pgTable("topics", {
+  analysisSource: jsonb("analysis_source").$type<TopicAnalysisSource>(),
+  scoreMethod: text("score_method"),
+  scoreModel: text("score_model"),
+  scoredAt: timestamp("scored_at"),
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
+  personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
   title: varchar("title", { length: 512 }).notNull().default(""),
   /** 切入角度/要点说明。 */
   angle: text("angle").notNull().default(""),
@@ -144,7 +204,7 @@ export const topics = pgTable("topics", {
   scoreDetail: jsonb("score_detail").$type<Record<string, number>>(),
   plannedAt: timestamp("planned_at"),
   draftId: integer("draft_id").references(() => drafts.id, { onDelete: "set null" }),
-  publishJobId: integer("publish_job_id").references(() => publishJobs.id, { onDelete: "set null" }),
+  publishJobId: integer("publish_job_id").references(() => publishJobs.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -159,8 +219,11 @@ export const jobs = pgTable("jobs", {
   dueAt: timestamp("due_at"),
   /** 认领标识（插件 SW id），防多浏览器重复执行。 */
   claimedBy: varchar("claimed_by", { length: 128 }),
-  /** 认领时间——running 超过 30min 视为执行方掉线，回收重排。 */
+  /** 认领时间；浏览器归因执行以 leaseUntil 为有效期。 */
   claimedAt: timestamp("claimed_at"),
+  leaseId: varchar("lease_id", { length: 36 }),
+  attempt: integer("attempt").notNull().default(0),
+  leaseUntil: timestamp("lease_until"),
   error: text("error"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   finishedAt: timestamp("finished_at"),
@@ -190,10 +253,90 @@ export const noteMetrics = pgTable("note_metrics", {
 export const accountSnapshots = pgTable("account_snapshots", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "cascade" }),
+  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "restrict" }),
   capturedAt: timestamp("captured_at").defaultNow().notNull(),
   followers: integer("followers"),
   likesTotal: integer("likes_total"),
   notesCount: integer("notes_count"),
   extra: jsonb("extra").$type<Record<string, unknown>>(),
 });
+
+/** Receipts are independent of editable drafts/accounts and retained for replay acknowledgement. */
+export const browserExecutionReceipts = pgTable("browser_execution_receipts", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  domain: varchar("domain", { length: 16 }).notNull(),
+  executionId: integer("execution_id").notNull(),
+  receiptId: varchar("receipt_id", { length: 36 }).notNull(),
+  bodyHash: varchar("body_hash", { length: 64 }).notNull(),
+  ack: jsonb("ack").$type<{ ok: true; rescheduled?: boolean }>().notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, t => [uniqueIndex("browser_execution_receipts_user_receipt").on(t.userId, t.receiptId)]);
+
+export const postmortemReports = pgTable("postmortem_reports", {
+  engine: varchar("engine", { length: 16 }),
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  publishJobId: integer("publish_job_id").notNull().references(() => publishJobs.id, { onDelete: "restrict" }),
+  status: varchar("status", { length: 16 }).notNull().default("queued"),
+  model: text("model").notNull(), promptVersion: text("prompt_version").notNull(),
+  evidence: jsonb("evidence").$type<PostmortemEvidence>().notNull(),
+  insight: jsonb("insight").$type<PostmortemInsight>(), error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(), finishedAt: timestamp("finished_at"),
+});
+
+export const collectionTasks = pgTable("collection_tasks", {
+  id: serial("id").primaryKey(), userId: integer("user_id").notNull().references(() => users.id),
+  collectionId: integer("collection_id").references(() => collections.id, { onDelete: "set null" }),
+  collectionName: text("collection_name").notNull(), rules: jsonb("rules").$type<CollectionTaskRules>().notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("queued"), revision: integer("revision").notNull().default(0),
+  controlRevision: integer("control_revision").notNull().default(0), lastControlAction: varchar("last_control_action", { length: 16 }),
+  phase: varchar("phase", { length: 16 }).notNull().default("search"), scrollSteps: integer("scroll_steps").notNull().default(0),
+  reason: text("reason"), leaseId: varchar("lease_id", { length: 36 }), claimedBy: varchar("claimed_by", { length: 128 }), leaseUntil: timestamp("lease_until"),
+  createdAt: timestamp("created_at").notNull().defaultNow(), updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+export const collectionTaskItems = pgTable("collection_task_items", {
+  id: serial("id").primaryKey(), taskId: integer("task_id").notNull().references(() => collectionTasks.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id", { length: 128 }).notNull(), card: jsonb("card").$type<NoteCard>().notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"), reason: text("reason"),
+  collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id, { onDelete: "set null" }), alreadyExisted: boolean("already_existed").notNull().default(false),
+  platformComments: integer("platform_comments"), capturedComments: integer("captured_comments").notNull().default(0), capturedReplies: integer("captured_replies").notNull().default(0),
+  commentCoverage: varchar("comment_coverage", { length: 16 }).notNull().default("not_requested"),
+}, t => [uniqueIndex("collection_task_items_note").on(t.taskId, t.noteId)]);
+
+/** Independent, durable model execution. Mutable/deletable source rows are validated by adapters. */
+export const aiRuns = pgTable("ai_runs", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  operationId: varchar("operation_id", { length: 36 }).notNull(),
+  kind: varchar("kind", { length: 32 }).$type<AiRunKind>().notNull(),
+  targetType: varchar("target_type", { length: 16 }).$type<"analysis" | "collection" | "topic">().notNull(),
+  targetId: integer("target_id").notNull(),
+  requestHash: varchar("request_hash", { length: 64 }).notNull(),
+  inputHash: varchar("input_hash", { length: 64 }).notNull(),
+  frozenInput: jsonb("frozen_input").$type<unknown>().notNull(),
+  model: text("model").notNull(),
+  promptVersion: text("prompt_version").notNull(),
+  status: varchar("status", { length: 16 }).$type<AiRunStatus>().notNull().default("queued"),
+  stage: varchar("stage", { length: 64 }).notNull().default("queued"),
+  progress: jsonb("progress").$type<AiRunProgress>(),
+  result: jsonb("result").$type<AiRunResult>(),
+  errorCode: varchar("error_code", { length: 32 }),
+  errorMessage: text("error_message"),
+  attempt: integer("attempt").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  leaseId: varchar("lease_id", { length: 36 }),
+  leaseUntil: timestamp("lease_until"),
+  startedAt: timestamp("started_at"),
+  nextAttemptAt: timestamp("next_attempt_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+}, t => [uniqueIndex("ai_runs_user_operation").on(t.userId, t.operationId), index("ai_runs_pending").on(t.status, t.nextAttemptAt, t.id)]);
+
+/** A successful manual retry command remains acknowledged after the retry itself ends. */
+export const aiRunCommands = pgTable("ai_run_commands", {
+  id: serial("id").primaryKey(), userId: integer("user_id").notNull().references(() => users.id),
+  operationId: varchar("operation_id", { length: 36 }).notNull(), runId: integer("run_id").notNull().references(() => aiRuns.id, { onDelete: "restrict" }),
+  action: varchar("action", { length: 16 }).notNull().default("retry"), createdAt: timestamp("created_at").notNull().defaultNow(),
+}, t => [uniqueIndex("ai_run_commands_user_operation").on(t.userId, t.operationId)]);

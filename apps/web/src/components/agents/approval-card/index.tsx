@@ -40,12 +40,12 @@ export type {
 const EMPTY_ANSWER: ApprovalCardAnswer = { selected: [], custom: "" };
 
 function getStatusLabel(status: ApprovalCardStatus) {
-  if (status === "submitting") return "Submitting";
-  if (status === "approved") return "Approved";
-  if (status === "rejected") return "Rejected";
-  if (status === "changes-requested") return "Changes requested";
-  if (status === "answered") return "Response submitted";
-  return "Input required";
+  if (status === "submitting") return "提交中";
+  if (status === "approved") return "已确认";
+  if (status === "rejected") return "已拒绝";
+  if (status === "changes-requested") return "需修改";
+  if (status === "answered") return "已提交";
+  return "待确认";
 }
 
 function getStatusClass(status: ApprovalCardStatus) {
@@ -327,7 +327,7 @@ export function ApprovalCard({
                   {currentStep + 1}/{questions.length}
                 </span>
               ) : null
-            ) : (
+            ) : status === "pending" ? null : (
               <span
                 className={cn(
                   "shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium transition-colors",
@@ -340,7 +340,7 @@ export function ApprovalCard({
             {onDismiss ? (
               <button
                 type="button"
-                aria-label="Dismiss"
+                aria-label="关闭"
                 onClick={onDismiss}
                 className="grid size-5 shrink-0 place-items-center rounded-full text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
               >

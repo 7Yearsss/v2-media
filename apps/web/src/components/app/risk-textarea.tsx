@@ -17,6 +17,7 @@ export function RiskTextarea({
   placeholder,
   ariaLabel,
   textareaRef,
+  readOnly = false,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -26,6 +27,7 @@ export function RiskTextarea({
   placeholder?: string;
   ariaLabel?: string;
   textareaRef?: React.RefObject<HTMLTextAreaElement | null>;
+  readOnly?: boolean;
 }) {
   const innerRef = useRef<HTMLTextAreaElement>(null);
   const ref = textareaRef ?? innerRef;
@@ -42,9 +44,10 @@ export function RiskTextarea({
   }, [value, ref]);
 
   // 文字变了，旧的弹层位置就不对了
-  useEffect(() => setPop(null), [value]);
+  useEffect(() => setPop(null), [value, readOnly]);
 
   const open = () => {
+    if (readOnly) return;
     const el = ref.current;
     if (!el || el.selectionStart !== el.selectionEnd) return setPop(null);
     const caret = el.selectionStart;
@@ -90,6 +93,7 @@ export function RiskTextarea({
         {"\n"}
       </div>
       <textarea
+        readOnly={readOnly}
         ref={ref}
         value={value}
         onChange={(e) => onChange(e.target.value)}

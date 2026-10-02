@@ -1,0 +1,150 @@
+import { randomUUID } from "node:crypto";
+import { eq, sql } from "drizzle-orm";
+import { describe, expect, it } from "vitest";
+import { BROWSER_EXECUTION_CAPABILITY as capability } from "@v2media/shared";
+import { accountSnapshots, browserExecutionReceipts, drafts, hostedAccounts, jobs, noteMetrics, publishJobs, topics } from "../src/db/schema";
+import { authed, makeApp, registerUser } from "./helpers";
+
+async function fixture() {
+  const f = await makeApp(); const { token, userId } = await registerUser(f.app);
+  let now = new Date("2026-10-02T00:00:00Z"); f.deps.now = () => now;
+  const request = (path: string, body?: unknown) => f.app.request(path, authed(token, body === undefined ? {} : { method: "POST", body: JSON.stringify(body) }));
+  const [account] = await f.db.insert(hostedAccounts).values({ userId, subType: "creator", xhsUserId: "xhs-one" }).returning();
+  const [draft] = await f.db.insert(drafts).values({ userId, title: "原稿", images: [{ url: "https://example.com/image.png" }] }).returning();
+  const create = async () => (await (await request("/api/publish/jobs", { draftId: draft!.id, accountId: account!.id })).json()) as any;
+  const claim = async (kind: "publish" | "tasks", id: number) => (await (await request(`/api/ext/${kind}/${id}/claim`, { capability, claimedBy: "sw-one" })).json()) as any;
+  const receipt = (lease: any, body: object) => ({ capability, claimedBy: lease.claimedBy, leaseId: lease.leaseId, attempt: lease.attempt, receiptId: randomUUID(), ...body });
+  return { ...f, request, account: account!, draft: draft!, create, claim, receipt, userId, advance: (ms: number) => { now = new Date(now.getTime() + ms); } };
+}
+
+describe("browser execution leases and receipts", () => {
+  it("old clients, unclaimed results and canceled publication fail closed", async () => {
+    const f = await fixture(), job = await f.create();
+    expect((await f.request(`/api/ext/publish/${job.id}/claim`, { claimedBy: "legacy" })).status).toBe(426);
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, f.receipt({ claimedBy: "sw-one", leaseId: randomUUID(), attempt: 1 }, { status: "done" }))).status).toBe(409);
+    await f.request(`/api/publish/jobs/${job.id}/cancel`, {});
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, f.receipt({ claimedBy: "sw-one", leaseId: randomUUID(), attempt: 1 }, { status: "done" }))).status).toBe(409);
+    const [row] = await f.db.select().from(publishJobs); expect(row!.status).toBe("canceled");
+    const active = await f.create(), lease = await f.claim("publish", active.id);
+    await f.db.update(publishJobs).set({ status: "canceled" }).where(eq(publishJobs.id, active.id));
+    expect((await f.request(`/api/ext/publish/${active.id}/result`, f.receipt(lease, { status: "done" }))).status).toBe(409);
+    expect(await f.db.select().from(jobs)).toHaveLength(0);
+  });
+  it("publication receipt has one atomic effect and immutable idempotent acknowledgement", async () => {
+    const f = await fixture(), job = await f.create();
+    await f.db.insert(topics).values({ userId: f.userId, draftId: f.draft.id, title: "选题" });
+    const lease = await f.claim("publish", job.id); expect(lease.leaseId).toMatch(/^[0-9a-f-]{36}$/); expect(lease.attempt).toBe(1);
+    const body = f.receipt(lease, { status: "done", resultUrl: "https://example.com/n1" });
+    const first = await f.request(`/api/ext/publish/${job.id}/result`, body); expect(first.status).toBe(200);
+    const ack = await first.json(); expect(await (await f.request(`/api/ext/publish/${job.id}/result`, body)).json()).toEqual(ack);
+    const concurrent = await Promise.all([f.request(`/api/ext/publish/${job.id}/result`, body), f.request(`/api/ext/publish/${job.id}/result`, body)]);
+    expect(await Promise.all(concurrent.map(r => r.json()))).toEqual([ack, ack]);
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, { ...body, error: "changed" })).status).toBe(409);
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, { ...body, receiptId: randomUUID() })).status).toBe(409);
+    expect(await f.db.select().from(jobs).where(eq(jobs.type, "readback"))).toHaveLength(1);
+    expect((await f.db.select().from(drafts))[0]!.status).toBe("published");
+    expect((await f.db.select().from(topics))[0]!.publishJobId).toBe(job.id);
+  });
+  it("expired or legacy running publication never returns to pending; recovery requires capability and live owner", async () => {
+    const f = await fixture(), job = await f.create(), lease = await f.claim("publish", job.id);
+    expect((await f.request(`/api/ext/publish/${job.id}?claimer=sw-one`)).status).toBe(426);
+    expect((await f.request(`/api/ext/publish/${job.id}?claimer=other&capability=${capability}`)).status).toBe(404);
+    expect((await f.request(`/api/ext/publish/${job.id}?claimer=sw-one&capability=${capability}`)).status).toBe(200);
+    f.advance(9 * 60_000);
+    expect((await f.request(`/api/ext/publish/${job.id}/heartbeat`, { capability, claimedBy: lease.claimedBy, leaseId: lease.leaseId, attempt: lease.attempt })).status).toBe(200);
+    f.advance(11 * 60_000);
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, f.receipt(lease, { status: "done" }))).status).toBe(409);
+    expect((await f.request(`/api/ext/publish/${job.id}?claimer=sw-one&capability=${capability}`)).status).toBe(409);
+    expect((await (await f.request("/api/ext/publish/pending")).json() as any).jobs).toHaveLength(0);
+    expect((await f.db.select().from(publishJobs))[0]!.status).toBe("running");
+    const listed = await (await f.request("/api/publish/jobs")).json() as any[];
+    expect(listed[0].status).toBe("running"); expect(listed[0].error).toContain("执行结果未知");
+    expect((await f.db.select().from(publishJobs))[0]!.error).toBeNull();
+    await f.db.update(publishJobs).set({ leaseId: null }).where(eq(publishJobs.id, job.id));
+    expect((await f.request(`/api/ext/publish/${job.id}/heartbeat`, { capability, claimedBy: lease.claimedBy, leaseId: lease.leaseId, attempt: lease.attempt })).status).toBe(409);
+  });
+  it("attribution task reclaims use a new fenced attempt, heartbeat, and recovery", async () => {
+    const f = await fixture();
+    const [task] = await f.db.insert(jobs).values({ userId: f.userId, type: "account_snapshot", payload: { accountId: f.account.id, xhsUserId: "xhs-one" } }).returning();
+    const old = await f.claim("tasks", task!.id); f.advance(3 * 60_000);
+    await f.request("/api/ext/tasks/pending"); const current = await f.claim("tasks", task!.id);
+    expect(current.attempt).toBe(2); expect(current.leaseId).not.toBe(old.leaseId);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, f.receipt(old, { status: "done", data: { followers: 999 } }))).status).toBe(409);
+    expect((await f.request(`/api/ext/tasks/${task!.id}?claimer=sw-one&capability=${capability}`)).status).toBe(200);
+    const heartbeat = { capability, claimedBy: current.claimedBy, leaseId: current.leaseId, attempt: current.attempt };
+    expect((await f.request(`/api/ext/tasks/${task!.id}/heartbeat`, heartbeat)).status).toBe(200);
+    const body = f.receipt(current, { status: "done", data: { followers: 5 } });
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, body)).status).toBe(200);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, body)).status).toBe(200);
+    expect(await f.db.select().from(accountSnapshots)).toHaveLength(1);
+  });
+  it("metrics bind the payload publication and note, validate data, and insert only once", async () => {
+    const f = await fixture(), job = await f.create();
+    await f.db.update(publishJobs).set({ status: "done", noteId: "note-one" }).where(eq(publishJobs.id, job.id));
+    const other = await f.create(); await f.db.update(publishJobs).set({ status: "done", noteId: "note-two" }).where(eq(publishJobs.id, other.id));
+    const [task] = await f.db.insert(jobs).values({ userId: f.userId, type: "metrics", payload: { publishJobId: job.id, noteId: "note-one", xhsUserId: "xhs-one" } }).returning();
+    const forged = f.receipt({ claimedBy: "sw-one", leaseId: randomUUID(), attempt: 1 }, { status: "done", data: { rows: [{ noteId: "note-one", likes: 1 }] } });
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, forged)).status).toBe(409);
+    const lease = await f.claim("tasks", task!.id);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, f.receipt(lease, { status: "done", data: { rows: [{ noteId: "note-two", likes: 99 }] } }))).status).toBe(400);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, f.receipt(lease, { status: "done", data: { items: [] } }))).status).toBe(400);
+    const body = f.receipt(lease, { status: "done", data: { rows: [{ noteId: "note-one", likes: 2, views: 0 }] } });
+    await f.request(`/api/ext/tasks/${task!.id}/result`, body); await f.request(`/api/ext/tasks/${task!.id}/result`, body);
+    const rows = await f.db.select().from(noteMetrics); expect(rows).toHaveLength(1); expect(rows[0]!.publishJobId).toBe(job.id); expect(rows[0]!.views).toBe(0);
+  });
+  it("snapshot payload must refer to an account owned by the task user", async () => {
+    const f = await fixture(); const other = await registerUser(f.app, "other@example.com");
+    const [account] = await f.db.insert(hostedAccounts).values({ userId: other.userId, xhsUserId: "other" }).returning();
+    const [task] = await f.db.insert(jobs).values({ userId: f.userId, type: "account_snapshot", payload: { accountId: account!.id, xhsUserId: "other" } }).returning();
+    const lease = await f.claim("tasks", task!.id);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, f.receipt(lease, { status: "done", data: { followers: 3 } }))).status).toBe(400);
+    expect(await f.db.select().from(accountSnapshots)).toHaveLength(0);
+  });
+  it("a failed downstream insert rolls back publication, draft, topic and receipt together", async () => {
+    const f = await fixture(), job = await f.create();
+    await f.db.insert(topics).values({ userId: f.userId, title: "选题", draftId: f.draft.id });
+    const lease = await f.claim("publish", job.id), body = f.receipt(lease, { status: "done" });
+    await f.db.execute(sql`ALTER TABLE jobs ADD CONSTRAINT test_reject_readback CHECK (type <> 'readback')`);
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, body)).status).toBe(500);
+    expect((await f.db.select().from(publishJobs))[0]!.status).toBe("running");
+    expect((await f.db.select().from(drafts))[0]!.status).toBe("draft");
+    expect((await f.db.select().from(topics))[0]!.status).toBe("idea");
+    expect(await f.db.select().from(browserExecutionReceipts)).toHaveLength(0);
+    await f.db.execute(sql`ALTER TABLE jobs DROP CONSTRAINT test_reject_readback`);
+    expect((await f.request(`/api/ext/publish/${job.id}/result`, body)).status).toBe(200);
+    expect(await f.db.select().from(jobs)).toHaveLength(1);
+  });
+  it("readback verification and follow-up schedules commit once across old readback jobs and receipts", async () => {
+    const f = await fixture(), job = await f.create();
+    const lease = await f.claim("publish", job.id), pubBody = f.receipt(lease, { status: "done" });
+    await f.request(`/api/ext/publish/${job.id}/result`, pubBody); f.advance(11 * 60_000);
+    const [task] = await f.db.select().from(jobs), taskLease = await f.claim("tasks", task!.id);
+    const body = f.receipt(taskLease, { status: "done", data: { items: [{ noteId: " ", title: "原稿" }, { noteId: "confirmed", title: "原稿", publishTime: f.deps.now().getTime() }] } });
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, { ...body, receiptId: pubBody.receiptId })).status).toBe(409);
+    await f.db.execute(sql`ALTER TABLE jobs ADD CONSTRAINT test_reject_metrics CHECK (type <> 'metrics')`);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, body)).status).toBe(500);
+    expect((await f.db.select().from(publishJobs))[0]!.outcome).toBeNull();
+    expect((await f.db.select().from(jobs))[0]!.status).toBe("running");
+    await f.db.execute(sql`ALTER TABLE jobs DROP CONSTRAINT test_reject_metrics`);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, body)).status).toBe(200);
+    expect((await f.request(`/api/ext/tasks/${task!.id}/result`, body)).status).toBe(200);
+    const [duplicate] = await f.db.insert(jobs).values({ userId: f.userId, type: "readback", payload: task!.payload }).returning();
+    const another = await f.claim("tasks", duplicate!.id);
+    await f.request(`/api/ext/tasks/${duplicate!.id}/result`, f.receipt(another, { status: "done", data: { items: [] } }));
+    expect(await f.db.select().from(jobs).where(eq(jobs.type, "metrics"))).toHaveLength(3);
+    expect((await f.db.select().from(publishJobs))[0]!.outcome).toBe("verified");
+    expect((await f.db.select().from(publishJobs))[0]!.noteId).toBe("confirmed");
+  });
+  it("readback title without note ID cannot verify and empty snapshot data cannot mark success", async () => {
+    const f = await fixture(), job = await f.create(), pubLease = await f.claim("publish", job.id);
+    await f.request(`/api/ext/publish/${job.id}/result`, f.receipt(pubLease, { status: "done" })); f.advance(11 * 60_000);
+    const [task] = await f.db.select().from(jobs), lease = await f.claim("tasks", task!.id);
+    await f.request(`/api/ext/tasks/${task!.id}/result`, f.receipt(lease, { status: "done", data: { items: [{ title: "原稿" }] } }));
+    const [publication] = await f.db.select().from(publishJobs); expect(publication!.outcome).not.toBe("verified"); expect(publication!.noteId).toBeNull();
+    expect(await f.db.select().from(jobs).where(eq(jobs.type, "metrics"))).toHaveLength(0);
+    const [snapshot] = await f.db.insert(jobs).values({ userId: f.userId, type: "account_snapshot", payload: { accountId: f.account.id } }).returning();
+    const snapshotLease = await f.claim("tasks", snapshot!.id);
+    expect((await f.request(`/api/ext/tasks/${snapshot!.id}/result`, f.receipt(snapshotLease, { status: "done", data: { extra: { source: "anything" } } }))).status).toBe(400);
+    expect((await f.db.select().from(jobs).where(eq(jobs.id, snapshot!.id)))[0]!.status).toBe("running");
+  });
+});

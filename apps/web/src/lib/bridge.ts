@@ -64,6 +64,8 @@ function send<TRes = unknown, TReq = unknown>(
 }
 
 export const bridge = {
+  info: () => send<{ version: string; authorized: boolean; capabilities?: string[] }>("PING"),
+  wakeCollectionTasks: () => send("WAKE_COLLECTION_TASKS"),
   /** 插件是否在线。超时/异常一律视为离线。 */
   async ping(timeoutMs = 2000): Promise<boolean> {
     try {

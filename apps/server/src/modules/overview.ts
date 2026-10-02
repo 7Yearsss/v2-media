@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 
 import type { Deps } from "../context";
@@ -13,7 +13,7 @@ export function overviewModule(deps: Deps) {
       (await deps.db
         .select({ n: sql<number>`count(*)::int` })
         .from(table)
-        .where(eq(table.userId, userId)))[0]!.n;
+        .where(and(eq(table.userId, userId), table.archivedAt ? isNull(table.archivedAt) : undefined)))[0]!.n;
     const [accounts, notes, draftCount, jobs] = await Promise.all([
       count(hostedAccounts),
       count(collectedNotes),

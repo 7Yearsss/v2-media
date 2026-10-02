@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { gradeInsight } from "../src/lib/analysis-grader";
 import { computeSignals, type SignalNote } from "../src/lib/analysis-signals";
@@ -175,8 +175,8 @@ describe("parseInsight", () => {
 
 describe("异步分析", () => {
   it("AI 失败 → 行标 failed 并带原因；running 超时被回收", async () => {
-    const { makeApp, registerUser, authed } = await import("./helpers");
-    const { app, db } = await makeApp({
+    const { makeApp, registerUser, authed, drainAiRuns } = await import("./helpers");
+    const { app, db, deps } = await makeApp({
       complete: async () => {
         throw new Error("gateway 524");
       },
@@ -185,17 +185,19 @@ describe("异步分析", () => {
     const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
     await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "t", author: {}, cover: "", likes: 5 }] }) }));
     const run = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    let tick = Date.now(); deps.now = () => new Date(tick);
+    for (let attempt = 0; attempt < 3; attempt++) { await drainAiRuns(deps); tick += 60_001; }
     let row: any = run;
     for (let i = 0; i < 100 && row.status === "running"; i++) {
       await new Promise((r) => setTimeout(r, 50));
       row = (await (await app.request(`/api/collections/${col.id}/analyses/${run.id}`, authed(token))).json()) as any;
     }
     expect(row.status).toBe("failed");
-    expect(row.error).toContain("524");
+    expect(row.error).toContain("暂时不可用");
 
     // 模拟进程重启遗留的 running 行：超过阈值后读取时被回收
     const { sql } = await import("drizzle-orm");
-    await db.execute(sql`update collection_analyses set status='running', error=null, created_at = now() - interval '30 minutes'`);
+    await db.execute(sql`update collection_analyses set ai_run_id=null, status='running', error=null, created_at = now() - interval '30 minutes'`);
     const reaped = (await (await app.request(`/api/collections/${col.id}/analyses/${run.id}`, authed(token))).json()) as any;
     expect(reaped.status).toBe("failed");
     expect(reaped.error).toContain("中断");
@@ -247,13 +249,14 @@ describe("选题成稿", () => {
   it("AI 成稿：不拷贝来源图、命中违禁词会重写一次、选题标记为 drafted", async () => {
     const { makeApp, registerUser, authed } = await import("./helpers");
     let calls = 0;
-    const { app } = await makeApp({
+    const { app, deps } = await makeApp({
       complete: async () => {
         calls++;
         const bad = calls === 1;
         return JSON.stringify({ title: "新手练臀腿", content: bad ? "这是最好的方法，加我微信" : "按这个顺序练：先激活再主项", tags: ["健身", "#臀腿"], cover: "新手臀腿" });
       },
     });
+    deps.r2 = { head: async () => false, put: async () => {}, putStream: async () => {}, get: async () => null, list: async () => [], delete: async () => false };
     const { token } = await registerUser(app);
     const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
     await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "原笔记", author: {}, cover: "http://x/a.jpg", likes: 9 }] }) }));
@@ -261,26 +264,33 @@ describe("选题成稿", () => {
     const noteId = (notes.items ?? notes)[0].id;
     const topic = (await (await app.request("/api/topics", authed(token, { method: "POST", body: JSON.stringify({ title: "选题A", angle: "钩子一句\n借鉴思路", sourceNoteId: noteId }) }))).json()) as any;
     const res = await app.request(`/api/topics/${topic.id}/to-draft`, authed(token, { method: "POST", body: JSON.stringify({ ai: true, positioning: "健身" }) }));
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
     const r = (await res.json()) as any;
+    expect(calls).toBe(0);
+    const { runDraftJobs } = await import("../src/lib/draft-jobs");
+    await runDraftJobs(deps);
+    const ready = await (await app.request("/api/drafts/" + r.draft.id, authed(token))).json() as any;
     expect(calls).toBe(2); // 第一版命中违禁词 → 重写一次
-    expect(r.draft.content).toBe("按这个顺序练：先激活再主项");
-    expect(r.draft.images).toEqual([]);
-    expect(r.draft.tags).toEqual(["健身", "臀腿"]);
-    expect(r.coverText).toBe("新手臀腿");
-    expect(r.warnings).toEqual([]);
+    expect(ready.content).toBe("按这个顺序练：先激活再主项");
+    expect(ready.images).toHaveLength(1);
+    expect(ready.images[0].url).toBe("");
+    expect(ready.tags).toEqual(["健身", "臀腿"]);
+    expect(ready.coverSpec.headline).toBe("新手臀腿");
+    expect(ready.generationWarnings).toEqual([]);
     expect(r.topic.status).toBe("drafted");
   });
 });
 
 describe("分析进度", () => {
   it("生成中能读到当前阶段；完成后进度移除", async () => {
-    const { makeApp, registerUser, authed } = await import("./helpers");
+    const { makeApp, registerUser, authed, drainAiRuns } = await import("./helpers");
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     let calls = 0;
-    const { app } = await makeApp({
-      complete: async () => {
+    const models: Array<string | undefined> = [];
+    const { app, deps } = await makeApp({
+      complete: async (_system, _user, options) => {
+        models.push(options?.model);
         calls++;
         if (calls === 1) await gate; // 卡在第一次 AI 调用（提假设）
         return calls === 1 ? "假设" : JSON.stringify({ summary: "结论", findings: [{ claim: "c", evidence: ["e"], boundary: "b", todo: "t" }] });
@@ -289,7 +299,18 @@ describe("分析进度", () => {
     const { token } = await registerUser(app);
     const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
     await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "t", author: {}, cover: "", likes: 5 }] }) }));
+    const { collectedNotes } = await import("../src/db/schema");
+    const { eq } = await import("drizzle-orm");
+    // A full capture may be large; unrelated platform payload must not make an AI request impossible.
+    await deps.db.update(collectedNotes).set({ rawJson: { xsecToken: "source-only-token", unrelatedPayload: "x".repeat(2_100_000) },
+      content: "##话题 事实正文 ".repeat(100), commentsData: [{ content: "真实热评".repeat(100), likes: 8, subComments: [{ content: "不进入模型的回复" }] }] })
+      .where(eq(collectedNotes.collectionId, col.id));
     const run = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    const { env } = await import("../src/env");
+    const originalModel = env.aiAnalysisModel;
+    const expectedModel = ((await (await app.request(`/api/ai/runs/${run.aiRunId}`, authed(token))).json()) as any).model;
+    env.aiAnalysisModel = "changed-after-queue";
+    const worker = drainAiRuns(deps);
     const get = async () => (await (await app.request(`/api/collections/${col.id}/analyses/${run.id}`, authed(token))).json()) as any;
 
     let row: any = run;
@@ -302,12 +323,41 @@ describe("分析进度", () => {
     expect(row.data.progress.steps).toEqual(["signals", "covers", "hypotheses", "report"]);
 
     release();
+    try { await worker; expect(models.every(model => model === expectedModel)).toBe(true); }
+    finally { env.aiAnalysisModel = originalModel; }
     for (let i = 0; i < 100 && row.status === "running"; i++) {
       await new Promise((r) => setTimeout(r, 30));
       row = await get();
     }
     expect(row.status).toBe("done");
     expect(row.data.progress).toBeUndefined();
+
+    await deps.db.update(collectedNotes).set({ cover: "https://fixture.invalid/first.png" }).where(eq(collectedNotes.collectionId, col.id));
+    await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id,
+      items: [{ noteId: "n2", title: "第二篇", author: {}, cover: "https://fixture.invalid/second.png", likes: 4 }] }) }));
+    let releaseDownload!: () => void;
+    let downloadStarted!: () => void;
+    const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve; });
+    const began = new Promise<void>(resolve => { downloadStarted = resolve; });
+    const fetchMock = vi.fn(async () => {
+      downloadStarted(); await downloadGate;
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "Content-Type": "image/png" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const canceled = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    const previousCalls = calls;
+    const canceledWorker = drainAiRuns(deps);
+    try {
+      await began;
+      const canceledResponse = await app.request(`/api/ai/runs/${canceled.aiRunId}/cancel`, authed(token, { method: "POST" }));
+      expect(canceledResponse.status).toBe(200);
+      releaseDownload(); await canceledWorker;
+      expect(fetchMock).toHaveBeenCalledTimes(1); // No second cover is fetched after cancellation.
+      expect(calls).toBe(previousCalls); // No vision, hypothesis or report call follows the canceled download.
+      expect((await (await app.request(`/api/ai/runs/${canceled.aiRunId}`, authed(token))).json()) as any).toMatchObject({ status: "canceled", result: null });
+    } finally {
+      releaseDownload(); await canceledWorker; vi.unstubAllGlobals();
+    }
   });
 });
 
@@ -331,9 +381,9 @@ describe("输出质量把关", () => {
   });
 
   it("流水线：第一次终稿不合格 → 重写一次并采用合格的", async () => {
-    const { makeApp, registerUser, authed } = await import("./helpers");
+    const { makeApp, registerUser, authed, drainAiRuns } = await import("./helpers");
     let reports = 0;
-    const { app } = await makeApp({
+    const { app, deps } = await makeApp({
       complete: async (system) => {
         if (!system.includes("审稿人")) return "假设";
         reports++;
@@ -344,6 +394,7 @@ describe("输出质量把关", () => {
     const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
     await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "t", author: {}, cover: "", likes: 5 }] }) }));
     const run = (await (await app.request(`/api/collections/${col.id}/analyze`, authed(token, { method: "POST" }))).json()) as any;
+    await drainAiRuns(deps);
     let row: any = run;
     for (let i = 0; i < 100 && row.status === "running"; i++) {
       await new Promise((r) => setTimeout(r, 30));

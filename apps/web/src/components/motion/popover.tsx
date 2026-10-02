@@ -110,7 +110,7 @@ function buildGeo(
   const layerW = Math.max(tW, px + cW) - left;
   const layerH = Math.max(tH, py + cH) - top;
 
-  const triggerRadius = Math.min(tH / 2, panelRadius);
+  const triggerRadius = Math.min(tH / 2, 12, panelRadius);
 
   return {
     layerW,
@@ -247,7 +247,7 @@ export interface PopoverProps {
   align?: Align;
   /** Gap between trigger and panel, in px — the length of the gooey neck. Default 14. */
   sideOffset?: number;
-  /** Corner radius of the open panel, in px. Default 16. */
+  /** Corner radius of the open panel, in px. Default 24. */
   panelRadius?: number;
   /** Blur radius feeding the goo filter — higher melts more. Default 8. */
   gooStrength?: number;
@@ -263,7 +263,7 @@ export function Popover({
   side = "bottom",
   align = "center",
   sideOffset = 14,
-  panelRadius = 16,
+  panelRadius = 24,
   gooStrength = 8,
   className,
 }: PopoverProps) {
@@ -589,7 +589,7 @@ export function PopoverContent({ children, className }: PopoverContentProps) {
   return createPortal(
     <div
       data-popover-portal=""
-      className="pointer-events-none fixed left-0 top-0 z-[9999] isolate size-0"
+      className="pointer-events-none fixed left-0 top-0 z-[9999] isolate size-0 drop-shadow-[0_8px_16px_rgb(0_0_0_/_0.12)]"
       style={{
         visibility: layout ? "visible" : "hidden",
         transform: `translate3d(${layout?.trigger.left ?? 0}px, ${layout?.trigger.top ?? 0}px, 0)`,

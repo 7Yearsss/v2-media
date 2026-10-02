@@ -27,7 +27,7 @@ import { getSettings, onSettingsChanged, setSettings, type ExtSettings } from ".
 const isWww =
   location.hostname === "www.xiaohongshu.com" || location.hostname === "xiaohongshu.com";
 
-if (isWww) {
+if (isWww && !new URL(location.href).searchParams.has("__v2m_collect_task") && !sessionStorage.getItem("v2m_collection_page")) {
   const collectFlag = new URL(location.href).searchParams.get("__v2m_collect");
   // ---------- 已嗅探数据缓存 ----------
 

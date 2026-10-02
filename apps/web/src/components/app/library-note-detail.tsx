@@ -2,10 +2,10 @@ import { Check, ChevronDown, ChevronLeft, ChevronUp, Copy, ExternalLink, FileTex
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/motion/button";
 import { PageError } from "@/components/app/states";
-import { api, mediaUrl, noteComments } from "@/lib/api";
+import { api, captureSession, isCurrentSession, mediaUrl, noteComments } from "@/lib/api";
 import { formatBytes, formatCount, formatDuration, timeAgo } from "@/lib/format";
 import { commentDate, xhsEmoji } from "@/lib/xhs-text";
 import { cn } from "@/lib/utils";
@@ -16,6 +16,9 @@ import { NoteVideoPlayer } from "./note-video-player";
 import { ImageLightbox } from "./image-lightbox";
 import { NoteAvatar } from "./note-avatar";
 import type { NoteComment } from "@v2media/shared";
+import { ContentLinks } from "./content-links";
+import { useRuntime } from "@/lib/hooks/use-runtime";
+import { useWorkspaceAccount } from "@/lib/account-context";
 
 /** 一条评论（主评论与回复共用）：昵称 + 作者标记、正文、图片、日期属地、点赞。 */
 function CommentItem({ comment, authorId, small, onOpenImages }: { comment: NoteComment; authorId: string; small?: boolean; onOpenImages: (urls: string[], index: number) => void }) {
@@ -149,7 +152,14 @@ export function LibraryNoteDetail({
   onDelete: (id: number, title: string) => void;
 }) {
   const toast = useToast();
+  const { readOnly } = useRuntime();
+  const workspaceAccount = useWorkspaceAccount();
+  const activeNote = useRef(noteId), mounted = useRef(true);
+  activeNote.current = noteId;
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const session = useMemo(() => captureSession(), []);
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -195,16 +205,26 @@ export function LibraryNoteDetail({
   }, [onClose]);
 
   const enqueue = useMutation({
-    mutationFn: () => api.createDraft({ collectedNoteId: noteId }),
-    onSuccess: (draft) => {
-      void queryClient.invalidateQueries({ queryKey: ["drafts"] });
-      toast.success("已送入草稿工坊", draft.title || "未命名草稿");
-      onClose();
-      navigate(`/drafts/${draft.id}`);
+    mutationFn: async () => {
+      if (readOnly || !workspaceAccount.canCreate) throw new Error("请先确认有效写作账号或选择通用风格");
+      const sourceId = noteId;
+      return { sourceId, draft: await api.createDraft({ collectedNoteId: sourceId, accountId: workspaceAccount.accountId ?? undefined }, session) };
     },
-    onError: (err) => toast.error("送入草稿失败", err instanceof Error ? err.message : undefined),
+    onSuccess: ({ draft, sourceId }) => {
+      if (!isCurrentSession(session)) return;
+      void queryClient.invalidateQueries({ queryKey: ["drafts"] });
+      if (!mounted.current || activeNote.current !== sourceId) return;
+      toast.success("已送入草稿工坊", draft.title || "未命名草稿");
+      navigate(`/drafts/${draft.id}`, { state: { libraryReturn: `/library${location.search}` } });
+    },
+    onError: (err) => { if (isCurrentSession(session)) toast.error("送入草稿失败", err instanceof Error ? err.message : undefined); },
   });
   const note = detail.data;
+  const relatedDrafts = useQuery({ queryKey: ["drafts", "history"], queryFn: api.draftsIncludingArchived, enabled: Boolean(note), staleTime: 30_000 });
+  const derivatives = relatedDrafts.data?.filter(draft => draft.collectedNoteId === noteId) ?? [];
+  const collectionParams = new URLSearchParams(location.search);
+  collectionParams.delete("note");
+  if (note?.collectionId) collectionParams.set("col", String(note.collectionId));
   const copyText = async () => {
     if (!note) return;
     const text = [note.title, note.content, note.tags.map((t) => `#${t}`).join(" ")].filter(Boolean).join("\n\n");
@@ -262,7 +282,7 @@ export function LibraryNoteDetail({
               <button type="button" aria-label="上一条" title="上一条（K）" disabled={!onPrev} onClick={onPrev} className="grid size-8 place-items-center rounded-lg text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"><ChevronUp className="size-4" /></button>
               <button type="button" aria-label="下一条" title="下一条（J）" disabled={!onNext} onClick={onNext} className="grid size-8 place-items-center rounded-lg text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-30"><ChevronDown className="size-4" /></button>
             </span>
-            <Button size="sm" disabled={enqueue.isPending} onClick={() => enqueue.mutate()}><SendToBack className="size-3.5" />送入草稿</Button>
+            <Button size="sm" disabled={readOnly || !workspaceAccount.canCreate || enqueue.isPending} onClick={() => enqueue.mutate()}><SendToBack className="size-3.5" />送入草稿</Button>
             <NoteMenu sourceUrl={note.sourceUrl} onCopyText={() => void copyText()} onDelete={() => onDelete(noteId, note.title)} />
           </>
         ) : null}
@@ -301,6 +321,10 @@ export function LibraryNoteDetail({
               <p className="px-4 pt-2 text-xs text-amber-600 dark:text-amber-400">未采到播放地址</p>
             ) : null}
             <div className="space-y-6 px-4 pb-8 pt-4">
+              <section aria-label="来源与草稿" className="space-y-2 rounded-lg border border-border px-3 py-2.5">
+                <ContentLinks items={note.collectionId ? [{ label: "来源资料库", to: `/library?${collectionParams}` }] : []} current={`参考笔记 #${note.id}`} />
+                {relatedDrafts.isPending ? <p className="text-xs text-muted-foreground">读取关联草稿…</p> : relatedDrafts.isError ? <p className="text-xs text-muted-foreground">关联草稿暂未读取。<button className="ml-1 underline" onClick={() => void relatedDrafts.refetch()}>重试</button></p> : derivatives.length ? <div className="flex flex-wrap gap-x-3 gap-y-1">{derivatives.map(draft => <Link className="rounded text-xs leading-6 text-primary hover:underline focus-visible:ring-2 focus-visible:ring-ring" key={draft.id} to={`/drafts/${draft.id}`} state={{ libraryReturn: `/library${location.search}` }}>{draft.title || `草稿 #${draft.id}`}{draft.archivedAt ? "（已归档）" : ""}</Link>)}</div> : <p className="text-xs text-muted-foreground">还没有从这篇笔记创建草稿。</p>}
+              </section>
               <section aria-label="笔记正文" className="space-y-3">
                 <h3 className="break-words text-lg font-semibold leading-7 text-foreground">{note.title || "（无标题）"}</h3>
                 {note.content ? (

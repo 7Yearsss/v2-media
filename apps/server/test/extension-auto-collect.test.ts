@@ -88,6 +88,12 @@ describe("插件自动采集通路（模拟浏览器，无外网）", () => {
   }
   const calls = (type: string) => mocks.send.mock.calls.filter(([msg]) => msg.type === type);
 
+  it("关键词任务页不叠加普通自动入库和深度队列", async () => {
+    vi.stubGlobal("location", new URL("https://www.xiaohongshu.com/search_result?keyword=test&__v2m_collect_task=1&__v2m_lease=lease"));
+    await start(); emitCard(); await vi.advanceTimersByTimeAsync(1600);
+    expect(calls("EXT_COLLECT")).toHaveLength(0); expect(calls("DEEP_COLLECT")).toHaveLength(0);
+  });
+
   it("热度门槛 999/1000/1001：只补详情、入库与排评论的达标笔记", async () => {
     mocks.settings.hotFilter = { enabled: true, minLikes: 1000 };
     await start();

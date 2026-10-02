@@ -101,6 +101,10 @@ export function AiPanel({
   const [prompt, setPrompt] = useState("");
   const idRef = useRef(0);
   const [busy, setBusy] = useState(false);
+  const context = `${draft?.id ?? "none"}:${draft?.accountId ?? "generic"}`;
+  const contextRef = useRef(context);
+  contextRef.current = context;
+  useEffect(() => { setRuns([]); }, [context]);
 
   const pushRun = (kind: RunKind, label: string): number => {
     const id = ++idRef.current;
@@ -125,14 +129,17 @@ export function AiPanel({
   const startRewrite = async (instruction?: string) => {
     if (guardEmpty() || busy) return;
     const id = pushRun("rewrite", instruction ? "自定义改写" : "AI 改写正文");
+    const startedIn = contextRef.current;
     setBusy(true);
     try {
       const res = await api.aiRewrite({
         draftId: draft?.id,
+        accountId: draft?.accountId,
         title,
         content,
         instruction,
       });
+      if (contextRef.current !== startedIn) return;
       patchRun(id, {
         status: "streaming",
         fullText: `${res.title}\n===\n${res.content}`,
@@ -155,9 +162,11 @@ export function AiPanel({
   const startTitles = async () => {
     if (guardEmpty() || busy) return;
     const id = pushRun("titles", "生成 5 个标题");
+    const startedIn = contextRef.current;
     setBusy(true);
     try {
-      const res = await api.aiTitles({ title, content, count: 5 });
+      const res = await api.aiTitles({ draftId: draft?.id, accountId: draft?.accountId, title, content, count: 5 });
+      if (contextRef.current !== startedIn) return;
       patchRun(id, { status: "complete", titles: res.titles });
     } catch (err) {
       patchRun(id, {
@@ -172,9 +181,11 @@ export function AiPanel({
   const startTags = async () => {
     if (guardEmpty() || busy) return;
     const id = pushRun("tags", "生成话题标签");
+    const startedIn = contextRef.current;
     setBusy(true);
     try {
-      const res = await api.aiTags({ title, content, count: 8 });
+      const res = await api.aiTags({ draftId: draft?.id, accountId: draft?.accountId, title, content, count: 8 });
+      if (contextRef.current !== startedIn) return;
       patchRun(id, { status: "complete", tags: res.tags });
     } catch (err) {
       patchRun(id, {
@@ -187,15 +198,16 @@ export function AiPanel({
   };
 
   return (
-    <div className="rounded-3xl border border-border bg-card p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Sparkles className="size-4 text-primary" />
-        <p className="text-sm font-semibold text-foreground">AI 助手</p>
+    <div className="workspace-panel min-w-0 self-start p-3.5">
+      <div className="mb-3 flex items-center gap-2 border-b border-border pb-3">
+        <Sparkles className="size-3.5 text-muted-foreground" />
+        <p className="text-[13px] font-semibold text-foreground">AI 助手</p>
       </div>
 
       <div className="mb-3 flex flex-wrap gap-1.5">
         <Button
           size="sm"
+          className="h-8 rounded-md px-2.5"
           variant="outline"
           disabled={busy}
           onClick={() => void startRewrite()}
@@ -205,21 +217,23 @@ export function AiPanel({
         </Button>
         <Button
           size="sm"
+          className="h-8 rounded-md px-2.5"
           variant="outline"
           disabled={busy}
           onClick={() => void startTitles()}
         >
           <ListPlus className="size-3.5" />
-          生成 5 个标题
+          生成标题
         </Button>
         <Button
           size="sm"
+          className="h-8 rounded-md px-2.5"
           variant="outline"
           disabled={busy}
           onClick={() => void startTags()}
         >
           <Hash className="size-3.5" />
-          话题标签
+          标签
         </Button>
       </div>
 
@@ -228,9 +242,9 @@ export function AiPanel({
           {runs.map((run) => (
             <div
               key={run.id}
-              className="rounded-2xl border border-border bg-muted/40 p-3"
+              className="rounded-lg border border-border bg-background p-3"
             >
-              <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">
                 {run.label}
               </p>
               {run.kind === "rewrite" ? (
@@ -266,7 +280,7 @@ export function AiPanel({
                   {(run.tags ?? []).map((t) => (
                     <span
                       key={t}
-                      className="rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary"
+                      className="rounded-md bg-muted px-2.5 py-1 text-xs text-foreground"
                     >
                       #{t}
                     </span>
@@ -287,16 +301,13 @@ export function AiPanel({
             </div>
           ))}
         </div>
-      ) : (
-        <p className="mb-3 text-xs leading-5 text-muted-foreground">
-          用快捷指令一键改写/起标题/生成话题，或在下方输入自定义改写要求。
-        </p>
-      )}
+      ) : null}
 
       <PromptInput
+        className="rounded-lg"
         value={prompt}
         onValueChange={setPrompt}
-        placeholder="对正文的改写要求，回车发送…"
+        placeholder="改写要求…"
         minRows={2}
         maxRows={5}
         loading={busy}

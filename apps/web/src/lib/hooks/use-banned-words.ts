@@ -1,10 +1,11 @@
 import { useCallback, useState } from "react";
+import { captureUserStorage } from "../user-storage";
 
 const KEY = "v2m.bannedWords";
 
-const read = (): string[] => {
+const read = (storage: ReturnType<typeof captureUserStorage>): string[] => {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) ?? "[]");
+    const v = JSON.parse(storage.getItem() ?? "[]");
     return Array.isArray(v) ? v.map(String).filter(Boolean) : [];
   } catch {
     return [];
@@ -13,15 +14,12 @@ const read = (): string[] => {
 
 /** 用户自己的屏蔽词（品牌禁用语、客户要求避开的词…），记在本机。 */
 export function useBannedWords() {
-  const [words, setWords] = useState<string[]>(read);
+  const [storage] = useState(() => captureUserStorage(KEY));
+  const [words, setWords] = useState<string[]>(() => read(storage));
   const save = useCallback((next: string[]) => {
     setWords(next);
-    try {
-      localStorage.setItem(KEY, JSON.stringify(next));
-    } catch {
-      /* 隐私模式等：不记就不记 */
-    }
-  }, []);
+    storage.setItem(JSON.stringify(next));
+  }, [storage]);
   const add = useCallback(
     (w: string) => {
       const t = w.trim().slice(0, 20);

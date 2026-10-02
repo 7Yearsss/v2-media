@@ -1,13 +1,19 @@
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
 import { env } from "../env";
-import { parseInsight } from "../lib/insight-parse";
 import type { Deps } from "../context";
-import { runAnalysisAI, type RunNote } from "../lib/analysis-run";
+import type { Db } from "../db";
+import { analysisPromptBody, analysisPromptComments, type RunNote } from "../lib/analysis-run";
+import type { AnalysisAiInput } from "../lib/analysis-ai-run";
+import { AiRunConflict, enqueueAiRun, findAiRunOperation } from "../lib/ai-runs";
+import { HYPOTHESIS_SYSTEM, REPORT_SYSTEM, VISION_SYSTEM, VIDEO_SYSTEM } from "../lib/analysis-prompts";
 import { computeSignals, engagementOf, type SignalNote } from "../lib/analysis-signals";
-import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
+import { collectedNotes, collectionAnalyses, collections, hostedAccounts } from "../db/schema";
+import { ACCOUNT_PERSONA_LIMITS } from "@v2media/shared";
+import { resolveAccountPersona } from "../lib/account-persona";
+import { isReadOnly } from "../lib/runtime-policy";
 
 /** 一次分析喂给模型的笔记上限（按互动量取 top）。 */
 const ANALYZE_LIMIT = 40;
@@ -109,8 +115,23 @@ export function collectionsModule(deps: Deps) {
     const col = await ownCollection(c);
     if (!col) return c.json({ error: "not found" }, 404);
     const userId = c.get("userId");
-    const body = (await c.req.json().catch(() => null)) as { positioning?: unknown; withVideo?: unknown } | null;
-    const positioning = typeof body?.positioning === "string" ? body.positioning.trim().slice(0, 200) : "";
+    const parsed = z.object({ operationId: z.string().uuid().optional(), accountId: z.number().int().positive().optional(),
+      positioning: z.string().trim().max(ACCOUNT_PERSONA_LIMITS.positioning).optional(), withVideo: z.boolean().optional() })
+      .safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: "bad payload" }, 400);
+    const body = parsed.data;
+    const request = { collectionId: col.id, ...body };
+    try {
+      const replay = await deps.db.transaction(tx => findAiRunOperation(tx as unknown as Db, userId, body.operationId, "analysis", request));
+      if (replay) {
+        const [saved] = await deps.db.select().from(collectionAnalyses).where(and(eq(collectionAnalyses.id, replay.targetId), eq(collectionAnalyses.userId, userId)));
+        return saved ? c.json(saved, saved.status === "running" ? 202 : 200) : c.json({ error: "原分析已不存在，请创建新分析" }, 409);
+      }
+    } catch (error) { if (error instanceof AiRunConflict) return c.json({ error: error.message }, 409); throw error; }
+    const persona = await resolveAccountPersona(deps.db, userId, body.accountId, body.positioning);
+    if ("error" in persona) return c.json({ error: persona.error }, persona.code ?? 404);
+    const positioning = persona.snapshot?.positioning ?? "";
+    const personaData = { persona: persona.snapshot, ...(positioning ? { positioning } : {}) };
     const notes = await deps.db
       .select({
         id: collectedNotes.id,
@@ -134,7 +155,7 @@ export function collectionsModule(deps: Deps) {
         commentsData: collectedNotes.commentsData,
       })
       .from(collectedNotes)
-      .where(eq(collectedNotes.collectionId, col.id))
+      .where(and(eq(collectedNotes.collectionId, col.id), eq(collectedNotes.userId, userId)))
       .orderBy(
         desc(sql`${collectedNotes.likes} + ${collectedNotes.collects} + ${collectedNotes.comments} + ${collectedNotes.shares}`),
       )
@@ -149,7 +170,6 @@ export function collectionsModule(deps: Deps) {
         : null;
     // 笔记 #编号 = 在候选池里的互动排名（1 起）；AI 只引用编号，服务端映射回笔记
     const refOf = new Map(notes.map((n, i) => [n.id, i + 1]));
-    const byRef = new Map(notes.map((n, i) => [i + 1, { id: n.id, title: n.title }]));
     // 分析样本 = 总互动 top40 ∪ 日均互动 top10（后进来的新爆款）
     const analysisNotes = new Map<number, (typeof notes)[number]>();
     for (const n of notes.slice(0, ANALYZE_LIMIT)) analysisNotes.set(n.id, n);
@@ -196,68 +216,51 @@ export function collectionsModule(deps: Deps) {
       signals,
     };
 
-    const resolve = (r: unknown) => {
-      const n = Number(String(r).replace(/\D/g, ""));
-      return Number.isInteger(n) ? (byRef.get(n) ?? null) : null;
-    };
-    // 先落一行 running 立刻返回（慢的 AI 调用在后台跑，页面轮询）——请求不能在 Cloudflare 后面同步等 2 分钟
-    const [row] = await deps.db
-      .insert(collectionAnalyses)
-      .values({
-        userId,
-        collectionId: col.id,
-        noteCount: notes.length,
-        status: "running",
-        data: { stats, insight: null, ...(positioning ? { positioning } : {}) },
-      })
-      .returning();
-    const runId = row!.id;
     const runNotes: RunNote[] = notes.map((n) => {
       const v = (n.rawJson as { video?: { size?: number; durationMs?: number } } | null)?.video;
-      return { ...n, ref: refOf.get(n.id)!, videoSize: v?.size ?? null, videoDurationMs: v?.durationMs ?? null };
+      return {
+        id: n.id, ref: refOf.get(n.id)!, noteId: n.noteId, type: n.type, title: n.title, cover: n.cover,
+        videoUrl: n.videoUrl, videoSize: v?.size ?? null, videoDurationMs: v?.durationMs ?? null,
+        likes: n.likes, collects: n.collects, comments: n.comments, shares: n.shares, tags: n.tags,
+        content: analysisPromptBody(n.content), contentForPrompt: true, hasDetail: n.hasDetail,
+        publishedAt: n.publishedAt, sourceKeyword: n.sourceKeyword, commentsData: analysisPromptComments(n.commentsData),
+      };
     });
     const sampleSet = new Set(analysisList.map((n) => n.id));
-    void (async () => {
-      const t0 = Date.now();
-      try {
-        const { report, visual } = await runAnalysisAI(deps, {
-          colName: col.name,
-          positioning,
-          pool: runNotes,
-          sample: runNotes.filter((n) => sampleSet.has(n.id)),
-          signals,
-          now: deps.now(),
-          withVideo: body?.withVideo === true,
-          onStage: async (stage, steps) => {
-            await deps.db
-              .update(collectionAnalyses)
-              .set({ data: { stats, insight: null, ...(positioning ? { positioning } : {}), progress: { stage, steps, at: Date.now() } } })
-              .where(eq(collectionAnalyses.id, runId));
-          },
-        });
-        await deps.db
-          .update(collectionAnalyses)
-          .set({
-            status: "done",
-            report,
-            data: { stats, insight: parseInsight(report, resolve), ...(positioning ? { positioning } : {}), ...(visual.length ? { visual } : {}) },
-          })
-          .where(eq(collectionAnalyses.id, runId));
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "AI failed";
-        console.warn(`analyze AI failed after ${Date.now() - t0}ms:`, msg);
-        await deps.db
-          .update(collectionAnalyses)
-          .set({ status: "failed", error: msg })
-          .where(eq(collectionAnalyses.id, runId))
-          .catch(() => {});
-      }
-    })();
-    return c.json(row, 202);
+    try {
+      const result = await deps.db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        const replay = await findAiRunOperation(tx, userId, body.operationId, "analysis", request);
+        if (replay) {
+          const [saved] = await tx.select().from(collectionAnalyses).where(and(eq(collectionAnalyses.id, replay.targetId), eq(collectionAnalyses.userId, userId)));
+          return saved ? { row: saved } : { error: "原分析已不存在，请创建新分析", code: 409 as const };
+        }
+        await tx.execute(sql`SELECT id FROM collections WHERE id=${col.id} AND user_id=${userId} FOR SHARE`);
+        const [currentCollection] = await tx.select().from(collections).where(and(eq(collections.id, col.id), eq(collections.userId, userId)));
+        if (!currentCollection) return { error: "采集库已删除", code: 404 as const };
+        let executionRevision: number | null = null;
+        if (body.accountId) {
+          await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id=${body.accountId} AND user_id=${userId} FOR SHARE`);
+          const [account] = await tx.select().from(hostedAccounts).where(and(eq(hostedAccounts.id, body.accountId), eq(hostedAccounts.userId, userId)));
+          if (!account || account.archivedAt || account.personaVersion !== persona.snapshot?.version) return { error: "目标账号已变化，请重新确认", code: 409 as const };
+          executionRevision = account.executionRevision;
+        }
+        const [row] = await tx.insert(collectionAnalyses).values({ userId, collectionId: col.id, noteCount: notes.length, status: "running", data: { stats, insight: null, ...personaData }, createdAt: deps.now() }).returning();
+        const model = env.aiAnalysisModel || env.aiModel;
+        const input: AnalysisAiInput = { collectionId: col.id, accountId: body.accountId ?? null, executionRevision, stats, persona: persona.snapshot, positioning,
+          input: { colName: col.name, positioning, persona: persona.snapshot, pool: runNotes, sample: runNotes.filter(n => sampleSet.has(n.id)), signals, now: deps.now(), withVideo: body.withVideo === true,
+            models: { analysis: model, vision: env.aiVisionModel || model }, prompts: { hypothesis: HYPOTHESIS_SYSTEM, report: REPORT_SYSTEM, vision: VISION_SYSTEM, video: VIDEO_SYSTEM } } };
+        const run = await enqueueAiRun(tx, { userId, kind: "analysis", targetType: "analysis", targetId: row!.id, operationId: body.operationId, request, input, model, promptVersion: "analysis-evidence-v1", now: deps.now() });
+        const [linked] = await tx.update(collectionAnalyses).set({ aiRunId: run.id }).where(eq(collectionAnalyses.id, row!.id)).returning();
+        return { row: linked! };
+      });
+      return "error" in result ? c.json({ error: result.error }, result.code) : c.json(result.row, result.row.status === "running" ? 202 : 200);
+    } catch (error) { if (error instanceof AiRunConflict) return c.json({ error: error.message }, 409); throw error; }
   });
 
   /** running 太久（进程重启/AI 挂死）的行标记失败，避免页面永远转圈。 */
   const reapStale = (colId: number) =>
+    isReadOnly(deps) ? Promise.resolve() :
     deps.db
       .update(collectionAnalyses)
       .set({ status: "failed", error: "分析中断（服务重启或超时），请重试" })
@@ -265,6 +268,7 @@ export function collectionsModule(deps: Deps) {
         and(
           eq(collectionAnalyses.collectionId, colId),
           eq(collectionAnalyses.status, "running"),
+          isNull(collectionAnalyses.aiRunId),
           // 用库的时钟比较：created_at 是无时区 timestamp，传 JS Date 会按本机时区序列化而错位
           sql`${collectionAnalyses.createdAt} < now() - make_interval(secs => ${ANALYZE_STALE_MS / 1000})`,
         ),
@@ -282,11 +286,12 @@ export function collectionsModule(deps: Deps) {
         status: collectionAnalyses.status,
         error: collectionAnalyses.error,
         createdAt: collectionAnalyses.createdAt,
+        expired: sql<boolean>`${collectionAnalyses.aiRunId} IS NULL AND ${collectionAnalyses.status}='running' AND ${collectionAnalyses.createdAt} < now() - make_interval(secs => ${ANALYZE_STALE_MS / 1000})`,
       })
       .from(collectionAnalyses)
       .where(eq(collectionAnalyses.collectionId, col.id))
       .orderBy(desc(collectionAnalyses.id));
-    return c.json({ items: rows });
+    return c.json({ items: rows.map(({ expired, ...row }) => expired ? { ...row, status: "failed", error: "分析中断（服务重启或超时），请重试" } : row) });
   });
 
   app.get("/:id/analyses/:aid", async (c) => {
@@ -295,7 +300,7 @@ export function collectionsModule(deps: Deps) {
     const aid = Number(c.req.param("aid"));
     await reapStale(col.id);
     const [row] = await deps.db
-      .select()
+      .select({ ...getTableColumns(collectionAnalyses), expired: sql<boolean>`${collectionAnalyses.aiRunId} IS NULL AND ${collectionAnalyses.status}='running' AND ${collectionAnalyses.createdAt} < now() - make_interval(secs => ${ANALYZE_STALE_MS / 1000})` })
       .from(collectionAnalyses)
       .where(
         and(
@@ -305,7 +310,8 @@ export function collectionsModule(deps: Deps) {
       )
       .limit(1);
     if (!row) return c.json({ error: "not found" }, 404);
-    return c.json(row);
+    const { expired, ...view } = row;
+    return c.json(expired ? { ...view, status: "failed", error: "分析中断（服务重启或超时），请重试" } : view);
   });
 
   return app;

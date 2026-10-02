@@ -1,14 +1,16 @@
 import { Loader2, PenLine, Plus } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { AnalysisSignals, AnalysisVisualItem, CollectionAnalysis, InsightFinding, InsightRef } from "@v2media/shared";
 import { TextShimmer } from "@/components/motion/text-shimmer";
 import { AnalysisProgressView } from "@/components/app/analysis-progress";
-import { api } from "@/lib/api";
+import { api, captureSession, isCurrentSession, SessionChangedError } from "@/lib/api";
+import { topicFromAnalysis } from "@/lib/analysis-topic-flow";
 import { formatCount } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 import { cn } from "@/lib/utils";
 
 /* ───────── 版式零件 ───────── */
@@ -365,6 +367,7 @@ function VideoTimeline({ items, colId }: { items: AnalysisVisualItem[]; colId: n
 
 export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onTopicAdded?: () => void }) {
   const running = a.status === "running";
+  const { readOnly } = useRuntime();
   const toast = useToast();
   const { stats, insight } = a.data;
   const sig = stats.signals!;
@@ -372,44 +375,64 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
   const navigate = useNavigate();
   const [added, setAdded] = useState<Set<number>>(new Set());
   const topicIds = useRef(new Map<number, number>());
+  const activeAnalysis = useRef(a.id);
+  activeAnalysis.current = a.id;
   const [writingIdx, setWritingIdx] = useState<number | null>(null);
+  useEffect(() => {
+    setAdded(new Set()); topicIds.current.clear(); setWritingIdx(null);
+  }, [a.id]);
+  const isActive = (session: ReturnType<typeof captureSession>, analysisId: number) =>
+    isCurrentSession(session) && activeAnalysis.current === analysisId;
   const addTopic = useMutation({
-    mutationFn: async (i: number) => {
-      const idea = insight!.ideas![i]!;
-      const t = await api.createTopic({
-        title: idea.title,
-        angle: `${idea.hook}\n${idea.angle}`,
-        collectionId: a.collectionId,
-        sourceNoteId: idea.refs?.[0]?.id,
-      });
-      topicIds.current.set(i, t.id);
-      return i;
+    mutationFn: async ({ i, session, analysis }: { i: number; session: ReturnType<typeof captureSession>; analysis: CollectionAnalysis }) => {
+      if (readOnly) throw new Error("当前连接仅允许查看");
+      const t = await api.createTopic(topicFromAnalysis(analysis, i), session);
+      if (isActive(session, analysis.id)) topicIds.current.set(i, t.id);
+      return { i, session, analysisId: analysis.id };
     },
-    onSuccess: (i) => {
+    onSuccess: ({ i, session, analysisId }) => {
+      if (!isActive(session, analysisId)) return;
       setAdded((s) => new Set(s).add(i));
       onTopicAdded?.();
     },
-    onError: (e) => toast.error("入池失败", e instanceof Error ? e.message : undefined),
+    onError: (e, { session, analysis }) => {
+      if (!(e instanceof SessionChangedError) && isActive(session, analysis.id))
+        toast.error("入池失败", e instanceof Error ? e.message : undefined);
+    },
   });
   // 选题 → AI 成稿 → 跳到草稿页（还没入池的先入池，保留来源关联）
   const writeDraft = async (i: number) => {
+    if (readOnly) return;
+    const session = captureSession();
+    const analysis = a;
     setWritingIdx(i);
     try {
-      if (!topicIds.current.has(i)) await addTopic.mutateAsync(i);
-      const r = await api.topicToDraft(topicIds.current.get(i)!, { ai: true, positioning: a.data.positioning });
+      if (!topicIds.current.has(i)) await addTopic.mutateAsync({ i, session, analysis });
+      if (!isActive(session, analysis.id)) return;
+      // The server restores the report's positioning and freezes all current target-account rules.
+      const r = await api.topicToDraft(topicIds.current.get(i)!, { ai: true }, session);
+      if (!isActive(session, analysis.id)) return;
       void queryClient.invalidateQueries({ queryKey: ["drafts"] });
       const note = [r.coverText ? `封面大字：${r.coverText}` : "", r.warnings?.length ? `仍有 ${r.warnings.length} 处可能被限流的词` : ""].filter(Boolean).join("；");
-      toast.success("草稿已生成", note || undefined);
+      toast.success(r.jobId ? "已开始成稿" : "已打开草稿", note || undefined);
       navigate(`/drafts/${r.draft.id}`);
     } catch (e) {
-      toast.error("成稿失败", e instanceof Error ? e.message : undefined);
+      if (!(e instanceof SessionChangedError) && isActive(session, analysis.id))
+        toast.error("成稿失败", e instanceof Error ? e.message : undefined);
     } finally {
-      setWritingIdx(null);
+      if (isActive(session, analysis.id)) setWritingIdx(null);
     }
   };
   const addAll = async () => {
-    for (const [i] of (insight?.ideas ?? []).entries()) if (!added.has(i)) await addTopic.mutateAsync(i).catch(() => {});
-    toast.success("已全部入选题池");
+    if (readOnly) return;
+    const session = captureSession();
+    const analysis = a;
+    let failures = 0;
+    for (const [i] of (insight?.ideas ?? []).entries()) {
+      if (!isActive(session, analysis.id)) return;
+      if (!added.has(i)) await addTopic.mutateAsync({ i, session, analysis }).catch(() => { failures++; });
+    }
+    if (isActive(session, analysis.id) && !failures) toast.success("已全部入选题池");
   };
 
   const lowCoverage = sig.sample.withDetail < sig.sample.total * 0.6;
@@ -420,6 +443,7 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
     <article className="max-w-6xl space-y-10 pb-16">
       {/* 判词：整页最大的字 */}
       <header>
+        {a.data.warnings?.map(warning => <p key={warning} className="mb-3 text-xs leading-5 text-amber-700 dark:text-amber-300">{warning}</p>)}
         {insight?.summary ? (
           <h1 className="max-w-[22em] text-[34px] font-bold leading-[1.28] tracking-tight">{insight.summary}</h1>
         ) : running ? (
@@ -438,6 +462,9 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
           {a.data.positioning ? `按「${a.data.positioning}」的定位来写。` : ""}
           {lowCoverage ? "多数笔记没进详情页，结论偏保守。" : ""}
         </p>
+        {a.data.persona?.accountId && <p title="入池保留来源账号；成稿使用该账号当前人设" className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+          写作账号：{a.data.persona.nickname || `账号 #${a.data.persona.accountId}`} · v{a.data.persona.version}
+        </p>}
       </header>
 
       {a.data.visual?.length ? (
@@ -500,11 +527,11 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
 
       {insight?.ideas?.length ? (
         <Section
-          title="可以直接做的选题"
+          title="推荐选题"
           aside={
             <button
               onClick={() => void addAll()}
-              disabled={addTopic.isPending || added.size === insight.ideas.length}
+              disabled={readOnly || addTopic.isPending || added.size === insight.ideas.length}
               className="text-sm text-muted-foreground underline decoration-border underline-offset-4 transition-colors hover:text-primary hover:decoration-primary disabled:opacity-40"
             >
               全部入选题池
@@ -522,15 +549,15 @@ export function AnalysisReport({ a, onTopicAdded }: { a: CollectionAnalysis; onT
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => addTopic.mutate(i)}
-                    disabled={added.has(i) || addTopic.isPending}
+                    onClick={() => addTopic.mutate({ i, session: captureSession(), analysis: a })}
+                    disabled={readOnly || added.has(i) || addTopic.isPending}
                     className="flex h-9 items-center gap-1.5 rounded-full border border-border px-4 text-sm transition-colors hover:border-foreground/40 disabled:opacity-50"
                   >
                     {added.has(i) ? "已在选题池" : (<><Plus className="size-3.5" />入选题池</>)}
                   </button>
                   <button
                     onClick={() => void writeDraft(i)}
-                    disabled={writingIdx === i}
+                    disabled={readOnly || writingIdx === i}
                     className="flex h-9 items-center gap-1.5 rounded-full bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-60"
                   >
                     {writingIdx === i ? <Loader2 className="size-3.5 animate-spin" /> : <PenLine className="size-3.5" />}

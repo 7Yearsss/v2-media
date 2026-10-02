@@ -31,6 +31,8 @@ export type CollectSource =
 
 export interface NoteImage {
   url: string;
+  /** 草稿上传占位：ready 前 url 为空；平台采集图片不带此字段。 */
+  assetId?: number;
   width?: number;
   height?: number;
 }
@@ -248,6 +250,7 @@ export interface AnalysisVideoBreakdown {
 
 /** AI 分析结果：对一个采集库跑出的一轮分析快照。 */
 export interface CollectionAnalysis {
+  aiRunId?: number | null;
   id: number;
   collectionId: number;
   /** 本轮分析覆盖的笔记数。 */
@@ -257,7 +260,9 @@ export interface CollectionAnalysis {
     insight: CollectionInsight | null;
     /** 分析时填的目标账号定位（空=通用）。 */
     positioning?: string;
+    persona?: AccountPersonaSnapshot | null;
     visual?: AnalysisVisualItem[];
+    warnings?: string[];
     /** 生成中的进度（done 后移除）。 */
     progress?: AnalysisProgress;
   };
@@ -283,6 +288,8 @@ export interface CollectBatch {
 
 /** 托管账号：插件探测到的已登录小红书账号。 */
 export interface HostedAccount {
+  /** Explicit unbind preserves identity, persona and published history. */
+  archivedAt?: string | null;
   id: number;
   platform: "xhs";
   subType: "pc" | "creator";
@@ -294,10 +301,31 @@ export interface HostedAccount {
   statusMessage: string;
   lastSeenAt: string;
   createdAt: string;
+  positioning: string;
+  styleNotes: string;
+  redlines: string;
+  personaVersion: number;
+}
+
+export const ACCOUNT_PERSONA_LIMITS = { positioning: 1000, styleNotes: 1000, redlines: 1000 } as const;
+export interface AccountPersonaSnapshot {
+  accountId: number | null;
+  nickname: string | null;
+  version: number;
+  positioning: string;
+  styleNotes: string;
+  redlines: string;
+}
+export interface AccountPersonaUpdateRequest {
+  version: number;
+  positioning?: string;
+  styleNotes?: string;
+  redlines?: string;
 }
 
 /** 服务端存的内容库条目。 */
 export interface CollectedNote {
+  collectionId?: number | null;
   authorAvatar?: string;
   id: number;
   noteId: string;
@@ -341,15 +369,65 @@ export interface NotesSummary {
 }
 
 export interface Draft {
+  /** Soft archive keeps published evidence and assets; excluded from active lists. */
+  archivedAt?: string | null;
   id: number;
   collectedNoteId?: number;
+  accountId: number | null;
+  personaSnapshot: AccountPersonaSnapshot | null;
   title: string;
   content: string;
   tags: string[];
   images: NoteImage[];
+  /** 图集乐观锁版本；仅修改图片时需要携带。 */
+  imagesVersion: number;
+  uploads?: MediaAsset[];
+  textVersion: number;
+  generationState: "idle" | "queued" | "writing" | "done" | "failed";
+  generationError: string | null;
+  generationWarnings: Array<{ word: string; kind: string; count: number }>;
+  coverSpec: CoverSpec | null;
+  coverRevision: number;
+  coverState: "idle" | "queued" | "processing" | "ready" | "failed";
+  coverError: string | null;
+  coverAssetId: number | null;
   status: "draft" | "ready" | "published";
   updatedAt: string;
 }
+
+export const IMAGE_UPLOAD_LIMITS = { bytes: 10 * 1024 * 1024, pixels: 40_000_000, images: 9 } as const;
+export interface MediaAsset {
+  id: number;
+  draftId: number;
+  filename: string;
+  kind: "upload" | "cover";
+  status: "queued" | "processing" | "ready" | "failed" | "canceled";
+  url: string | null;
+  width: number | null;
+  height: number | null;
+  error: string | null;
+}
+export interface MediaUploadResponse { asset: MediaAsset; draft: Draft }
+
+export const COVER_TEMPLATES = [
+  { id: "poster", name: "大字海报" },
+  { id: "checklist", name: "清单步骤" },
+  { id: "comparison", name: "前后对比" },
+  { id: "photo", name: "照片标题条" },
+] as const;
+export type CoverTemplateId = typeof COVER_TEMPLATES[number]["id"];
+export interface CoverSpec {
+  /** 持久保存渲染版式版本，首版为 1。 */
+  templateVersion?: number;
+  templateId: CoverTemplateId;
+  headline: string;
+  subtitle?: string;
+  points?: string[];
+  comparison?: { left: string; right: string };
+  backgroundAssetId?: number;
+}
+export interface CoverCreateRequest { spec: CoverSpec; revision: number }
+export interface DraftJobResponse { draft: Draft; jobId: number }
 
 /** 选题池条目（策划层）：一条"想写/计划写"的内容方向。 */
 export type TopicStatus =
@@ -386,8 +464,21 @@ export interface TopicScoreDetail {
   risk?: number;
 }
 
+export interface TopicAnalysisSource {
+  analysisId: number;
+  collectionId: number;
+  ideaIndex: number;
+  positioning?: string;
+  persona: AccountPersonaSnapshot | null;
+}
+
 export interface Topic {
+  scoreMethod?: string | null;
+  scoreModel?: string | null;
+  scoredAt?: string | null;
+  analysisSource?: TopicAnalysisSource | null;
   id: number;
+  personaSnapshot?: AccountPersonaSnapshot | null;
   title: string;
   /** 切入角度/要点说明。 */
   angle: string;
@@ -429,6 +520,16 @@ export type PublishOutcome =
   | "readback_error"; // 其他读回失败（超时/页面结构变了）
 
 export interface PublishJob {
+  accountSnapshot?: { accountId: number; xhsUserId: string; nickname: string } | null;
+  draftSnapshot?: { title: string; content: string; tags: string[]; images: NoteImage[] } | null;
+  coverSnapshot?: CoverSpec | null;
+  retryOfJobId?: number | null;
+  retryOperationId?: string | null;
+  retryEligibility?: { allowed: boolean; reason?: string };
+  publishedAt?: string | null;
+  reportedAt?: string | null;
+  planningSnapshot?: import("./insights").PlanningSnapshot | null;
+  personaSnapshot?: AccountPersonaSnapshot | null;
   id: number;
   draftId: number;
   accountId: number;

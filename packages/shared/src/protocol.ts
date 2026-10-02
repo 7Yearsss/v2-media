@@ -12,6 +12,7 @@ import type {
   Topic,
   TopicStatus,
 } from "./types";
+import type { BrowserExecutionClaimRequest, BrowserExecutionLease, BrowserExecutionReceipt } from "./browser-execution";
 
 // ---------- window.postMessage 桥（site-bridge.ts 实现） ----------
 
@@ -43,7 +44,8 @@ export type BridgeRequestType =
   /** 让插件打开某个 URL 并采集详情页。 */
   | "COLLECT_URL"
   /** 立即执行某个发布任务（工作台触发；也可由插件自己轮询）。 */
-  | "RUN_PUBLISH_JOB";
+  | "RUN_PUBLISH_JOB"
+  | "WAKE_COLLECTION_TASKS";
 
 export interface SetAuthPayload {
   apiBase: string;
@@ -95,6 +97,7 @@ export interface CollectResponse {
 
 /** POST /api/drafts —— 从收藏或空白创建草稿。 */
 export interface DraftCreateRequest {
+  accountId?: number;
   collectedNoteId?: number;
   title?: string;
   content?: string;
@@ -102,15 +105,20 @@ export interface DraftCreateRequest {
   images?: { url: string }[];
 }
 export interface DraftUpdateRequest {
+  /** Required for title/content/tags/accountId changes; stale versions return 409. */
+  textVersion?: number;
+  accountId?: number | null;
   title?: string;
   content?: string;
   tags?: string[];
-  images?: { url: string }[];
+  images?: { url: string; assetId?: number; width?: number; height?: number }[];
+  imagesVersion?: number;
   status?: "draft" | "ready";
 }
 
 /** POST /api/ai/* —— 统一走 OpenAI 兼容网网。 */
 export interface AiRewriteRequest {
+  accountId?: number | null;
   draftId?: number;
   title?: string;
   content?: string;
@@ -121,11 +129,15 @@ export interface AiRewriteResponse {
   content: string;
 }
 export interface AiTitlesRequest {
+  accountId?: number | null;
+  draftId?: number;
   title: string;
   content?: string;
   count?: number;
 }
 export interface AiTagsRequest {
+  accountId?: number | null;
+  draftId?: number;
   title: string;
   content?: string;
   count?: number;
@@ -133,19 +145,27 @@ export interface AiTagsRequest {
 
 /** POST /api/publish/jobs */
 export interface PublishJobCreateRequest {
+  /** Versions of the current draft shown in the confirmation UI. */
+  draftTextVersion?: number;
+  draftImagesVersion?: number;
+  /** 发布前展示的人设版本；冲突时应重新读取目标账号。 */
+  personaVersion?: number;
   draftId: number;
   accountId: number;
   scheduledAt?: number;
   visibility?: "public" | "private" | "friends";
 }
+/** POST /api/publish/jobs/:id/retry: one stable ID for retries of the same command. */
+export interface PublishJobRetryRequest { operationId: string }
+export interface CollectionAnalyzeRequest { operationId?: string; accountId?: number; positioning?: string; withVideo?: boolean }
 
 /** GET /api/ext/publish/pending —— 插件认领待执行任务（带账号过滤）。xhsUserId 供插件比对当前浏览器登录的托管账号。 */
 export interface PendingPublishJobsResponse {
-  jobs: Array<PublishJob & { xhsUserId: string; draft: { title: string; content: string; tags: string[]; images: { url: string }[] } }>;
+  jobs: Array<PublishJob & Partial<BrowserExecutionLease> & { xhsUserId: string; draft: { title: string; content: string; tags: string[]; images: { url: string }[] } }>;
 }
 
 /** POST /api/ext/publish/:id/result */
-export interface PublishResultRequest {
+export interface PublishResultRequest extends BrowserExecutionReceipt {
   status: "done" | "failed";
   resultUrl?: string;
   error?: string;
@@ -155,6 +175,9 @@ export interface PublishResultRequest {
 
 /** POST /api/topics */
 export interface TopicCreateRequest {
+  /** Together identify an owned completed report idea; server freezes its provenance. */
+  analysisId?: number;
+  analysisIdeaIndex?: number;
   title: string;
   angle?: string;
   collectionId?: number;
@@ -171,28 +194,31 @@ export interface TopicUpdateRequest {
   plannedAt?: number | null;
 }
 
-/** POST /api/topics/:id/to-draft → { draft, topic } */
+export interface TopicToDraftRequest { ai?: boolean; positioning?: string }
+/** POST /api/topics/:id/to-draft → { draft, topic, jobId? } */
 export interface TopicToDraftResponse {
   draft: Draft;
   topic: Topic;
-  /** AI 成稿时的封面大字建议。 */
+  /** AI 成稿立即返回 202，任务与封面进度在 draft 详情中。 */
+  jobId?: number;
+  /** 旧同步成稿响应兼容字段；新接口从 draft.coverSpec 读取。 */
   coverText?: string;
-  /** AI 成稿自查后仍命中的违禁词。 */
+  /** 旧同步响应兼容字段；新接口从 draft.generationWarnings 读取。 */
   warnings?: Array<{ word: string; kind: string; count: number }>;
 }
 
 /** POST /api/ai/topics —— 对采集库爆款笔记生成选题建议并直接入池（status=idea）。 */
 export interface AiTopicsRequest {
+  operationId?: string;
   collectionId: number;
   count?: number;
   accountId?: number;
 }
-export interface AiTopicsResponse {
-  items: Topic[];
-}
+export type AiTopicsResponse = import("./ai-runs").AiRun;
 
 /** POST /api/ai/topic-score —— 单条选题七维深评，回写 score/scoreDetail。 */
 export interface AiTopicScoreRequest {
+  operationId?: string;
   topicId: number;
 }
 
@@ -232,7 +258,13 @@ export interface ExtTask {
   id: number;
   type: ExtTaskType | string;
   payload: ExtTaskPayload;
+  claimedBy?: string | null;
+  leaseId?: string | null;
+  attempt?: number;
+  leaseUntil?: string | null;
+  status?: string;
 }
+export type ClaimedExtTask = ExtTask & BrowserExecutionLease;
 
 /** GET /api/ext/tasks/pending?limit= —— dueAt<=now 的待执行任务。 */
 export interface PendingTasksResponse {
@@ -240,9 +272,7 @@ export interface PendingTasksResponse {
 }
 
 /** POST /api/ext/tasks/:id/claim */
-export interface TaskClaimRequest {
-  claimedBy: string;
-}
+export interface TaskClaimRequest extends BrowserExecutionClaimRequest {}
 
 /**
  * POST /api/ext/tasks/:id/result —— data 按 type 分形状：
@@ -250,7 +280,7 @@ export interface TaskClaimRequest {
  *  metrics: MetricsData（该账号已发笔记的指标行）
  *  account_snapshot: AccountSnapshotData
  */
-export interface TaskResultRequest {
+export interface TaskResultRequest extends BrowserExecutionReceipt {
   status: "done" | "failed";
   outcome?: PublishOutcome; // readback 专用：插件侧判定的粗结果（login 页也算 login_required）
   error?: string;

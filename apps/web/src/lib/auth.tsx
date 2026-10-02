@@ -2,20 +2,18 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
   api,
   clearSession,
-  getStoredUser,
-  getToken,
+  captureSession,
   setSession,
-  UNAUTHORIZED_EVENT,
   type SessionUser,
 } from "@/lib/api";
+import { assertCurrentSession, getSessionSnapshot, subscribeSession } from "./session";
 
 interface AuthState {
   user: SessionUser | null;
@@ -28,30 +26,21 @@ interface AuthState {
 const AuthCtx = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => getToken());
-  const [user, setUser] = useState<SessionUser | null>(() => getStoredUser());
+  const { token, user } = useSyncExternalStore(subscribeSession, getSessionSnapshot);
 
   const logout = useCallback(() => {
     clearSession();
-    setToken(null);
-    setUser(null);
   }, []);
-
-  useEffect(() => {
-    const onExpire = () => logout();
-    window.addEventListener(UNAUTHORIZED_EVENT, onExpire);
-    return () => window.removeEventListener(UNAUTHORIZED_EVENT, onExpire);
-  }, [logout]);
 
   const apply = useCallback((nextToken: string, nextUser: SessionUser) => {
     setSession(nextToken, nextUser);
-    setToken(nextToken);
-    setUser(nextUser);
   }, []);
 
   const login = useCallback(
     async (email: string, password: string) => {
-      const res = await api.login({ email, password });
+      const session = captureSession();
+      const res = await api.login({ email, password }, session);
+      assertCurrentSession(session);
       apply(res.token, res.user);
     },
     [apply],
@@ -59,7 +48,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const register = useCallback(
     async (email: string, password: string) => {
-      const res = await api.register({ email, password });
+      const session = captureSession();
+      const res = await api.register({ email, password }, session);
+      assertCurrentSession(session);
       apply(res.token, res.user);
     },
     [apply],
