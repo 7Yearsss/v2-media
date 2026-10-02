@@ -346,12 +346,12 @@ function TopicDetailDrawer({
     }
   };
 
-  const toDraft = async () => {
+  const toDraft = async (ai = true) => {
     if (!topic || busy) return;
     setBusy(true);
     try {
-      const res = await api.topicToDraft(topic.id);
-      toast.success("已转入草稿工坊", res.draft.title || undefined);
+      const res = await api.topicToDraft(topic.id, { ai });
+      toast.success(res.jobId ? "开始成稿和封面生成" : "已转入草稿工坊", res.draft.title || undefined);
       onChanged();
       navigate(`/drafts/${res.draft.id}`);
     } catch (err) {
@@ -426,10 +426,11 @@ function TopicDetailDrawer({
             )}
           </div>
           <div className="space-y-2 border-t border-border p-4">
-            <Button className="w-full" onClick={toDraft} disabled={busy || topic.status === "published"}>
-              <NotebookPen className="size-4" />
-              {topic.draftId ? "打开已关联草稿" : "转入草稿工坊"}
+            <Button className="w-full" onClick={() => void toDraft(true)} disabled={busy || topic.status === "published"}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : <NotebookPen className="size-4" />}
+              {topic.draftId ? "打开已关联草稿" : "一键成稿 · 自动带封面"}
             </Button>
+            {!topic.draftId && <Button variant="ghost" className="w-full" onClick={() => void toDraft(false)} disabled={busy}>转入草稿自行编辑</Button>}
             <Button variant="ghost" className="w-full" onClick={runScore} disabled={scoring}>
               {scoring ? <Loader2 className="size-4 animate-spin" /> : <Target className="size-4" />}
               {topic.score == null ? "AI 深评（七维）" : "重新深评"}

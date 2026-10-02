@@ -247,13 +247,14 @@ describe("选题成稿", () => {
   it("AI 成稿：不拷贝来源图、命中违禁词会重写一次、选题标记为 drafted", async () => {
     const { makeApp, registerUser, authed } = await import("./helpers");
     let calls = 0;
-    const { app } = await makeApp({
+    const { app, deps } = await makeApp({
       complete: async () => {
         calls++;
         const bad = calls === 1;
         return JSON.stringify({ title: "新手练臀腿", content: bad ? "这是最好的方法，加我微信" : "按这个顺序练：先激活再主项", tags: ["健身", "#臀腿"], cover: "新手臀腿" });
       },
     });
+    deps.r2 = { head: async () => false, put: async () => {}, putStream: async () => {}, get: async () => null, list: async () => [], delete: async () => false };
     const { token } = await registerUser(app);
     const col = (await (await app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "x" }) }))).json()) as any;
     await app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id, items: [{ noteId: "n1", title: "原笔记", author: {}, cover: "http://x/a.jpg", likes: 9 }] }) }));
@@ -261,14 +262,19 @@ describe("选题成稿", () => {
     const noteId = (notes.items ?? notes)[0].id;
     const topic = (await (await app.request("/api/topics", authed(token, { method: "POST", body: JSON.stringify({ title: "选题A", angle: "钩子一句\n借鉴思路", sourceNoteId: noteId }) }))).json()) as any;
     const res = await app.request(`/api/topics/${topic.id}/to-draft`, authed(token, { method: "POST", body: JSON.stringify({ ai: true, positioning: "健身" }) }));
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
     const r = (await res.json()) as any;
+    expect(calls).toBe(0);
+    const { runDraftJobs } = await import("../src/lib/draft-jobs");
+    await runDraftJobs(deps);
+    const ready = await (await app.request("/api/drafts/" + r.draft.id, authed(token))).json() as any;
     expect(calls).toBe(2); // 第一版命中违禁词 → 重写一次
-    expect(r.draft.content).toBe("按这个顺序练：先激活再主项");
-    expect(r.draft.images).toEqual([]);
-    expect(r.draft.tags).toEqual(["健身", "臀腿"]);
-    expect(r.coverText).toBe("新手臀腿");
-    expect(r.warnings).toEqual([]);
+    expect(ready.content).toBe("按这个顺序练：先激活再主项");
+    expect(ready.images).toHaveLength(1);
+    expect(ready.images[0].url).toBe("");
+    expect(ready.tags).toEqual(["健身", "臀腿"]);
+    expect(ready.coverSpec.headline).toBe("新手臀腿");
+    expect(ready.generationWarnings).toEqual([]);
     expect(r.topic.status).toBe("drafted");
   });
 });

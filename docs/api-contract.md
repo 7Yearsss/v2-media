@@ -37,7 +37,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/topics | `TopicCreateRequest` → `Topic`（带 plannedAt 则 status=planned；sourceType 按来源自动判定） |
 | PATCH | /api/topics/:id | `TopicUpdateRequest`；plannedAt 设置→planned / 清空→idea；drafted、published 由系统流转，手动改 → 400 |
 | DELETE | /api/topics/:id | |
-| POST | /api/topics/:id/to-draft | 转草稿（幂等，已有 draftId 返回原草稿）→ `{draft,topic}`（topic→drafted） |
+| POST | /api/topics/:id/to-draft | 手写转草稿 201；`{ai:true,positioning?}` 异步成稿 202+`{draft,topic,jobId}`，后台自动出封面；已有 draftId 幂等返回 200，不覆盖 |
 | POST | /api/ai/topics | `{collectionId,count?≤10,accountId?}` → `{items:Topic[]}`：库内互动 Top30 → AI 生成选题+七维明细，服务端加权出 score 后落池 |
 | POST | /api/ai/topic-score | `{topicId}` → `{topic,verdict,advice}`：单条深评并回写 score/scoreDetail |
 | GET | /api/media/proxy?url= | 白名单 HTTPS 媒体代理，补 Referer；未启用 R2 时仍保存源链接，代理不代表永久转存 |
@@ -59,6 +59,17 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 - `PATCH /api/drafts/:id` 修改 images 时建议始终传 imagesVersion；当前或提交图集含 assetId 时必传（缺失 428，旧版本 409）。assetId 需属于该用户/原草稿并仍在图集中；正式 URL 由服务端取素材记录，不能用提交 URL 伪造 ready。历史纯 URL 图集兼容省略版本。文字修改按实际字段 PATCH，不携带旧 images 快照。
 - 创建发布任务拒绝空 URL/未 ready 素材。新发布任务冻结 title/content/tags/images；插件 pending/详情与 readback 标题均使用快照。历史任务无快照时继续读取草稿。GC 计入发布快照引用，容量压力不会删除引用中的对象；空间不足拒绝新上传处理。
 - 接收后源文件存 `DATA_DIR/uploads`，元数据与 `media_upload` job 写库；queued/processing 由 server worker 执行，插件不会领取。R2 和数据库回写成功后删除源文件；后台任务超过 20min 回收。无引用源文件满一天清理，仍被引用的失败源文件留供重试，移除后再清理。部署须保留 DATA_DIR（默认 apps/server/data 已被 rsync 排除）。
+
+## 自动成稿与模板封面
+
+- `POST /api/topics/:id/to-draft {ai:true,positioning?}` 校验当前用户、R2 可用性后，在事务中锁选题、创建唯一草稿及 `draft_generate` job，立即 202；请求不等 AI 或图片渲染。AI 成稿不复制来源笔记图片。无 ai/ai=false 保持手写转稿 201；已有绑定稿始终返回 200。未配置 R2 的新 AI 成稿返回 503，不创建半成品。
+- `GET /api/drafts/:id` 返回持久进度：`generationState=idle|queued|writing|done|failed`、generationError、generationWarnings、`textVersion`；封面另有 `coverSpec`、`coverRevision`、`coverState=idle|queued|processing|ready|failed`、coverError、coverAssetId。文字 done 后后台自动排 `cover_generate`，封面 ready 后写入 images[0]。
+- `POST /api/drafts/:id/cover` 接收 `{revision,spec}` → 202 `{draft,jobId}`。spec 为 `{templateVersion?,templateId,headline,subtitle?,points?,comparison?,backgroundAssetId?}`，templateVersion 缺省 1，并随参数持久保存。templateId=poster/checklist/comparison/photo；headline 最多 36 字符、subtitle 48、points 2–4 项各 28、comparison 两侧各 40。photo 仅允许当前用户 ready 的 upload 素材。无输入证据的自动模板回退 poster，不编步骤或借用原作者图片。
+- 封面参数非法 400、跨用户/不存在 404、旧 revision 或文字仍在生成 409、无 R2 503。新参数会替代未完成的旧任务；旧回执不可覆盖新参数。生成失败自动退避 30s/60s，三次后 failed；再次 POST cover 即重生成。保留上一张可用封面直到新图成功，成功只替换系统封面，保留用户图序。
+- `POST /api/drafts/:id/generate/retry` 只重试 failed 成稿，立即 202 `{draft,jobId}`；这是重新成稿并覆盖当前文字的明确动作。失败来源快照继续复用，新任务以当前 textVersion 为基线。手工 PATCH title/content/tags 增加 textVersion；AI 结果若发现期间有编辑则保留用户文字，状态 failed，并说明原因。
+- 移除系统封面会增加 coverRevision、置 coverState=idle、清 coverAssetId，同时取消未完成封面，迟到结果不能复活图片。当前草稿/封面 queued 或 processing/writing 时不能创建发布任务；重新生成 failed 但旧图仍可用时允许沿用旧图发布。
+- `MediaAsset.kind=upload|cover`；封面在 `/api/media/objects/cover/<64hex>`，1080×1440 PNG。cover 素材不走上传 retry 入口，要使用 cover 接口。文字与封面 worker 各自串行，慢模型不能阻塞其他草稿的封面渲染。服务端任务继续使用 queued/processing，插件不会领取。
+- 中文字体和 OFL 许可随 server assets 打包，渲染不依赖系统字体或网络下载。生成参数、文字警告与图片均持久保存，页面刷新继续轮询。
 
 ## 插件 API（同样 Bearer）
 

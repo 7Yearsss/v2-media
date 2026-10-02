@@ -105,6 +105,7 @@ export function mediaUploadModule(deps: Deps) {
     if (!Number.isInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
     const [asset] = await deps.db.select().from(mediaAssets).where(and(eq(mediaAssets.id, id), eq(mediaAssets.userId, c.get("userId"))));
     if (!asset) return c.json({ error: "素材不存在" }, 404);
+    if (asset.kind === "cover") return c.json({ error: "请使用草稿封面入口重新生成" }, 400);
     const result = await deps.db.transaction(async tx => {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${asset.draftId} FOR UPDATE`);
       const [draft] = await tx.select().from(drafts).where(eq(drafts.id, asset.draftId));

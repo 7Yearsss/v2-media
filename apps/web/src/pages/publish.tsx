@@ -72,7 +72,8 @@ function NewJobDrawer({
   const draft = drafts.find((d) => String(d.id) === draftId);
   const account = accounts.find((a) => String(a.id) === accountId);
   const imagesReady = Boolean(draft?.images.length && draft.images.every(i => i.url));
-  const ready = Boolean(draftId && accountId && imagesReady);
+  const draftGenerating = !!draft && (["queued", "writing"].includes(draft.generationState) || ["queued", "processing"].includes(draft.coverState));
+  const ready = Boolean(draftId && accountId && imagesReady && !draftGenerating);
   // 发布前自查：不经过草稿页的人也能看到风险（命中只提醒，不拦截）
   const { words: customWords } = useBannedWords();
   const risks = useMemo(() => {
@@ -164,8 +165,8 @@ function NewJobDrawer({
             </div>
           )}
 
-          {draft && !imagesReady && <p role="alert" className="rounded-xl bg-amber-500/10 px-3.5 py-3 text-xs text-amber-600">
-            {draft.images.length ? "图片尚未处理完成，请回草稿页等待或移除失败图片。" : "草稿需要至少一张图片，请先去草稿页上传或添加链接。"}
+          {draft && (!imagesReady || draftGenerating) && <p role="alert" className="rounded-xl bg-amber-500/10 px-3.5 py-3 text-xs text-amber-600">
+            {draftGenerating ? "草稿或封面仍在生成，请完成后再发布。" : draft.images.length ? "图片尚未处理完成，请回草稿页等待或移除失败图片。" : "草稿需要至少一张图片，请先去草稿页上传或添加链接。"}
           </p>}
 
           <div>

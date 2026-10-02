@@ -19,7 +19,8 @@ const updateSchema = z.object({
   title: z.string().optional(),
   content: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  images: z.array(z.object({ url: z.string(), assetId: z.number().int().positive().optional() })).max(IMAGE_UPLOAD_LIMITS.images).optional(),
+  images: z.array(z.object({ url: z.string(), assetId: z.number().int().positive().optional(),
+    width: z.number().int().positive().optional(), height: z.number().int().positive().optional() })).max(IMAGE_UPLOAD_LIMITS.images).optional(),
   imagesVersion: z.number().int().nonnegative().optional(),
   status: z.enum(["draft", "ready"]).optional(),
 });
@@ -99,12 +100,19 @@ export function draftsModule(deps: Deps) {
             return { error: "图片素材不存在或已移除", code: 400 as const };
           assetIds.add(a.id);
           image.url = a.status === "ready" ? a.url! : "";
+          if (a.status === "ready" && a.width && a.height) { image.width = a.width; image.height = a.height; }
         }
         const removed = ownedAssets.filter(a => existing.images.some(i => i.assetId === a.id) && !assetIds.has(a.id)).map(a => a.id);
         if (removed.length) await tx.update(mediaAssets).set({ status: "canceled" }).where(inArray(mediaAssets.id, removed));
       }
+      const removedCover = !!patch.images && !!existing.coverAssetId && !patch.images.some(i => i.assetId === existing.coverAssetId);
+      if (removedCover) await tx.update(mediaAssets).set({ status: "canceled" }).where(and(eq(mediaAssets.userId, userId),
+        eq(mediaAssets.draftId, id), eq(mediaAssets.kind, "cover"), inArray(mediaAssets.status, ["queued", "processing", "failed"])));
+      const editedText = patch.title !== undefined || patch.content !== undefined || patch.tags !== undefined;
       const [row] = await tx.update(drafts).set({
         ...patch, ...(patch.images ? { imagesVersion: existing.imagesVersion + 1 } : {}), updatedAt: deps.now(),
+        ...(editedText ? { textVersion: existing.textVersion + 1 } : {}),
+        ...(removedCover ? { coverState: "idle", coverError: null, coverAssetId: null, coverRevision: existing.coverRevision + 1 } : {}),
       }).where(eq(drafts.id, id)).returning();
       return { draft: row! };
     });

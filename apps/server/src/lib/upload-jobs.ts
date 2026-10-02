@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFile, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
@@ -7,6 +6,7 @@ import { IMAGE_UPLOAD_LIMITS } from "@v2media/shared";
 import type { Deps } from "../context";
 import { drafts, jobs, mediaAssets } from "../db/schema";
 import { env } from "../env";
+import { storeCreatedMedia } from "./created-media";
 
 export const uploadDirectory = (deps: Deps) => deps.uploadDir ?? join(env.dataDir, "uploads");
 interface Payload { assetId: number; base: string; attempts?: number }
@@ -53,18 +53,9 @@ export async function runUploadJobs(deps: Deps) {
       .resize({ width: 4096, height: 4096, fit: "inside", withoutEnlargement: true });
     const { data, info } = await (metadata.format === "jpeg" ? pipeline.jpeg({ quality: 95 }) : pipeline.png()).toBuffer({ resolveWithObject: true });
     if (data.length > IMAGE_UPLOAD_LIMITS.bytes) throw new Error("处理后的图片超过 10MiB，请缩小图片后重新上传");
-    const key = "upload/" + createHash("sha256").update(String(job.userId) + ":").update(data).digest("hex");
-    if (!/^https?:\/\//.test(p.base)) throw new Error("未配置有效的图片访问地址");
-    const [reserved] = await deps.db.update(mediaAssets).set({ key })
-      .where(and(eq(mediaAssets.id, asset.id), eq(mediaAssets.status, "processing"))).returning();
-    if (!reserved) { await finish(); return; }
-    if (!(await deps.r2.head(key))) {
-      const objects = (await Promise.all(["img/", "vid/", "avatar/", "upload/", "cover/"].map(prefix => deps.r2!.list(prefix)))).flat();
-      if (env.r2MaxBytes > 0 && objects.reduce((n, o) => n + o.size, 0) + data.length > env.r2MaxBytes)
-        throw new Error("图片存储容量不足，请联系管理员扩容");
-      await deps.r2.put(key, Uint8Array.from(data).buffer, metadata.format === "jpeg" ? "image/jpeg" : "image/png");
-    }
-    const url = p.base.replace(/\/$/, "") + "/api/media/objects/" + key;
+    const stored = await storeCreatedMedia(deps, job.userId, asset.id, "upload", data, metadata.format === "jpeg" ? "image/jpeg" : "image/png", p.base);
+    if (!stored) { await finish(); return; }
+    const { key, url } = stored;
     await deps.db.transaction(async tx => {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${asset.draftId} FOR UPDATE`);
       const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, asset.draftId), eq(drafts.userId, job.userId)));

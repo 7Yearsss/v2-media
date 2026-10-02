@@ -352,6 +352,15 @@ export interface Draft {
   /** 图集乐观锁版本；仅修改图片时需要携带。 */
   imagesVersion: number;
   uploads?: MediaAsset[];
+  textVersion: number;
+  generationState: "idle" | "queued" | "writing" | "done" | "failed";
+  generationError: string | null;
+  generationWarnings: Array<{ word: string; kind: string; count: number }>;
+  coverSpec: CoverSpec | null;
+  coverRevision: number;
+  coverState: "idle" | "queued" | "processing" | "ready" | "failed";
+  coverError: string | null;
+  coverAssetId: number | null;
   status: "draft" | "ready" | "published";
   updatedAt: string;
 }
@@ -361,6 +370,7 @@ export interface MediaAsset {
   id: number;
   draftId: number;
   filename: string;
+  kind: "upload" | "cover";
   status: "queued" | "processing" | "ready" | "failed" | "canceled";
   url: string | null;
   width: number | null;
@@ -368,6 +378,26 @@ export interface MediaAsset {
   error: string | null;
 }
 export interface MediaUploadResponse { asset: MediaAsset; draft: Draft }
+
+export const COVER_TEMPLATES = [
+  { id: "poster", name: "大字海报" },
+  { id: "checklist", name: "清单步骤" },
+  { id: "comparison", name: "前后对比" },
+  { id: "photo", name: "照片标题条" },
+] as const;
+export type CoverTemplateId = typeof COVER_TEMPLATES[number]["id"];
+export interface CoverSpec {
+  /** 持久保存渲染版式版本，首版为 1。 */
+  templateVersion?: number;
+  templateId: CoverTemplateId;
+  headline: string;
+  subtitle?: string;
+  points?: string[];
+  comparison?: { left: string; right: string };
+  backgroundAssetId?: number;
+}
+export interface CoverCreateRequest { spec: CoverSpec; revision: number }
+export interface DraftJobResponse { draft: Draft; jobId: number }
 
 /** 选题池条目（策划层）：一条"想写/计划写"的内容方向。 */
 export type TopicStatus =

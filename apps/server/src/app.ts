@@ -9,6 +9,7 @@ import { aiModule } from "./modules/ai";
 import { authMiddleware, authModule } from "./modules/auth";
 import { collectionsModule } from "./modules/collections";
 import { draftsModule } from "./modules/drafts";
+import { draftGenerationModule } from "./modules/draft-generation";
 import { extModule } from "./modules/ext";
 import { mediaModule } from "./modules/media";
 import { mediaUploadModule } from "./modules/media-upload";
@@ -35,6 +36,7 @@ export function createApp(deps: Deps) {
   secured.route("/notes", notesModule(deps));
   secured.route("/collections", collectionsModule(deps));
   secured.route("/drafts", draftsModule(deps));
+  secured.route("/drafts", draftGenerationModule(deps));
   secured.route("/ai", aiModule(deps));
   secured.route("/publish", publishModule(deps));
   secured.route("/topics", topicsModule(deps));

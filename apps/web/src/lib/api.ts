@@ -20,6 +20,8 @@ import type {
   Draft,
   DraftCreateRequest,
   DraftUpdateRequest,
+  CoverCreateRequest,
+  DraftJobResponse,
   MediaAsset,
   MediaUploadResponse,
   HostedAccount,
@@ -29,6 +31,7 @@ import type {
   Topic,
   TopicCreateRequest,
   TopicToDraftResponse,
+  TopicToDraftRequest,
   TopicUpdateRequest,
 } from "@v2media/shared";
 
@@ -366,6 +369,10 @@ export const api = {
   },
   retryImage: (id: number) => request<MediaAsset>(`/api/media/assets/${id}/retry`, { method: "POST" }),
   draft: (id: number) => request<Draft>(`/api/drafts/${id}`),
+  generateCover: (id: number, body: CoverCreateRequest) =>
+    request<DraftJobResponse>(`/api/drafts/${id}/cover`, { method: "POST", body }),
+  retryGeneration: (id: number) =>
+    request<DraftJobResponse>(`/api/drafts/${id}/generate/retry`, { method: "POST" }),
   createDraft: (body: DraftCreateRequest = {}) =>
     request<Draft>("/api/drafts", { method: "POST", body }),
   updateDraft: (id: number, body: DraftUpdateRequest) =>
@@ -390,7 +397,7 @@ export const api = {
     request<Topic>(`/api/topics/${id}`, { method: "PATCH", body }),
   deleteTopic: (id: number) =>
     request<void>(`/api/topics/${id}`, { method: "DELETE" }),
-  topicToDraft: (id: number, opts?: { ai?: boolean; positioning?: string }) =>
+  topicToDraft: (id: number, opts?: TopicToDraftRequest) =>
     request<TopicToDraftResponse>(`/api/topics/${id}/to-draft`, { method: "POST", body: opts }),
   aiTopics: (body: AiTopicsRequest) =>
     request<AiTopicsResponse>("/api/ai/topics", { method: "POST", body }),

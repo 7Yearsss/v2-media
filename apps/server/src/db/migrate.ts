@@ -212,6 +212,17 @@ CREATE TABLE IF NOT EXISTS media_assets (
   created_at timestamp DEFAULT now() NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS media_assets_user_upload ON media_assets(user_id, upload_id);
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS kind varchar(16) NOT NULL DEFAULT 'upload';
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS text_version integer NOT NULL DEFAULT 0;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_state varchar(16) NOT NULL DEFAULT 'idle';
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_revision integer NOT NULL DEFAULT 0;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_error text;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_warnings jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_spec jsonb;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_revision integer NOT NULL DEFAULT 0;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_state varchar(16) NOT NULL DEFAULT 'idle';
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_error text;
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_asset_id integer;
 `;
 
 export async function migrate(db: Db) {

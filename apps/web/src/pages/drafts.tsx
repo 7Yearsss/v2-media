@@ -19,6 +19,7 @@ import {
   DRAFT_LIMITS,
   summarizeBanned,
   type NoteImage,
+  type Draft,
 } from "@v2media/shared";
 import { AnimatedBadge } from "@/components/motion/animated-badge";
 import { Button } from "@/components/motion/button";
@@ -29,6 +30,7 @@ import {
 } from "@/components/motion/swipeable-list";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { DraftImages } from "@/components/app/draft-images";
+import { DraftCover } from "@/components/app/draft-cover";
 import { AiPanel } from "@/components/app/ai-panel";
 import { RiskTextarea } from "@/components/app/risk-textarea";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
@@ -88,6 +90,7 @@ export default function DraftsPage() {
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const timerRef = useRef<number | undefined>(undefined);
   const editingIdRef = useRef<number | null>(null);
+  const loadedTextVersion = useRef(0);
   const saveQueues = useRef(new Map<number, Promise<void>>());
   const failedSaves = useRef(new Map<number, Partial<{ title: string; content: string; tags: string[] }>>());
   const pendingSaveRef = useRef<{
@@ -103,6 +106,7 @@ export default function DraftsPage() {
     if (pending) void persist(pending.draftId, pending.fields);
     if (selected) {
       editingIdRef.current = selected.id;
+      loadedTextVersion.current = selected.textVersion;
       setTitle(selected.title);
       setContent(selected.content);
       setTags(selected.tags);
@@ -139,7 +143,8 @@ export default function DraftsPage() {
         if (editingIdRef.current === draftId) setSaveState("saving");
         const fields = { ...failedSaves.current.get(draftId), ...next };
         try {
-          await api.updateDraft(draftId, fields);
+          const saved = await api.updateDraft(draftId, fields);
+          queryClient.setQueryData(["draft-media", draftId], saved);
           failedSaves.current.delete(draftId);
           if (editingIdRef.current === draftId) {
             setSaveState(pendingSaveRef.current?.draftId === draftId ? "dirty" : "saved");
@@ -154,8 +159,27 @@ export default function DraftsPage() {
       saveQueues.current.set(draftId, saving);
       await saving;
     },
-    [invalidate],
+    [invalidate, queryClient],
   );
+
+  const syncGeneratedDraft = (draft: Draft) => {
+    if (editingIdRef.current !== draft.id) return;
+    queryClient.setQueryData<Draft[]>(["drafts"], current => current?.map(d => d.id === draft.id ? draft : d));
+    if (draft.textVersion !== loadedTextVersion.current && saveState === "saved" && !pendingSaveRef.current && !failedSaves.current.has(draft.id)) {
+      setTitle(draft.title); setContent(draft.content); setTags(draft.tags);
+      loadedTextVersion.current = draft.textVersion;
+    }
+  };
+  const beforeGenerate = async () => {
+    const draftId = editingIdRef.current;
+    if (draftId === null) return false;
+    window.clearTimeout(timerRef.current);
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (pending) await persist(pending.draftId, pending.fields);
+    await saveQueues.current.get(draftId);
+    return !failedSaves.current.has(draftId);
+  };
 
   /** 更新字段并触发防抖自动保存。 */
   const update = useCallback(
@@ -403,7 +427,7 @@ export default function DraftsPage() {
                 <Button
                   size="sm"
                   variant={selected.status === "ready" ? "secondary" : "outline"}
-                  disabled={toggleReady.isPending || saveState !== "saved" || (selected.status !== "ready" && (!images.length || images.some(i => !i.url)))}
+                  disabled={toggleReady.isPending || saveState !== "saved" || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || (selected.status !== "ready" && (!images.length || images.some(i => !i.url)))}
                   onClick={() => toggleReady.mutate()}
                 >
                   {selected.status === "ready" ? "取消就绪" : "标记就绪"}
@@ -572,7 +596,8 @@ export default function DraftsPage() {
                 </div>
               </div>
 
-              <DraftImages key={selected.id} draftId={selected.id} onImagesChange={(id, next) => {
+              <DraftCover key={`cover-${selected.id}`} draftId={selected.id} beforeGenerate={beforeGenerate} />
+              <DraftImages key={selected.id} draftId={selected.id} onDraftChange={syncGeneratedDraft} onImagesChange={(id, next) => {
                 if (editingIdRef.current === id) setImages(next);
               }} />
             </div>

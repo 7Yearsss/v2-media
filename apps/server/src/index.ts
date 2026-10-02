@@ -8,21 +8,23 @@ import { pruneMedia, sweepMediaBacklog } from "./lib/media-store";
 import { createR2 } from "./lib/r2";
 import { startMediaWorker } from "./lib/media-jobs";
 import { startUploadWorker } from "./lib/upload-jobs";
+import { startDraftWorker } from "./lib/draft-jobs";
 import { createOpenAiClient } from "./modules/ai";
 
 async function main() {
   const db = await createDb();
   if (!env.skipDbMigrations) await migrate(db);
   const r2 = createR2();
-  const app = createApp({
+  const deps = {
     db,
     ai: createOpenAiClient(),
     r2,
     now: () => new Date(),
-  });
-  const deps = { db, ai: null as never, r2, now: () => new Date() };
+  };
+  const app = createApp(deps);
   if (r2) startMediaWorker(deps);
   if (r2) startUploadWorker(deps);
+  if (r2) startDraftWorker(deps);
   // 启动兜底：上次进程退出可能把媒体转存打断，扫一遍外链残留补转存
   if (!env.disableMediaMaintenance) {
     void sweepMediaBacklog(deps).catch((err) =>

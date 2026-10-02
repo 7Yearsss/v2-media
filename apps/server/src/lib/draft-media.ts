@@ -5,7 +5,7 @@ import { mediaAssets } from "../db/schema";
 
 export function assetDto(a: typeof mediaAssets.$inferSelect): MediaAsset {
   return { id: a.id, draftId: a.draftId, filename: a.filename, status: a.status as MediaAsset["status"],
-    url: a.url, width: a.width, height: a.height, error: a.error };
+    kind: a.kind as MediaAsset["kind"], url: a.url, width: a.width, height: a.height, error: a.error };
 }
 
 export async function draftWithUploads(db: Db, draft: typeof import("../db/schema").drafts.$inferSelect) {

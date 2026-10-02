@@ -36,6 +36,8 @@ export function publishModule(deps: Deps) {
       .where(and(eq(drafts.id, p.draftId), eq(drafts.userId, userId)))
       .limit(1);
     if (!draft) return c.json({ error: "draft not found" }, 404);
+    if (["queued", "writing"].includes(draft.generationState) || ["queued", "processing"].includes(draft.coverState))
+      return c.json({ error: "草稿或封面仍在生成，请完成后再发布" }, 400);
     if (!draft.title.trim() || !draft.images.length)
       return c.json({ error: "草稿需要标题和至少一张图片" }, 400);
     const assets = await deps.db.select().from(mediaAssets).where(and(eq(mediaAssets.draftId, draft.id), eq(mediaAssets.userId, userId)));

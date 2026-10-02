@@ -1,4 +1,4 @@
-import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, NoteImage } from "@v2media/shared";
+import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -100,6 +100,16 @@ export const drafts = pgTable("drafts", {
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
   images: jsonb("images").$type<NoteImage[]>().notNull().default([]),
   imagesVersion: integer("images_version").notNull().default(0),
+  textVersion: integer("text_version").notNull().default(0),
+  generationState: varchar("generation_state", { length: 16 }).notNull().default("idle"),
+  generationRevision: integer("generation_revision").notNull().default(0),
+  generationError: text("generation_error"),
+  generationWarnings: jsonb("generation_warnings").$type<Array<{ word: string; kind: string; count: number }>>().notNull().default([]),
+  coverSpec: jsonb("cover_spec").$type<CoverSpec>(),
+  coverRevision: integer("cover_revision").notNull().default(0),
+  coverState: varchar("cover_state", { length: 16 }).notNull().default("idle"),
+  coverError: text("cover_error"),
+  coverAssetId: integer("cover_asset_id"),
   status: varchar("status", { length: 32 }).notNull().default("draft"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -133,6 +143,7 @@ export const mediaAssets = pgTable("media_assets", {
   draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
   uploadId: varchar("upload_id", { length: 36 }).notNull(),
   filename: varchar("filename", { length: 255 }).notNull(),
+  kind: varchar("kind", { length: 16 }).notNull().default("upload"),
   sourceFile: varchar("source_file", { length: 64 }).notNull(),
   sourceHash: varchar("source_hash", { length: 64 }).notNull(),
   status: varchar("status", { length: 16 }).notNull().default("queued"),

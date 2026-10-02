@@ -7,8 +7,9 @@ import { Input } from "@/components/motion/input";
 import { api, ApiError, mediaUrl } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 
-export function DraftImages({ draftId, onImagesChange }: {
+export function DraftImages({ draftId, onImagesChange, onDraftChange }: {
   draftId: number; onImagesChange: (draftId: number, images: NoteImage[]) => void;
+  onDraftChange?: (draft: Draft) => void;
 }) {
   const client = useQueryClient();
   const toast = useToast();
@@ -21,14 +22,20 @@ export function DraftImages({ draftId, onImagesChange }: {
   const key = ["draft-media", draftId] as const;
   const query = useQuery({
     queryKey: key, queryFn: () => api.draft(draftId),
-    refetchInterval: q => q.state.data?.uploads?.some(a => a.status === "queued" || a.status === "processing") ? 2000 : false,
+    refetchInterval: q => {
+      const d = q.state.data;
+      return d && (["queued", "writing"].includes(d.generationState) || ["queued", "processing"].includes(d.coverState)
+        || d.uploads?.some(a => a.status === "queued" || a.status === "processing")) ? 2000 : false;
+    },
   });
   const draft = query.data;
   const images = draft?.images ?? [];
   const changeRef = useRef(onImagesChange);
   changeRef.current = onImagesChange;
+  const draftChangeRef = useRef(onDraftChange);
+  draftChangeRef.current = onDraftChange;
   useEffect(() => {
-    if (draft) changeRef.current(draftId, draft.images);
+    if (draft) { changeRef.current(draftId, draft.images); draftChangeRef.current?.(draft); }
   }, [draft, draftId]);
   const accept = useCallback((next: Draft) => {
     client.setQueryData(["draft-media", next.id], next);
@@ -96,7 +103,7 @@ export function DraftImages({ draftId, onImagesChange }: {
           <div className="flex aspect-square items-center justify-center">
             {image.url ? <img src={mediaUrl(image.url)} alt={`图 ${index + 1}`} className="size-full object-cover" /> :
               <div className="px-2 text-center text-xs text-muted-foreground">
-                {asset?.status === "failed" ? <span className="text-destructive">上传失败</span> : <><Loader2 className="mx-auto mb-1 size-4 animate-spin" />{asset?.status === "processing" ? "正在处理" : "等待处理"}</>}
+                {asset?.status === "failed" ? <span className="text-destructive">{asset.kind === "cover" ? "封面生成失败" : "上传失败"}</span> : <><Loader2 className="mx-auto mb-1 size-4 animate-spin" />{asset?.kind === "cover" ? "正在生成封面" : asset?.status === "processing" ? "正在处理" : "等待处理"}</>}
                 <p className="mt-1 line-clamp-2 break-all">{asset?.filename ?? "图片"}</p>
               </div>}
           </div>
@@ -109,11 +116,11 @@ export function DraftImages({ draftId, onImagesChange }: {
           </div>
           {asset?.status === "failed" && <div className="px-2 pb-2 text-[10px] text-destructive">
             <p className="break-words">{asset?.error}</p>
-            <button disabled={busy} onClick={async () => {
+            {asset.kind === "cover" ? <p className="mt-1">请在封面编辑区重新生成</p> : <button disabled={busy} onClick={async () => {
               setBusy(true);
               try { await api.retryImage(asset!.id); await query.refetch(); }
               catch (e) { fail(e); } finally { if (mounted.current) setBusy(false); }
-            }} className="mt-1 flex items-center gap-1 underline"><RotateCcw className="size-3" />重试上传</button>
+            }} className="mt-1 flex items-center gap-1 underline"><RotateCcw className="size-3" />重试上传</button>}
           </div>}
         </div>;
       })}

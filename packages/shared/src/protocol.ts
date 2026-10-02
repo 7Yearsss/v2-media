@@ -105,7 +105,7 @@ export interface DraftUpdateRequest {
   title?: string;
   content?: string;
   tags?: string[];
-  images?: { url: string; assetId?: number }[];
+  images?: { url: string; assetId?: number; width?: number; height?: number }[];
   imagesVersion?: number;
   status?: "draft" | "ready";
 }
@@ -172,13 +172,16 @@ export interface TopicUpdateRequest {
   plannedAt?: number | null;
 }
 
-/** POST /api/topics/:id/to-draft → { draft, topic } */
+export interface TopicToDraftRequest { ai?: boolean; positioning?: string }
+/** POST /api/topics/:id/to-draft → { draft, topic, jobId? } */
 export interface TopicToDraftResponse {
   draft: Draft;
   topic: Topic;
-  /** AI 成稿时的封面大字建议。 */
+  /** AI 成稿立即返回 202，任务与封面进度在 draft 详情中。 */
+  jobId?: number;
+  /** 旧同步成稿响应兼容字段；新接口从 draft.coverSpec 读取。 */
   coverText?: string;
-  /** AI 成稿自查后仍命中的违禁词。 */
+  /** 旧同步响应兼容字段；新接口从 draft.generationWarnings 读取。 */
   warnings?: Array<{ word: string; kind: string; count: number }>;
 }
 
