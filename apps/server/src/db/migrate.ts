@@ -231,6 +231,23 @@ ALTER TABLE drafts ADD COLUMN IF NOT EXISTS account_id integer REFERENCES hosted
 ALTER TABLE drafts ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
 ALTER TABLE topics ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
 ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS score_method text;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS score_model text;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS scored_at timestamp;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS planning_snapshot jsonb;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS cover_snapshot jsonb;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS published_at timestamp;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS reported_at timestamp;
+CREATE TABLE IF NOT EXISTS postmortem_reports (
+  id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id),
+  publish_job_id integer NOT NULL REFERENCES publish_jobs(id) ON DELETE CASCADE,
+  status varchar(16) NOT NULL DEFAULT 'queued', model text NOT NULL, prompt_version text NOT NULL,
+  evidence jsonb NOT NULL, insight jsonb, error text,
+  created_at timestamp NOT NULL DEFAULT now(), finished_at timestamp
+);
+CREATE INDEX IF NOT EXISTS postmortem_reports_job ON postmortem_reports(user_id, publish_job_id, id);
+ALTER TABLE postmortem_reports ADD COLUMN IF NOT EXISTS engine varchar(16);
+CREATE INDEX IF NOT EXISTS note_metrics_job_time ON note_metrics(user_id, publish_job_id, captured_at, id);
 `;
 
 export async function migrate(db: Db) {

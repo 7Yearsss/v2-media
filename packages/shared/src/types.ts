@@ -501,6 +501,9 @@ export type PublishOutcome =
   | "readback_error"; // 其他读回失败（超时/页面结构变了）
 
 export interface PublishJob {
+  publishedAt?: string | null;
+  reportedAt?: string | null;
+  planningSnapshot?: import("./insights").PlanningSnapshot | null;
   personaSnapshot?: AccountPersonaSnapshot | null;
   id: number;
   draftId: number;

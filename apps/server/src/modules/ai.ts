@@ -89,6 +89,7 @@ const TOPIC_SCORE_WEIGHTS: Record<string, number> = {
   risk: 7,
 };
 const SCORE_DIMS = Object.keys(TOPIC_SCORE_WEIGHTS);
+export const TOPIC_SCORE_METHOD = "seven-dim-v1:25/20/15/15/10/8/7";
 
 /** 七维明细 → 综合分（0-100 取整）。维度缺失按 5 分兜底（不给极端值）。 */
 function weightedScore(detail: Record<string, number>): number {
@@ -324,6 +325,7 @@ export function aiModule(deps: Deps) {
           status: "idea",
           score: weightedScore(s.scoreDetail),
           scoreDetail: s.scoreDetail,
+          scoreMethod: TOPIC_SCORE_METHOD, scoreModel: env.aiModel, scoredAt: deps.now(),
           personaSnapshot: persona.snapshot,
         })
         .returning();
@@ -366,12 +368,13 @@ export function aiModule(deps: Deps) {
       .set({
         score: weightedScore(scoreDetail),
         scoreDetail,
+        scoreMethod: TOPIC_SCORE_METHOD, scoreModel: env.aiModel, scoredAt: deps.now(),
         personaSnapshot: persona.snapshot,
         updatedAt: deps.now(),
       })
-      .where(and(eq(topics.id, topic.id), eq(topics.userId, userId), sql`${topics.accountId} IS NOT DISTINCT FROM ${topic.accountId}`))
+      .where(and(eq(topics.id, topic.id), eq(topics.userId, userId), eq(topics.title, topic.title), eq(topics.angle, topic.angle), sql`${topics.accountId} IS NOT DISTINCT FROM ${topic.accountId}`))
       .returning();
-    if (!row) return c.json({ error: "选题目标账号已变化，请重新评分" }, 409);
+    if (!row) return c.json({ error: "选题内容或目标账号已变化，请重新评分" }, 409);
     return c.json({
       topic: row,
       verdict: typeof j?.verdict === "string" ? j.verdict : "",

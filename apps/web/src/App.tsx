@@ -17,6 +17,7 @@ import ExtensionPage from "@/pages/extension";
 import LibraryPage from "@/pages/library";
 import LoginPage from "@/pages/login";
 import PublishPage from "@/pages/publish";
+import InsightsPage from "@/pages/insights";
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { token } = useAuth();
@@ -46,6 +47,8 @@ export default function App() {
         <Route path="drafts/:id" element={<DraftsPage />} />
         <Route path="accounts" element={<AccountsPage />} />
         <Route path="publish" element={<PublishPage />} />
+        <Route path="insights" element={<InsightsPage />} />
+        <Route path="insights/:id" element={<InsightsPage />} />
         <Route path="extension" element={<ExtensionPage />} />
         <Route
           path="*"

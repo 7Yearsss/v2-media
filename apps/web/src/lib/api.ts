@@ -27,6 +27,7 @@ import type {
   MediaAsset,
   MediaUploadResponse,
   HostedAccount,
+  InsightsQuery, InsightsOverview, InsightsNotesPage, InsightNoteDetail, PostmortemReport, PostmortemCreateRequest,
   NoteComment,
   PublishJob,
   PublishJobCreateRequest,
@@ -269,6 +270,10 @@ export function normalizeOverview(raw: unknown): OverviewStats {
 // ---------- 端点 ----------
 
 export const api = {
+  insightsOverview: (query: InsightsQuery) => request<InsightsOverview>("/api/insights/overview", { query: { ...query } }),
+  insightsNotes: (query: InsightsQuery) => request<InsightsNotesPage>("/api/insights/notes", { query: { ...query } }),
+  insightNote: (id: number) => request<InsightNoteDetail>(`/api/insights/notes/${id}`),
+  postmortem: (publishJobId: number, refresh = false) => request<PostmortemReport>("/api/ai/postmortem", { method: "POST", body: { publishJobId, refresh } satisfies PostmortemCreateRequest }),
   register: (body: AuthRequest) =>
     request<AuthResponse>("/api/auth/register", { method: "POST", body }),
   login: (body: AuthRequest) =>

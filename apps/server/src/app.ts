@@ -17,6 +17,8 @@ import { notesModule } from "./modules/notes";
 import { overviewModule } from "./modules/overview";
 import { publishModule } from "./modules/publish";
 import { topicsModule } from "./modules/topics";
+import { insightsModule } from "./modules/insights";
+import { postmortemModule } from "./modules/postmortem";
 
 export function createApp(deps: Deps) {
   const app = new Hono();
@@ -38,6 +40,8 @@ export function createApp(deps: Deps) {
   secured.route("/drafts", draftsModule(deps));
   secured.route("/drafts", draftGenerationModule(deps));
   secured.route("/ai", aiModule(deps));
+  secured.route("/ai", postmortemModule(deps));
+  secured.route("/insights", insightsModule(deps));
   secured.route("/publish", publishModule(deps));
   secured.route("/topics", topicsModule(deps));
   secured.route("/overview", overviewModule(deps));

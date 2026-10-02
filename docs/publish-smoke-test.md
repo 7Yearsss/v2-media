@@ -88,3 +88,7 @@
 - `note_metrics.id=1` 已落库，publish_job_id=13、user_id=2，captured_at=`2026-10-02 02:55:39.157293` UTC（北京时间 10:55:39）。likes/collects/comments/shares 均为 0；views/exposure 为 NULL（未采到，不能当作 0）。
 - metrics #87/#88 仍 pending，分别在北京时间 **10 月 3 日 09:48、10 月 9 日 09:48** 到期。首条快照比排定时间晚约 7 分钟，且排期基于核对成功时刻，不是原发布时间。
 - T0 最小验收「verified + note_id + 至少一条真实 note_metrics」已满足。1 天/7 天任务尚未完成，不能据此声称全周期跑完。无手工补数据、改 due_at 或删除生产测试痕迹。
+
+### T4 页面接入前只读复查（2026-10-02 16:08，北京时间）
+
+再次通过隧道在 READ ONLY 事务查询 ID #2（admin@devin.local）：发布 #13 保持 verified，真实 note_metrics 仍为 1 行；#85/#86 done，#87/#88 pending，排期未变。账号 #1 有 6 条真实概览快照。本轮仅将选定字段复制到 Git 忽略目录，用隔离内存库检查 T4 页面，未执行生产迁移、补写指标、创建真实发布任务或清理旧记录。隔离页面明显标记快照来源与截止时刻。

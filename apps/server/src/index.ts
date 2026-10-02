@@ -9,6 +9,7 @@ import { createR2 } from "./lib/r2";
 import { startMediaWorker } from "./lib/media-jobs";
 import { startUploadWorker } from "./lib/upload-jobs";
 import { startDraftWorker } from "./lib/draft-jobs";
+import { startPostmortemWorker } from "./lib/postmortem-jobs";
 import { createOpenAiClient } from "./modules/ai";
 
 async function main() {
@@ -22,6 +23,7 @@ async function main() {
     now: () => new Date(),
   };
   const app = createApp(deps);
+  startPostmortemWorker(deps);
   if (r2) startMediaWorker(deps);
   if (r2) startUploadWorker(deps);
   if (r2) startDraftWorker(deps);

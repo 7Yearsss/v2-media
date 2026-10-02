@@ -1,5 +1,6 @@
 import {
   Bell,
+  ChartNoAxesCombined,
   BrainCircuit,
   ChevronsUpDown,
   Layers,
@@ -73,6 +74,7 @@ const NAV = [
   { to: "/drafts", label: "草稿工坊", icon: NotebookPen, match: /^\/drafts/ },
   { to: "/accounts", label: "账号矩阵", icon: Users, match: /^\/accounts/ },
   { to: "/publish", label: "发布中心", icon: SendHorizontal, match: /^\/publish/ },
+  { to: "/insights", label: "数据洞察", icon: ChartNoAxesCombined, match: /^\/insights/ },
   { to: "/extension", label: "采集插件", icon: Puzzle, match: /^\/extension/ },
 ] as const;
 
@@ -84,6 +86,7 @@ const PAGE_TITLES: [RegExp, string][] = [
   [/^\/drafts/, "草稿工坊"],
   [/^\/accounts/, "账号矩阵"],
   [/^\/publish/, "发布中心"],
+  [/^\/insights/, "数据洞察"],
   [/^\/extension/, "采集插件"],
 ];
 
@@ -376,6 +379,7 @@ export function AppShell() {
           </header>
 
           <main className="min-h-0 flex-1 overflow-y-auto">
+            {import.meta.env.VITE_PREVIEW_NOTICE && <p role="status" className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{import.meta.env.VITE_PREVIEW_NOTICE}</p>}
             <Outlet />
           </main>
         </AnimatedSidebarInset>

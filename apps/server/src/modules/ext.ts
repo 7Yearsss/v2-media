@@ -532,6 +532,7 @@ export function extModule(deps: Deps) {
       .update(publishJobs)
       .set({
         status: parsed.data.status,
+        ...(parsed.data.status === "done" ? { reportedAt: deps.now() } : {}),
         resultUrl: parsed.data.resultUrl,
         error: parsed.data.error,
         updatedAt: deps.now(),
@@ -648,6 +649,7 @@ export function extModule(deps: Deps) {
       .where(and(eq(jobs.id, id), eq(jobs.userId, userId)))
       .limit(1);
     if (!job) return c.json({ error: "not found" }, 404);
+    if (!["readback", "metrics", "account_snapshot"].includes(job.type)) return c.json({ error: "server task cannot be completed by extension" }, 400);
     const now = deps.now();
     const { status, data } = parsed.data;
     const payload = (job.payload ?? {}) as Record<string, unknown>;
@@ -710,6 +712,9 @@ export function extModule(deps: Deps) {
         .update(publishJobs)
         .set({
           outcome,
+          ...(outcome === "verified" && match?.publishTime && Number.isFinite(new Date(match.publishTime).getTime())
+            && new Date(match.publishTime).getTime() > 0 && new Date(match.publishTime).getTime() <= now.getTime()
+            ? { publishedAt: new Date(match.publishTime) } : {}),
           noteId: match?.noteId ?? null,
           resultUrl: match?.url ?? undefined,
           verifiedAt: outcome === "verified" ? now : null,
@@ -750,11 +755,12 @@ export function extModule(deps: Deps) {
           .where(and(eq(publishJobs.noteId, noteId), eq(publishJobs.userId, userId)))
           .limit(1);
         if (!pj) continue;
-        const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : null);
+        const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 2_147_483_647 ? Math.round(v) : null);
         await deps.db.insert(noteMetrics).values({
           userId,
           publishJobId: pj.id,
           noteId,
+          capturedAt: now,
           noteUrl: typeof r.url === "string" ? r.url : (d.extra as Record<string, unknown>)?.noteUrl as string | undefined,
           views: num(r.views),
           likes: num(r.likes),
@@ -762,7 +768,8 @@ export function extModule(deps: Deps) {
           comments: num(r.comments),
           shares: num(r.shares),
           exposure: num(r.exposure),
-          extra: (d.extra ?? null) as Record<string, unknown> | null,
+          extra: { ...(d.extra ?? {}), taskId: job.id, scheduledFor: job.dueAt?.toISOString() ?? null,
+            source: typeof d.extra?.source === "string" ? d.extra.source : "browser_readback" },
         });
       }
     } else if (job.type === "account_snapshot" && status === "done") {

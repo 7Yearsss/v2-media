@@ -151,6 +151,14 @@ export function topicsModule(deps: Deps) {
       if (t.status !== p.status) return c.json({ error: "该状态由系统流转，不能手动设置" }, 400);
     }
     const patch: Record<string, unknown> = { updatedAt: deps.now() };
+    if (p.title !== undefined || p.angle !== undefined || p.accountId !== undefined) {
+      const current = await owned(userId, id);
+      if (!current) return c.json({ error: "not found" }, 404);
+      if ((p.title !== undefined && p.title !== current.title) || (p.angle !== undefined && p.angle !== current.angle)
+        || (p.accountId !== undefined && p.accountId !== current.accountId)) {
+        patch.score = null; patch.scoreDetail = null; patch.scoreMethod = null; patch.scoreModel = null; patch.scoredAt = null;
+      }
+    }
     if (p.title !== undefined) patch.title = p.title;
     if (p.angle !== undefined) patch.angle = p.angle;
     if (p.status !== undefined) patch.status = p.status;

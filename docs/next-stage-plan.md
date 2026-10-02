@@ -1,6 +1,6 @@
 # 下一阶段实施计划：从文字成稿到可发布笔记
 
-2026-10-02。基于当前代码核对，范围为 T1–T5 的规划；本文件没有表示这些功能已实现。入口说明见 `handoff-next-steps.md`，真实发布和回采证据见 `publish-smoke-test.md`。
+2026-10-02 初始规划，范围为 T1–T5。随后 T1–T4 已在功能分支实现，具体代码验收与生产待办见 `t1-upload-verification.md`、`t2-cover-verification.md`、`t3-persona-verification.md`、`t4-insights-verification.md`；本文件保留原实施思路。入口说明见 `handoff-next-steps.md`，真实发布和回采证据见 `publish-smoke-test.md`。
 
 ## 目标与顺序
 
@@ -19,7 +19,7 @@
 
 T1–T3 可在等待回采期间推进。T4 的契约、查询和空态可先准备；评分校准不得由当前一篇私密测试笔记得出。T5 先落小范围试跑，原规划的作者任务、推荐页和高级条件分后续切片。
 
-## 当前代码里的实施约束
+## 规划时的代码约束（T1/T2 已处理，保留设计缘由）
 
 1. `app.ts` 将整个 `mediaModule` 放在无鉴权区域。上传和素材状态查询必须在 `secured` 下注册；对象读取继续兼容 `<img>` 与插件下载。
 2. `topics.ts` 的 AI `to-draft` 仍同步等待模型，生成的 `cover` 仅以 `coverText` 返回，草稿内没有持久化。T2 要同时处理异步成稿、封面状态与幂等。
@@ -145,4 +145,4 @@ T1–T3 可在等待回采期间推进。T4 的契约、查询和空态可先准
 
 建议切成 T1、T2a、T2b、T3、T4a、T4b、T5 多个可审查变更。每片先 shared 契约，再 server/DDL，最后 web/extension，更新 `docs/api-contract.md`。生产需要新版 objects 路由后才能使用新素材 URL；上传临时目录、字体包和相关配置要进入部署核对。
 
-代码阶段执行 `npm run typecheck`、`npm test`、`npm run build:ext`；修改 web 或部署素材时还执行 web build。真实发布测试全部 private，保留生产测试痕迹，记录具体任务和平台结果。本轮仅形成计划，没有改接口、执行迁移、发布新笔记或推送 main。
+代码阶段执行 `npm run typecheck`、`npm test`、`npm run build:ext`；修改 web 或部署素材时还执行 web build。真实发布测试全部 private，保留生产测试痕迹，记录具体任务和平台结果。当前功能分支尚未推送 main、执行生产迁移或发布新测试笔记；T4 校准仅支持观察工具，实际统计校准待公开可比样本。

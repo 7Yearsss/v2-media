@@ -1,4 +1,4 @@
-import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage } from "@v2media/shared";
+import type { AccountPersonaSnapshot, AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, CoverSpec, NoteImage, PlanningSnapshot, PostmortemEvidence, PostmortemInsight } from "@v2media/shared";
 import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -123,6 +123,10 @@ export const drafts = pgTable("drafts", {
 });
 
 export const publishJobs = pgTable("publish_jobs", {
+  planningSnapshot: jsonb("planning_snapshot").$type<PlanningSnapshot>(),
+  coverSnapshot: jsonb("cover_snapshot").$type<CoverSpec>(),
+  publishedAt: timestamp("published_at"),
+  reportedAt: timestamp("reported_at"),
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
   draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
@@ -165,6 +169,9 @@ export const mediaAssets = pgTable("media_assets", {
 
 /** 选题池（策划层）：一条"想写/计划写"的内容方向，串联 draft → publish_job。 */
 export const topics = pgTable("topics", {
+  scoreMethod: text("score_method"),
+  scoreModel: text("score_model"),
+  scoredAt: timestamp("scored_at"),
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
   personaSnapshot: jsonb("persona_snapshot").$type<AccountPersonaSnapshot>(),
@@ -236,4 +243,16 @@ export const accountSnapshots = pgTable("account_snapshots", {
   likesTotal: integer("likes_total"),
   notesCount: integer("notes_count"),
   extra: jsonb("extra").$type<Record<string, unknown>>(),
+});
+
+export const postmortemReports = pgTable("postmortem_reports", {
+  engine: varchar("engine", { length: 16 }),
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  publishJobId: integer("publish_job_id").notNull().references(() => publishJobs.id, { onDelete: "cascade" }),
+  status: varchar("status", { length: 16 }).notNull().default("queued"),
+  model: text("model").notNull(), promptVersion: text("prompt_version").notNull(),
+  evidence: jsonb("evidence").$type<PostmortemEvidence>().notNull(),
+  insight: jsonb("insight").$type<PostmortemInsight>(), error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(), finishedAt: timestamp("finished_at"),
 });

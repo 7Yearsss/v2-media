@@ -58,6 +58,21 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 - `to-draft {ai:true,positioning?}` 冻结目标账号三字段，定位覆盖语义同分析；任务执行前后检查写作账号和文字版本。成稿重试读取当前写作账号人设；原定位覆盖仅在仍是原账号时复用。
 - `POST /api/publish/jobs` 可增加 `personaVersion`，过期返回 409；创建时锁实际目标账号与草稿，并冻结 `PublishJob.personaSnapshot` 与正文图集快照。旧客户端省略版本仍兼容。发布页展示目标账号红线与成稿账号不一致提示；自然语言红线是提示词/人工自查上下文，确定性违禁词校验仍沿用已有机制。
 
+## 数据洞察与单篇复盘
+
+- `GET /api/insights/overview|notes`：Bearer + 当前用户隔离。筛选 `accountId?`、`from?/to?`（unix ms，笔记按发布任务创建日期，账号趋势按实际采样日期）、`horizon=latest|1h|24h|7d`、`includePrivate=1?`。无账号归属 404，非法日期/范围/窗口 400。默认只显示 status=done 的公开任务；非公开笔记可显式包含，永远不纳入评分对照。
+- `/overview` 返回 `InsightsOverview`：笔记数、窗口内有样本数、排除非公开/重复数、六项指标合计及各自覆盖篇数、账号粉丝/获赞/发文时序、评分分组对照。指标每篇只选一个快照，不叠加累计快照；没有有效值的合计为 null。四项互动齐全才计算 interactions。账号未采到字段保持 null；不按日期插值，也不把缺失补成 0。
+- `/notes` 返回 `{items:InsightNote[],total,nextOffset}`，每页 30 条，`offset?` 非负整数。先按账号分组，再按完整互动降序（缺失放最后），同值任务 ID 降序。相同账号/已核对 noteId 的重复任务保留最早任务作为规范记录，不混合不同发布任务的策划依据。仅接受本用户、与该任务已确认 noteId 匹配的指标。
+- `latest` 取 capturedAt 最新快照（同时间 ID 最大）。观察窗口按 **平台实际发布时间** 计算：1h=[1h,2h)、24h=[24h,48h)、7d=[168h,192h)，取窗口内最早快照（同时间 ID 最小）。窗口不是准点快照；发布时间缺失或窗口内未采到均返回 metric=null，不能用 verifiedAt/任务创建时间替代。
+- `InsightMetric` 六字段为 number|null，另有 capturedAt、ageMs（实际发布时间缺失则 null）、scheduledFor/delayMs（旧指标缺排期则 null）、source（历史缺失 unknown）、interactions。详情不返回原始 extra/xsecToken。新指标回执保存接收时实采时间、原任务排期与来源；没有合法非负数值的字段为 null。
+- 新 `PublishJob` 冻结 `planningSnapshot`（选题 ID、标题、分数/七维明细、评分口径、配置模型、评分时刻、评分人设/目标账号）与 `coverSnapshot`，按草稿关联捕捉，不依赖 topic 最后一次 publishJobId。AI 新评分记录方法/模型/时间；改选题标题、角度或目标账号会清空失效评分，评分期间发生上述变更拒绝旧结果（409）。历史评分方法/发布快照不做推测回填。
+- 新回执 `reportedAt` 是插件发布成功回报时刻；`publishedAt` 仅取读回匹配项提供的有效平台时间，不晚于接收时刻。`verifiedAt` 仍是核对时刻，三者不混用。现有 metrics 排期仍以 verifiedAt 为基准，洞察按真实 capturedAt 展示实际笔记年龄。
+- 校准对照只纳入公开、已核对、窗口内完整互动、实际发布时间与发布前评分依据俱全、评分目标账号与发布账号一致的样本。按账号、评分口径、模型、分数段（0–59/60–79/80–100）分组，展示样本数、分数/流量潜力/互动/浏览/曝光中位数、覆盖与实际年龄范围。latest 不生成校准对照。不自动更新权重/提示词；现有样本不足以作统计校准，变现/成本/合规不能从互动推断。
+- `GET /api/insights/notes/:publishJobId` → `{note,evidence,reports}`：当前正文与全部实采时序、封面/人设/评分快照、确定性数据缺口，最多 20 份复盘历史。旧任务无正文快照时明确显示当前草稿；不假装还原发布原文。
+- `POST /api/ai/postmortem {publishJobId,refresh?}` → `PostmortemReport`。成功发布任务才可复盘；跨用户 404，其他状态 400。事务锁任务、冻结证据并排 `jobs.type=postmortem/status=queued`，立即 202。并发/活动任务幂等；已有 done 且未 refresh 返回 200；refresh 明确按最新证据建新历史，失败可重试。
+- 报告状态 queued/running/done/failed，页面通过单篇详情轮询；记录 promptVersion/model、冻结 evidence、结构化 insight、error、engine。server worker 处理，插件不能领取/回报此任务。12 分钟遗留 processing 回收为 failed，迟到模型不能覆盖失败报告。
+- 无指标、非公开笔记或历史正文缺失：engine=data_only，列数据缺口和补齐步骤，不调用 AI 评价传播表现。其余 engine=ai，模型必须区分观察/可能原因/实验，引用已提供指标 ID，引用不存在或格式无效则 failed。确定性 gaps 始终展示；模型文本仍需人工判断，不承诺消除所有无依据推断。缺浏览/曝光不能宣称互动率/点击率或推荐因果，零互动不等于内容失败。
+
 ## 草稿图片上传
 
 上传与素材状态接口需 Bearer 鉴权；媒体 objects 的 GET 仍无鉴权，供图片标签和插件下载使用。

@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { drafts, hostedAccounts, mediaAssets, publishJobs } from "../db/schema";
+import { drafts, hostedAccounts, mediaAssets, publishJobs, topics } from "../db/schema";
 import { snapshotPersona } from "../lib/account-persona";
 
 const createSchema = z.object({
@@ -48,11 +48,17 @@ export function publishModule(deps: Deps) {
       const assets = await tx.select().from(mediaAssets).where(and(eq(mediaAssets.draftId, draft.id), eq(mediaAssets.userId, userId)));
       if (draft.images.some(i => !i.url.trim() || (i.assetId && !assets.some(a => a.id === i.assetId && a.status === "ready" && a.url === i.url))))
         return { error: "草稿图片尚未上传完成，请等待或移除失败图片", code: 400 as const };
+      const [topic] = await tx.select().from(topics).where(and(eq(topics.draftId, draft.id), eq(topics.userId, userId))).orderBy(desc(topics.updatedAt), desc(topics.id)).limit(1);
       const [job] = await tx.insert(publishJobs).values({
         userId, draftId: p.draftId, accountId: p.accountId,
         scheduledAt: p.scheduledAt ? new Date(p.scheduledAt) : null, visibility: p.visibility,
         draftSnapshot: { title: draft.title, content: draft.content, tags: draft.tags, images: draft.images },
         personaSnapshot: snapshotPersona(account),
+        coverSnapshot: draft.coverSpec,
+        planningSnapshot: topic ? { version: 1, topicId: topic.id, title: topic.title,
+          score: topic.score, scoreDetail: topic.scoreDetail, scoreMethod: topic.scoreMethod,
+          scoreModel: topic.scoreModel, scoredAt: topic.scoredAt?.toISOString() ?? null,
+          accountId: topic.accountId, persona: topic.personaSnapshot } : null,
       }).returning();
       return { job: job! };
     });
