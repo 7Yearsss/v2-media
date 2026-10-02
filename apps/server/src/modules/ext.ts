@@ -465,10 +465,7 @@ export function extModule(deps: Deps) {
         scheduledAt: r.job.scheduledAt?.getTime(),
         xhsUserId: r.account?.xhsUserId ?? "",
         draft: {
-          title: r.draft.title,
-          content: r.draft.content,
-          tags: r.draft.tags,
-          images: r.draft.images,
+          ...(r.job.draftSnapshot ?? { title: r.draft.title, content: r.draft.content, tags: r.draft.tags, images: r.draft.images }),
         },
       })),
     });
@@ -503,10 +500,7 @@ export function extModule(deps: Deps) {
       scheduledAt: r.job.scheduledAt?.getTime(),
       xhsUserId: r.account?.xhsUserId ?? "",
       draft: {
-        title: r.draft.title,
-        content: r.draft.content,
-        tags: r.draft.tags,
-        images: r.draft.images,
+        ...(r.job.draftSnapshot ?? { title: r.draft.title, content: r.draft.content, tags: r.draft.tags, images: r.draft.images }),
       },
     });
   });
@@ -572,7 +566,7 @@ export function extModule(deps: Deps) {
         "readback",
         {
           publishJobId: row.id,
-          title: draft?.title ?? "",
+          title: row.draftSnapshot?.title ?? draft?.title ?? "",
           xhsUserId: account?.xhsUserId ?? "",
           publishedAt: deps.now().getTime(),
         } satisfies ReadbackTaskPayload,

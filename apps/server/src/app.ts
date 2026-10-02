@@ -11,6 +11,7 @@ import { collectionsModule } from "./modules/collections";
 import { draftsModule } from "./modules/drafts";
 import { extModule } from "./modules/ext";
 import { mediaModule } from "./modules/media";
+import { mediaUploadModule } from "./modules/media-upload";
 import { notesModule } from "./modules/notes";
 import { overviewModule } from "./modules/overview";
 import { publishModule } from "./modules/publish";
@@ -30,6 +31,7 @@ export function createApp(deps: Deps) {
   const secured = new Hono<{ Variables: { userId: number } }>();
   secured.use("*", authMiddleware);
   secured.route("/accounts", accountsModule(deps));
+  secured.route("/media", mediaUploadModule(deps));
   secured.route("/notes", notesModule(deps));
   secured.route("/collections", collectionsModule(deps));
   secured.route("/drafts", draftsModule(deps));

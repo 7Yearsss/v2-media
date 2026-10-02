@@ -193,6 +193,25 @@ CREATE TABLE IF NOT EXISTS account_snapshots (
 ALTER TABLE account_snapshots DROP CONSTRAINT IF EXISTS account_snapshots_account_id_fkey;
 ALTER TABLE account_snapshots ADD CONSTRAINT account_snapshots_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS account_snapshots_user_account ON account_snapshots(user_id, account_id, captured_at);
+ALTER TABLE drafts ADD COLUMN IF NOT EXISTS images_version integer NOT NULL DEFAULT 0;
+ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS draft_snapshot jsonb;
+CREATE TABLE IF NOT EXISTS media_assets (
+  id serial PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id),
+  draft_id integer NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
+  upload_id varchar(36) NOT NULL,
+  filename varchar(255) NOT NULL,
+  source_file varchar(64) NOT NULL,
+  source_hash varchar(64) NOT NULL,
+  status varchar(16) NOT NULL DEFAULT 'queued',
+  key text,
+  url text,
+  width integer,
+  height integer,
+  error text,
+  created_at timestamp DEFAULT now() NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS media_assets_user_upload ON media_assets(user_id, upload_id);
 `;
 
 export async function migrate(db: Db) {

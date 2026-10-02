@@ -41,11 +41,24 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/ai/topics | `{collectionId,count?≤10,accountId?}` → `{items:Topic[]}`：库内互动 Top30 → AI 生成选题+七维明细，服务端加权出 score 后落池 |
 | POST | /api/ai/topic-score | `{topicId}` → `{topic,verdict,advice}`：单条深评并回写 score/scoreDetail |
 | GET | /api/media/proxy?url= | 白名单 HTTPS 媒体代理，补 Referer；未启用 R2 时仍保存源链接，代理不代表永久转存 |
-| GET | /api/media/objects/(img\|vid)/<hash> | 启用 R2 后的转存对象，采集后由后台异步下载并回写笔记地址 |
+| GET | /api/media/objects/(img\|vid\|avatar\|upload\|cover)/<hash> | 启用 R2 后的对象；采集转存和用户图片上传由后台异步处理 |
 | POST | /api/publish/jobs | `{draftId,accountId,scheduledAt?,visibility?}` → `PublishJob` |
 | GET | /api/publish/jobs | 任务列表 |
 | POST | /api/publish/jobs/:id/cancel | |
 | GET | /api/overview | 仪表盘计数 |
+
+## 草稿图片上传
+
+上传与素材状态接口需 Bearer 鉴权；媒体 objects 的 GET 仍无鉴权，供图片标签和插件下载使用。
+
+- `POST /api/media/upload`：multipart 单文件 `file`、`draftId`、`imagesVersion`、UUID `uploadId`。返回 202 `{asset:MediaAsset,draft:Draft}`，在草稿图集末尾预留 `{assetId,url:""}`。相同用户/草稿/uploadId/源内容幂等；改变内容或草稿返回 409。单图 10MiB，实际格式仅静态 JPEG/PNG/WebP，最多 4000 万像素；草稿最多 9 图（产品首版限制）。
+- `GET /api/media/assets/:id`：仅当前用户可见的素材状态；不含源文件路径、用户 ID 或存储凭据。status 为 queued/processing/ready/failed/canceled。ready 才有正式 URL。
+- `POST /api/media/assets/:id/retry`：仅重排仍被原草稿引用的 failed 素材，返回 202；自动处理失败最多 3 次，按 30s/60s 退避。移除图片将取消关联，不能通过重试复活。
+- 未配置 R2 返回 503 + `code=storage_unavailable`；超限 413，不支持/损坏的图片头 415，草稿或素材跨用户返回 404。完整解码/方向校正/去元数据在后台执行，损坏像素数据会显示处理失败。
+- `Draft` 增加 `imagesVersion`；详情另有当前图集关联的 `uploads:MediaAsset[]`。正式上传对象路径 `/api/media/objects/upload/<64hex>`，按当前用户与输出内容哈希生成，返回可被插件下载的 http(s) 绝对 URL。上传 WebP 会转 PNG，JPEG 保持 JPEG；最长边不超过 4096，不放大小图。
+- `PATCH /api/drafts/:id` 修改 images 时建议始终传 imagesVersion；当前或提交图集含 assetId 时必传（缺失 428，旧版本 409）。assetId 需属于该用户/原草稿并仍在图集中；正式 URL 由服务端取素材记录，不能用提交 URL 伪造 ready。历史纯 URL 图集兼容省略版本。文字修改按实际字段 PATCH，不携带旧 images 快照。
+- 创建发布任务拒绝空 URL/未 ready 素材。新发布任务冻结 title/content/tags/images；插件 pending/详情与 readback 标题均使用快照。历史任务无快照时继续读取草稿。GC 计入发布快照引用，容量压力不会删除引用中的对象；空间不足拒绝新上传处理。
+- 接收后源文件存 `DATA_DIR/uploads`，元数据与 `media_upload` job 写库；queued/processing 由 server worker 执行，插件不会领取。R2 和数据库回写成功后删除源文件；后台任务超过 20min 回收。无引用源文件满一天清理，仍被引用的失败源文件留供重试，移除后再清理。部署须保留 DATA_DIR（默认 apps/server/data 已被 rsync 排除）。
 
 ## 插件 API（同样 Bearer）
 

@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 export const env = {
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: process.env.DATABASE_URL ?? "",
@@ -14,7 +16,7 @@ export const env = {
   aiTimeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 300_000),
   encryptionKey: process.env.ENCRYPTION_KEY ?? "",
   authSecret: process.env.AUTH_SECRET ?? "dev-only-secret",
-  dataDir: process.env.DATA_DIR ?? new URL("../data", import.meta.url).pathname,
+  dataDir: process.env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url)),
   // R2（S3 兼容）媒体转存；四个变量任一缺失则停用，图片继续走 /api/media/proxy
   r2Endpoint: (process.env.R2_ENDPOINT ?? "").replace(/\/$/, ""),
   r2Bucket: process.env.R2_BUCKET ?? "",

@@ -1,5 +1,5 @@
-import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight } from "@v2media/shared";
-import { boolean, integer, jsonb, pgTable, serial, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import type { AnalysisProgress, AnalysisVisualItem, CollectionAnalysisStats, CollectionInsight, NoteImage } from "@v2media/shared";
+import { boolean, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -98,7 +98,8 @@ export const drafts = pgTable("drafts", {
   title: varchar("title", { length: 512 }).notNull().default(""),
   content: text("content").notNull().default(""),
   tags: jsonb("tags").$type<string[]>().notNull().default([]),
-  images: jsonb("images").$type<Array<{ url: string }>>().notNull().default([]),
+  images: jsonb("images").$type<NoteImage[]>().notNull().default([]),
+  imagesVersion: integer("images_version").notNull().default(0),
   status: varchar("status", { length: 32 }).notNull().default("draft"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -112,6 +113,7 @@ export const publishJobs = pgTable("publish_jobs", {
   status: varchar("status", { length: 32 }).notNull().default("pending"),
   scheduledAt: timestamp("scheduled_at"),
   visibility: varchar("visibility", { length: 32 }).notNull().default("public"),
+  draftSnapshot: jsonb("draft_snapshot").$type<{ title: string; content: string; tags: string[]; images: NoteImage[] }>(),
   claimedBy: varchar("claimed_by", { length: 128 }),
   error: text("error"),
   resultUrl: text("result_url"),
@@ -123,6 +125,24 @@ export const publishJobs = pgTable("publish_jobs", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+/** 元数据留库，源文件持久暂存到 uploads，R2 完成后删除源文件。 */
+export const mediaAssets = pgTable("media_assets", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id),
+  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
+  uploadId: varchar("upload_id", { length: 36 }).notNull(),
+  filename: varchar("filename", { length: 255 }).notNull(),
+  sourceFile: varchar("source_file", { length: 64 }).notNull(),
+  sourceHash: varchar("source_hash", { length: 64 }).notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("queued"),
+  key: text("key"),
+  url: text("url"),
+  width: integer("width"),
+  height: integer("height"),
+  error: text("error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (t) => [uniqueIndex("media_assets_user_upload").on(t.userId, t.uploadId)]);
 
 /** 选题池（策划层）：一条"想写/计划写"的内容方向，串联 draft → publish_job。 */
 export const topics = pgTable("topics", {

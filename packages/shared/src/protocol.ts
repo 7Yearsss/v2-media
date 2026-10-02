@@ -105,7 +105,8 @@ export interface DraftUpdateRequest {
   title?: string;
   content?: string;
   tags?: string[];
-  images?: { url: string }[];
+  images?: { url: string; assetId?: number }[];
+  imagesVersion?: number;
   status?: "draft" | "ready";
 }
 

@@ -9,4 +9,6 @@ export interface Deps {
   now: () => Date;
   /** 可选：配置 R2_* 环境变量后启用媒体转存。 */
   r2?: R2Storage | null;
+  /** 上传持久暂存目录；测试使用独立临时目录。 */
+  uploadDir?: string;
 }

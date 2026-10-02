@@ -31,6 +31,8 @@ export type CollectSource =
 
 export interface NoteImage {
   url: string;
+  /** 草稿上传占位：ready 前 url 为空；平台采集图片不带此字段。 */
+  assetId?: number;
   width?: number;
   height?: number;
 }
@@ -347,9 +349,25 @@ export interface Draft {
   content: string;
   tags: string[];
   images: NoteImage[];
+  /** 图集乐观锁版本；仅修改图片时需要携带。 */
+  imagesVersion: number;
+  uploads?: MediaAsset[];
   status: "draft" | "ready" | "published";
   updatedAt: string;
 }
+
+export const IMAGE_UPLOAD_LIMITS = { bytes: 10 * 1024 * 1024, pixels: 40_000_000, images: 9 } as const;
+export interface MediaAsset {
+  id: number;
+  draftId: number;
+  filename: string;
+  status: "queued" | "processing" | "ready" | "failed" | "canceled";
+  url: string | null;
+  width: number | null;
+  height: number | null;
+  error: string | null;
+}
+export interface MediaUploadResponse { asset: MediaAsset; draft: Draft }
 
 /** 选题池条目（策划层）：一条"想写/计划写"的内容方向。 */
 export type TopicStatus =

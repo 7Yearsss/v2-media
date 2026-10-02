@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   FileText,
-  ImagePlus,
   Loader2,
   PenLine,
   Plus,
@@ -29,6 +28,7 @@ import {
   type SwipeableListItem,
 } from "@/components/motion/swipeable-list";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
+import { DraftImages } from "@/components/app/draft-images";
 import { AiPanel } from "@/components/app/ai-panel";
 import { RiskTextarea } from "@/components/app/risk-textarea";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
@@ -84,14 +84,15 @@ export default function DraftsPage() {
   const limits = useMemo(() => checkDraftLimits({ title, content, tags }), [title, content, tags]);
   const [images, setImages] = useState<NoteImage[]>([]);
   const [tagInput, setTagInput] = useState("");
-  const [imageInput, setImageInput] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const timerRef = useRef<number | undefined>(undefined);
   const editingIdRef = useRef<number | null>(null);
+  const saveQueues = useRef(new Map<number, Promise<void>>());
+  const failedSaves = useRef(new Map<number, Partial<{ title: string; content: string; tags: string[] }>>());
   const pendingSaveRef = useRef<{
     draftId: number;
-    fields: { title: string; content: string; tags: string[]; images: NoteImage[] };
+    fields: Partial<{ title: string; content: string; tags: string[] }>;
   } | null>(null);
 
   // 切换草稿 → 先把上一个草稿未落盘的编辑立即保存，再装载字段
@@ -117,7 +118,6 @@ export default function DraftsPage() {
       setSaveState("saved");
     }
     setTagInput("");
-    setImageInput("");
   }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 路由无 id 时自动选第一篇
@@ -133,33 +133,26 @@ export default function DraftsPage() {
   );
 
   const persist = useCallback(
-    async (draftId: number, next: {
-      title: string;
-      content: string;
-      tags: string[];
-      images: NoteImage[];
-    }) => {
-      setSaveState("saving");
-      try {
-        await api.updateDraft(draftId, {
-          title: next.title,
-          content: next.content,
-          tags: next.tags,
-          images: next.images.map((i) => ({ url: i.url })),
-        });
-        if (editingIdRef.current === draftId) {
-          setSaveState("saved");
-          setSavedAt(
-            new Date().toLocaleTimeString("zh-CN", {
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-          );
+    async (draftId: number, next: Partial<{ title: string; content: string; tags: string[] }>) => {
+      const previous = saveQueues.current.get(draftId) ?? Promise.resolve();
+      const saving = previous.then(async () => {
+        if (editingIdRef.current === draftId) setSaveState("saving");
+        const fields = { ...failedSaves.current.get(draftId), ...next };
+        try {
+          await api.updateDraft(draftId, fields);
+          failedSaves.current.delete(draftId);
+          if (editingIdRef.current === draftId) {
+            setSaveState(pendingSaveRef.current?.draftId === draftId ? "dirty" : "saved");
+            setSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
+          }
+          invalidate();
+        } catch {
+          failedSaves.current.set(draftId, fields);
+          if (editingIdRef.current === draftId) setSaveState("error");
         }
-        invalidate();
-      } catch {
-        if (editingIdRef.current === draftId) setSaveState("error");
-      }
+      });
+      saveQueues.current.set(draftId, saving);
+      await saving;
     },
     [invalidate],
   );
@@ -170,21 +163,17 @@ export default function DraftsPage() {
       title: string;
       content: string;
       tags: string[];
-      images: NoteImage[];
     }>) => {
       const draftId = editingIdRef.current;
       if (draftId === null) return;
       setTitle((cur) => patch.title ?? cur);
       setContent((cur) => patch.content ?? cur);
       setTags((cur) => patch.tags ?? cur);
-      setImages((cur) => patch.images ?? cur);
       setSaveState("dirty");
       window.clearTimeout(timerRef.current);
       const fields = {
-        title: patch.title ?? title,
-        content: patch.content ?? content,
-        tags: patch.tags ?? tags,
-        images: patch.images ?? images,
+        ...(pendingSaveRef.current?.draftId === draftId ? pendingSaveRef.current.fields : {}),
+        ...patch,
       };
       pendingSaveRef.current = { draftId, fields }; // 切换草稿时立即落盘
       timerRef.current = window.setTimeout(() => {
@@ -192,12 +181,17 @@ export default function DraftsPage() {
         void persist(draftId, fields);
       }, 900);
     },
-    [content, images, persist, tags, title],
+    [persist],
   );
 
   useEffect(
-    () => () => window.clearTimeout(timerRef.current),
-    [],
+    () => () => {
+      window.clearTimeout(timerRef.current);
+      const pending = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+      if (pending) void persist(pending.draftId, pending.fields);
+    },
+    [persist],
   );
 
   const addTag = () => {
@@ -205,13 +199,6 @@ export default function DraftsPage() {
     if (!t) return;
     if (!tags.includes(t)) update({ tags: [...tags, t] });
     setTagInput("");
-  };
-
-  const addImage = () => {
-    const u = imageInput.trim();
-    if (!u) return;
-    update({ images: [...images, { url: u }] });
-    setImageInput("");
   };
 
   const create = useMutation({
@@ -405,7 +392,10 @@ export default function DraftsPage() {
                       : `更新于 ${timeAgo(selected.updatedAt)}`)}
                   {saveState === "dirty" && "未保存更改"}
                   {saveState === "error" && (
-                    <span className="text-destructive">保存失败，重试中</span>
+                    <button type="button" className="text-destructive underline" onClick={() => {
+                      const fields = failedSaves.current.get(selected.id);
+                      if (fields) void persist(selected.id, fields);
+                    }}>保存失败，点击重试</button>
                   )}
                 </span>
               </div>
@@ -413,7 +403,7 @@ export default function DraftsPage() {
                 <Button
                   size="sm"
                   variant={selected.status === "ready" ? "secondary" : "outline"}
-                  disabled={toggleReady.isPending}
+                  disabled={toggleReady.isPending || saveState !== "saved" || (selected.status !== "ready" && (!images.length || images.some(i => !i.url)))}
                   onClick={() => toggleReady.mutate()}
                 >
                   {selected.status === "ready" ? "取消就绪" : "标记就绪"}
@@ -582,62 +572,9 @@ export default function DraftsPage() {
                 </div>
               </div>
 
-              <div>
-                <p className="mb-2 text-xs font-medium text-muted-foreground">
-                  图片（{images.length}）
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  {images.map((img, i) => (
-                    <div
-                      key={`${img.url}-${i}`}
-                      className="group relative aspect-square overflow-hidden rounded-xl border border-border bg-muted"
-                    >
-                      <img
-                        src={mediaUrl(img.url)}
-                        alt={`图 ${i + 1}`}
-                        loading="lazy"
-                        className="h-full w-full object-cover"
-                      />
-                      <button
-                        type="button"
-                        aria-label={`删除图 ${i + 1}`}
-                        onClick={() =>
-                          update({ images: images.filter((_, x) => x !== i) })
-                        }
-                        className="absolute right-1.5 top-1.5 grid size-6 place-items-center rounded-full bg-black/55 text-white opacity-0 transition-opacity hover:bg-destructive group-hover:opacity-100"
-                      >
-                        <X className="size-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                {/* TODO(契约缺口)：服务端暂无图片上传接口，先用 URL 添加；契约补
-                    POST /api/media 后换成 motion/file-upload 组件 */}
-                <div className="mt-2 flex gap-2">
-                  <Input
-                    value={imageInput}
-                    onChange={setImageInput}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addImage();
-                      }
-                    }}
-                    placeholder="粘贴图片 URL 添加…"
-                    className="flex-1"
-                    classNames={{ field: "h-8", input: "pl-3 pr-3 text-xs" }}
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={addImage}
-                    disabled={!imageInput.trim()}
-                  >
-                    <ImagePlus className="size-3.5" />
-                    添加
-                  </Button>
-                </div>
-              </div>
+              <DraftImages key={selected.id} draftId={selected.id} onImagesChange={(id, next) => {
+                if (editingIdRef.current === id) setImages(next);
+              }} />
             </div>
           </>
         ) : (

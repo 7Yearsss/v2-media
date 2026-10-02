@@ -1,23 +1,26 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { collectedNotes, drafts } from "../db/schema";
+import { collectedNotes, drafts, mediaAssets } from "../db/schema";
+import { draftWithUploads } from "../lib/draft-media";
+import { IMAGE_UPLOAD_LIMITS } from "@v2media/shared";
 
 const createSchema = z.object({
   collectedNoteId: z.number().int().optional(),
   title: z.string().optional(),
   content: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  images: z.array(z.object({ url: z.string() })).optional(),
+  images: z.array(z.object({ url: z.string() })).max(IMAGE_UPLOAD_LIMITS.images).optional(),
 });
 
 const updateSchema = z.object({
   title: z.string().optional(),
   content: z.string().optional(),
   tags: z.array(z.string()).optional(),
-  images: z.array(z.object({ url: z.string() })).optional(),
+  images: z.array(z.object({ url: z.string(), assetId: z.number().int().positive().optional() })).max(IMAGE_UPLOAD_LIMITS.images).optional(),
+  imagesVersion: z.number().int().nonnegative().optional(),
   status: z.enum(["draft", "ready"]).optional(),
 });
 
@@ -74,18 +77,39 @@ export function draftsModule(deps: Deps) {
     const id = Number(c.req.param("id"));
     const parsed = updateSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
-    const [existing] = await deps.db
-      .select()
-      .from(drafts)
-      .where(and(eq(drafts.id, id), eq(drafts.userId, userId)))
-      .limit(1);
-    if (!existing) return c.json({ error: "not found" }, 404);
-    const [row] = await deps.db
-      .update(drafts)
-      .set({ ...parsed.data, updatedAt: deps.now() })
-      .where(eq(drafts.id, id))
-      .returning();
-    return c.json(row);
+    const result = await deps.db.transaction(async tx => {
+      await tx.execute(sql`SELECT id FROM drafts WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`);
+      const [existing] = await tx.select().from(drafts).where(and(eq(drafts.id, id), eq(drafts.userId, userId)));
+      if (!existing) return { error: "not found", code: 404 as const };
+      const { imagesVersion, ...patch } = parsed.data;
+      if (patch.images) {
+        if ((existing.images.some(i => i.assetId) || patch.images.some(i => i.assetId)) && imagesVersion === undefined)
+          return { error: "修改上传图集需要 imagesVersion", code: 428 as const };
+        if (imagesVersion !== undefined && imagesVersion !== existing.imagesVersion)
+          return { error: "图片列表已更新，请重新读取后再编辑", code: 409 as const };
+        const ownedAssets = await tx.select().from(mediaAssets).where(and(eq(mediaAssets.userId, userId), eq(mediaAssets.draftId, id)));
+        const assetIds = new Set<number>();
+        for (const image of patch.images) {
+          if (!image.assetId) {
+            if (!/^https?:\/\//.test(image.url)) return { error: "图片链接必须是 http(s) 地址", code: 400 as const };
+            continue;
+          }
+          const a = ownedAssets.find(a => a.id === image.assetId);
+          if (!a || a.status === "canceled" || !existing.images.some(i => i.assetId === a.id) || assetIds.has(a.id))
+            return { error: "图片素材不存在或已移除", code: 400 as const };
+          assetIds.add(a.id);
+          image.url = a.status === "ready" ? a.url! : "";
+        }
+        const removed = ownedAssets.filter(a => existing.images.some(i => i.assetId === a.id) && !assetIds.has(a.id)).map(a => a.id);
+        if (removed.length) await tx.update(mediaAssets).set({ status: "canceled" }).where(inArray(mediaAssets.id, removed));
+      }
+      const [row] = await tx.update(drafts).set({
+        ...patch, ...(patch.images ? { imagesVersion: existing.imagesVersion + 1 } : {}), updatedAt: deps.now(),
+      }).where(eq(drafts.id, id)).returning();
+      return { draft: row! };
+    });
+    if ("error" in result) return c.json({ error: result.error }, result.code!);
+    return c.json(await draftWithUploads(deps.db, result.draft));
   });
 
   app.delete("/:id", async (c) => {
@@ -105,5 +129,5 @@ async function getOwned(c: any, deps: Deps) {
     .where(and(eq(drafts.id, Number(c.req.param("id"))), eq(drafts.userId, c.get("userId"))))
     .limit(1);
   if (!row) return c.json({ error: "not found" }, 404);
-  return c.json(row);
+  return c.json(await draftWithUploads(deps.db, row));
 }

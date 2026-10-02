@@ -20,6 +20,8 @@ import type {
   Draft,
   DraftCreateRequest,
   DraftUpdateRequest,
+  MediaAsset,
+  MediaUploadResponse,
   HostedAccount,
   NoteComment,
   PublishJob,
@@ -104,7 +106,7 @@ async function request<T>(
   }
 
   const headers: Record<string, string> = {};
-  if (init.body !== undefined) headers["Content-Type"] = "application/json";
+  if (init.body !== undefined && !(init.body instanceof FormData)) headers["Content-Type"] = "application/json";
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -113,7 +115,7 @@ async function request<T>(
     res = await fetch(url, {
       method: init.method ?? "GET",
       headers,
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      body: init.body === undefined ? undefined : init.body instanceof FormData ? init.body : JSON.stringify(init.body),
     });
   } catch {
     throw new ApiError("网络异常，无法连接服务端", 0);
@@ -354,6 +356,15 @@ export const api = {
     request<{ affected: number }>("/api/notes/batch", { method: "POST", body }),
 
   drafts: () => request<Draft[]>("/api/drafts"),
+  uploadImage: (draftId: number, imagesVersion: number, file: File, uploadId: string) => {
+    const form = new FormData();
+    form.set("draftId", String(draftId));
+    form.set("imagesVersion", String(imagesVersion));
+    form.set("uploadId", uploadId);
+    form.set("file", file);
+    return request<MediaUploadResponse>("/api/media/upload", { method: "POST", body: form });
+  },
+  retryImage: (id: number) => request<MediaAsset>(`/api/media/assets/${id}/retry`, { method: "POST" }),
   draft: (id: number) => request<Draft>(`/api/drafts/${id}`),
   createDraft: (body: DraftCreateRequest = {}) =>
     request<Draft>("/api/drafts", { method: "POST", body }),

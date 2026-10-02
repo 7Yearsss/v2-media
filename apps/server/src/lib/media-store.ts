@@ -9,7 +9,7 @@ import { eq, inArray, or, sql } from "drizzle-orm";
 import type { HonoRequest } from "hono";
 
 import type { Deps } from "../context";
-import { collectedNotes, drafts, users } from "../db/schema";
+import { collectedNotes, drafts, mediaAssets, publishJobs, users } from "../db/schema";
 import { env } from "../env";
 import type { R2Storage } from "./r2";
 
@@ -426,9 +426,9 @@ export async function sweepMediaBacklog(deps: Deps): Promise<void> {
   );
 }
 
-const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid|avatar)\/[0-9a-f]{64}(?:-(?:sd|orig))?)/g;
+const OBJECT_KEY_RE = /\/api\/media\/objects\/((?:img|vid|avatar|upload|cover)\/[0-9a-f]{64}(?:-(?:sd|orig))?)/g;
 
-/** DB 里仍被引用的 R2 对象 key 集合（采集表 cover/images + 草稿表 images）。 */
+/** References include collected media, drafts, frozen publish payloads and processing uploads. */
 async function referencedKeys(deps: Deps): Promise<Set<string>> {
   const keys = new Set<string>();
   const notes = await deps.db
@@ -445,6 +445,11 @@ async function referencedKeys(deps: Deps): Promise<Set<string>> {
   for (const d of draftRows) {
     urls.push(...(d.images ?? []).map((i) => i.url));
   }
+  const snapshots = await deps.db.select({ snapshot: publishJobs.draftSnapshot }).from(publishJobs);
+  for (const p of snapshots) urls.push(...(p.snapshot?.images ?? []).map(i => i.url));
+  const processingAssets = await deps.db.select({ key: mediaAssets.key }).from(mediaAssets)
+    .where(or(eq(mediaAssets.status, "queued"), eq(mediaAssets.status, "processing")));
+  for (const a of processingAssets) if (a.key) keys.add(a.key);
   for (const u of urls) {
     for (const m of u.matchAll(OBJECT_KEY_RE)) keys.add(m[1]!);
   }
@@ -452,8 +457,8 @@ async function referencedKeys(deps: Deps): Promise<Set<string>> {
 }
 
 /**
- * 媒体 GC（开发期容量控制）：删 DB 已无引用的对象；仍超 R2_MAX_BYTES 时
- * 按最旧优先删引用中的对象（腾出容量，对应行会残留失效图，开发期可接受）。
+ * 媒体 GC：只删除过宽限期且无引用的对象，容量压力不能破坏草稿或发布快照。
+ * 引用对象已超过上限时保留它们，由新上传的容量检查拒绝继续写入。
  */
 export async function pruneMedia(deps: Deps): Promise<void> {
   if (!deps.r2) return;
@@ -461,6 +466,8 @@ export async function pruneMedia(deps: Deps): Promise<void> {
     ...(await deps.r2.list("img/")),
     ...(await deps.r2.list("vid/")),
     ...(await deps.r2.list("avatar/")),
+    ...(await deps.r2.list("upload/")),
+    ...(await deps.r2.list("cover/")),
   ];
   if (!objects.length) return;
   const referenced = await referencedKeys(deps);
@@ -482,6 +489,8 @@ export async function pruneMedia(deps: Deps): Promise<void> {
     kept.sort((a, b) => a.lastModified - b.lastModified);
     for (const o of kept) {
       if (total <= cap) break;
+      // Referenced files and fresh uploads are not expendable capacity.
+      if (referenced.has(o.key) || o.lastModified >= graceBefore) continue;
       // 删除失败不扣容量——失败的对象还占着桶
       if (await deps.r2!.delete(o.key).catch(() => false)) {
         total -= o.size;

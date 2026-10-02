@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { drafts, hostedAccounts, publishJobs } from "../db/schema";
+import { drafts, hostedAccounts, mediaAssets, publishJobs } from "../db/schema";
 
 const createSchema = z.object({
   draftId: z.number().int(),
@@ -38,6 +38,9 @@ export function publishModule(deps: Deps) {
     if (!draft) return c.json({ error: "draft not found" }, 404);
     if (!draft.title.trim() || !draft.images.length)
       return c.json({ error: "草稿需要标题和至少一张图片" }, 400);
+    const assets = await deps.db.select().from(mediaAssets).where(and(eq(mediaAssets.draftId, draft.id), eq(mediaAssets.userId, userId)));
+    if (draft.images.some(i => !i.url.trim() || (i.assetId && !assets.some(a => a.id === i.assetId && a.status === "ready" && a.url === i.url))))
+      return c.json({ error: "草稿图片尚未上传完成，请等待或移除失败图片" }, 400);
     const [account] = await deps.db
       .select()
       .from(hostedAccounts)
@@ -52,6 +55,7 @@ export function publishModule(deps: Deps) {
         accountId: p.accountId,
         scheduledAt: p.scheduledAt ? new Date(p.scheduledAt) : null,
         visibility: p.visibility,
+        draftSnapshot: { title: draft.title, content: draft.content, tags: draft.tags, images: draft.images },
       })
       .returning();
     return c.json(job);
