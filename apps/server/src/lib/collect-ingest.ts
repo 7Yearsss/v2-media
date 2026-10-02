@@ -4,6 +4,7 @@ import { mergeComments } from "@v2media/shared";
 import type { Deps } from "../context";
 import { collectedNotes, collections } from "../db/schema";
 import { enqueueMediaJob } from "./media-jobs";
+import { assertWritable } from "./runtime-policy";
 
 const commentExtras = { createdAt: z.number().optional(), ipLocation: z.string().optional(), pictures: z.array(z.string()).optional(),
   isAuthor: z.boolean().optional(), subCommentCount: z.number().optional() };
@@ -85,6 +86,7 @@ export const collectSchema = z.object({
 
 
 export async function ingestCollect(deps: Deps, userId: number, raw: unknown, base: string) {
+  assertWritable(deps);
     const parsed = collectSchema.safeParse(raw);
     if (!parsed.success) {
       // 说清楚是哪个字段不合格：否则插件那边只会静默失败，笔记整条采不进来

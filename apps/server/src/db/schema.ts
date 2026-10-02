@@ -12,6 +12,7 @@ export const users = pgTable("users", {
 
 export const hostedAccounts = pgTable("hosted_accounts", {
   id: serial("id").primaryKey(),
+  archivedAt: timestamp("archived_at"),
   userId: integer("user_id").notNull().references(() => users.id),
   platform: varchar("platform", { length: 32 }).notNull().default("xhs"),
   subType: varchar("sub_type", { length: 32 }).notNull().default("pc"),
@@ -26,7 +27,7 @@ export const hostedAccounts = pgTable("hosted_accounts", {
   redlines: text("redlines").notNull().default(""),
   personaVersion: integer("persona_version").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (t) => [uniqueIndex("hosted_accounts_identity").on(t.userId, t.platform, t.subType, t.xhsUserId)]);
 
 /** 采集分组：一批采集归到一个库（如「健身」），便于按主题分析。 */
 export const collections = pgTable("collections", {
@@ -98,6 +99,7 @@ export const collectedNotes = pgTable("collected_notes", {
 
 export const drafts = pgTable("drafts", {
   id: serial("id").primaryKey(),
+  archivedAt: timestamp("archived_at"),
   userId: integer("user_id").notNull().references(() => users.id),
   collectedNoteId: integer("collected_note_id").references(() => collectedNotes.id, { onDelete: "set null" }),
   accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "set null" }),
@@ -132,8 +134,8 @@ export const publishJobs = pgTable("publish_jobs", {
   reportedAt: timestamp("reported_at"),
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
-  accountId: integer("account_id").notNull().references(() => hostedAccounts.id, { onDelete: "cascade" }),
+  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "restrict" }),
+  accountId: integer("account_id").notNull().references(() => hostedAccounts.id, { onDelete: "restrict" }),
   status: varchar("status", { length: 32 }).notNull().default("pending"),
   scheduledAt: timestamp("scheduled_at"),
   visibility: varchar("visibility", { length: 32 }).notNull().default("public"),
@@ -158,7 +160,7 @@ export const publishJobs = pgTable("publish_jobs", {
 export const mediaAssets = pgTable("media_assets", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "cascade" }),
+  draftId: integer("draft_id").notNull().references(() => drafts.id, { onDelete: "restrict" }),
   uploadId: varchar("upload_id", { length: 36 }).notNull(),
   filename: varchar("filename", { length: 255 }).notNull(),
   kind: varchar("kind", { length: 16 }).notNull().default("upload"),
@@ -198,7 +200,7 @@ export const topics = pgTable("topics", {
   scoreDetail: jsonb("score_detail").$type<Record<string, number>>(),
   plannedAt: timestamp("planned_at"),
   draftId: integer("draft_id").references(() => drafts.id, { onDelete: "set null" }),
-  publishJobId: integer("publish_job_id").references(() => publishJobs.id, { onDelete: "set null" }),
+  publishJobId: integer("publish_job_id").references(() => publishJobs.id, { onDelete: "restrict" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -247,7 +249,7 @@ export const noteMetrics = pgTable("note_metrics", {
 export const accountSnapshots = pgTable("account_snapshots", {
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "cascade" }),
+  accountId: integer("account_id").references(() => hostedAccounts.id, { onDelete: "restrict" }),
   capturedAt: timestamp("captured_at").defaultNow().notNull(),
   followers: integer("followers"),
   likesTotal: integer("likes_total"),
@@ -271,7 +273,7 @@ export const postmortemReports = pgTable("postmortem_reports", {
   engine: varchar("engine", { length: 16 }),
   id: serial("id").primaryKey(),
   userId: integer("user_id").notNull().references(() => users.id),
-  publishJobId: integer("publish_job_id").notNull().references(() => publishJobs.id, { onDelete: "cascade" }),
+  publishJobId: integer("publish_job_id").notNull().references(() => publishJobs.id, { onDelete: "restrict" }),
   status: varchar("status", { length: 16 }).notNull().default("queued"),
   model: text("model").notNull(), promptVersion: text("prompt_version").notNull(),
   evidence: jsonb("evidence").$type<PostmortemEvidence>().notNull(),

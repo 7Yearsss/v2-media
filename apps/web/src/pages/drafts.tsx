@@ -37,6 +37,7 @@ import { RiskTextarea } from "@/components/app/risk-textarea";
 import { XhsNotePreview } from "@/components/app/xhs-preview";
 import { api, captureSession, isCurrentSession, mediaUrl } from "@/lib/api";
 import { DraftEditSession, type DraftEditView, type DraftText } from "@/lib/draft-edit-session";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 import { useBannedWords } from "@/lib/hooks/use-banned-words";
 import { timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
@@ -48,25 +49,33 @@ export default function DraftsPage() {
   const selectedId = params.id ? Number(params.id) : null;
   const toast = useToast();
   const queryClient = useQueryClient();
+  const { readOnly } = useRuntime();
+  const [includeArchived, setIncludeArchived] = useState(false);
   const session = useMemo(() => captureSession(), []);
   const editor = useMemo(() => new DraftEditSession({
     userId: session.user!.id, writerId: crypto.randomUUID(), storage: localStorage,
-    active: () => isCurrentSession(session), load: id => api.draft(id, session),
+    active: () => isCurrentSession(session) && !readOnly, load: id => api.draft(id, session),
     save: async (id, patch) => {
       const saved = await api.updateDraft(id, patch, session);
       if (isCurrentSession(session)) {
         queryClient.setQueryData(["draft-media", id], saved);
         queryClient.setQueryData<Draft[]>(["drafts"], current => current?.map(d => d.id === id ? saved : d));
+        queryClient.setQueryData<Draft[]>(["drafts", "history"], current => current?.map(d => d.id === id ? saved : d));
       }
       return saved;
     },
-  }), [session, queryClient]);
+  }), [session, queryClient, readOnly]);
 
-  const draftsQuery = useQuery({ queryKey: ["drafts"], queryFn: api.drafts });
+  const draftsQuery = useQuery({ queryKey: includeArchived ? ["drafts", "history"] : ["drafts"], queryFn: includeArchived ? api.draftsIncludingArchived : api.drafts });
+  const selectedDetail = useQuery({ queryKey: ["draft-media", selectedId], queryFn: () => api.draft(selectedId!, session), enabled: selectedId !== null });
   const drafts = useMemo(() => draftsQuery.data ?? [], [draftsQuery.data]);
   const selected = useMemo(
-    () => drafts.find((d) => d.id === selectedId) ?? null,
-    [drafts, selectedId],
+    () => {
+      const listed = drafts.find(d => d.id === selectedId), detail = selectedDetail.data;
+      if (!listed) return detail ?? null;
+      return detail && (detail.archivedAt || detail.textVersion > listed.textVersion || detail.imagesVersion > listed.imagesVersion) ? detail : listed;
+    },
+    [drafts, selectedId, selectedDetail.data],
   );
 
   // ---- 编辑器本地态（提升到页面层，让右侧预览实时刷新） ----
@@ -104,6 +113,7 @@ export default function DraftsPage() {
   const savedAt = editView?.savedAt ? new Date(editView.savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : null;
   const timerRef = useRef<number | undefined>(undefined);
   const editingIdRef = useRef<number | null>(null);
+  const archivingRef = useRef<number | null>(null);
   const showEdit = useCallback((view: DraftEditView) => {
     setEditView(view); setTitle(view.fields.title); setContent(view.fields.content); setTags(view.fields.tags);
   }, []);
@@ -114,10 +124,15 @@ export default function DraftsPage() {
     const previousId = editingIdRef.current;
     if (previousId !== null && previousId !== selected?.id) void editor.flush(previousId);
     if (selected) {
-      editingIdRef.current = selected.id;
-      const view = editor.open(selected); showEdit(view);
+      if (selected.archivedAt || readOnly) {
+        editingIdRef.current = null; setEditView(null);
+        setTitle(selected.title); setContent(selected.content); setTags(selected.tags);
+      } else {
+        editingIdRef.current = selected.id;
+        const view = editor.open(selected); showEdit(view);
+        if (view.state === "dirty") timerRef.current = window.setTimeout(() => { void editor.flush(selected.id); }, 900);
+      }
       setImages(selected.images);
-      if (view.state === "dirty") timerRef.current = window.setTimeout(() => { void editor.flush(selected.id); }, 900);
     } else {
       editingIdRef.current = null;
       setTitle("");
@@ -127,7 +142,7 @@ export default function DraftsPage() {
       setEditView(null);
     }
     if (previousId !== selected?.id) setTagInput("");
-  }, [selected, editor, showEdit]);
+  }, [selected, editor, showEdit, readOnly]);
 
   useEffect(() => editor.subscribe(() => {
     const id = editingIdRef.current; const view = id === null ? null : editor.view(id);
@@ -162,7 +177,7 @@ export default function DraftsPage() {
   const update = useCallback(
     (patch: Partial<DraftText>) => {
       const draftId = editingIdRef.current;
-      if (draftId === null) return;
+      if (draftId === null || archivingRef.current === draftId) return;
       showEdit(editor.change(draftId, patch));
       window.clearTimeout(timerRef.current);
       timerRef.current = window.setTimeout(() => {
@@ -199,15 +214,29 @@ export default function DraftsPage() {
   });
 
   const remove = useMutation({
-    mutationFn: (id: number) => api.deleteDraft(id),
+    mutationFn: async (id: number) => {
+      archivingRef.current = id;
+      try {
+        if (!(await editor.flush(id))) throw new Error("请先保存本地编辑或解决冲突，再归档草稿");
+        if (!isCurrentSession(session)) throw new Error("登录会话已变化");
+        return await api.deleteDraft(id, session);
+      } finally { archivingRef.current = null; }
+    },
     onSuccess: (_v, id) => {
       editor.forget(id);
       invalidate();
-      toast.success("草稿已删除");
+      toast.success("草稿已归档", "发布记录与素材仍保留，可以恢复");
+      void queryClient.invalidateQueries({ queryKey: ["draft-media", id] });
+      void queryClient.invalidateQueries({ queryKey: ["publish-jobs"] });
       if (selectedId === id) navigate("/drafts", { replace: true });
     },
     onError: (err) =>
-      toast.error("删除失败", err instanceof Error ? err.message : undefined),
+      toast.error("归档失败", err instanceof Error ? err.message : undefined),
+  });
+  const restore = useMutation({
+    mutationFn: api.restoreDraft,
+    onSuccess: draft => { queryClient.setQueryData(["draft-media", draft.id], draft); invalidate(); toast.success("草稿已恢复", "已取消的生成和发布任务不会自动恢复"); },
+    onError: err => toast.error("恢复失败", err instanceof Error ? err.message : undefined),
   });
 
   const toggleReady = useMutation({
@@ -232,16 +261,16 @@ export default function DraftsPage() {
     () =>
       drafts.map((d) => ({
         id: String(d.id),
-        rightActions: [
+        rightActions: d.archivedAt || readOnly ? [] : [
           {
             id: "delete",
-            label: "删除",
+            label: "归档",
             icon: <Trash2 className="h-4 w-4" />,
             tone: "danger" as const,
           },
         ],
       })),
-    [drafts],
+    [drafts, readOnly],
   );
 
   const renderItem = useCallback(
@@ -282,7 +311,7 @@ export default function DraftsPage() {
               {d.title || "未命名草稿"}
             </span>
             <span className="block truncate text-xs text-muted-foreground">
-              {d.content ? d.content.slice(0, 40) : "（空正文）"}
+              {d.archivedAt ? "已归档 · " : ""}{d.content ? d.content.slice(0, 40) : "（空正文）"}
             </span>
           </span>
           <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
@@ -303,13 +332,14 @@ export default function DraftsPage() {
           <Button
             size="sm"
             variant="ghost"
-            disabled={create.isPending}
+            disabled={create.isPending || readOnly}
             onClick={() => create.mutate()}
           >
             <Plus className="size-4" />
             新建
           </Button>
         </div>
+        <div className="border-b border-border px-4 py-2"><button type="button" aria-pressed={includeArchived} onClick={() => setIncludeArchived(v => !v)} className="text-xs text-muted-foreground underline">{includeArchived ? "隐藏归档草稿" : "包含归档草稿"}</button></div>
         <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {draftsQuery.isPending ? (
             <PageLoading label="加载草稿…" />
@@ -349,7 +379,13 @@ export default function DraftsPage() {
       {/* 中栏：编辑器 */}
       <section className="flex min-h-0 min-w-0 flex-col border-b border-border bg-background lg:border-b-0 lg:border-r">
         {selected ? (
-          <>
+          selected.archivedAt ? <div className="space-y-4 overflow-y-auto p-6">
+            <p className="text-xs text-muted-foreground">已归档 · 发布历史、指标、复盘和素材保留</p>
+            <h2 className="text-xl font-semibold">{selected.title || "未命名草稿"}</h2>
+            <p className="whitespace-pre-wrap text-sm leading-7">{selected.content}</p>
+            <p className="text-xs text-muted-foreground">{selected.tags.map(t => `#${t}`).join(" ")}</p>
+            <Button size="sm" disabled={restore.isPending || readOnly} onClick={() => restore.mutate(selected.id)}>恢复草稿</Button>
+          </div> : <>
             <div className="flex items-center justify-between border-b border-border px-5 py-3">
               <div className="flex items-center gap-2">
                 <AnimatedBadge
@@ -387,11 +423,12 @@ export default function DraftsPage() {
                   {saveState === "conflict" && <span className="text-destructive">版本冲突，本地改动已保留</span>}
                 </span>
               </div>
+              <Button size="sm" variant="ghost" disabled={readOnly || remove.isPending} onClick={() => remove.mutate(selected.id)}>归档草稿</Button>
               {selected.status !== "published" ? (
                 <Button
                   size="sm"
                   variant={selected.status === "ready" ? "secondary" : "outline"}
-                  disabled={toggleReady.isPending || saveState !== "saved" || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || (selected.status !== "ready" && (!images.length || images.some(i => !i.url)))}
+                  disabled={readOnly || toggleReady.isPending || saveState !== "saved" || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || (selected.status !== "ready" && (!images.length || images.some(i => !i.url)))}
                   onClick={() => toggleReady.mutate()}
                 >
                   {selected.status === "ready" ? "取消就绪" : "标记就绪"}
@@ -411,8 +448,9 @@ export default function DraftsPage() {
                   </div>
                 </>}
               </div>}
-              <DraftAccount key={`account-${selected.id}`} draftId={selected.id} beforeChange={beforeGenerate} />
+              {!readOnly && <DraftAccount key={`account-${selected.id}`} draftId={selected.id} beforeChange={beforeGenerate} />}
               <input
+                readOnly={readOnly || remove.isPending}
                 value={title}
                 onChange={(e) => update({ title: e.target.value })}
                 placeholder="填写标题，最多 20 字"
@@ -421,6 +459,7 @@ export default function DraftsPage() {
               />
 
               <RiskTextarea
+                readOnly={readOnly || remove.isPending}
                 value={content}
                 onChange={(v) => update({ content: v })}
                 hits={contentHits}
@@ -572,10 +611,10 @@ export default function DraftsPage() {
                 </div>
               </div>
 
-              <DraftCover key={`cover-${selected.id}`} draftId={selected.id} beforeGenerate={beforeGenerate} />
-              <DraftImages key={selected.id} draftId={selected.id} onDraftChange={syncGeneratedDraft} onImagesChange={(id, next) => {
+              {!readOnly && <DraftCover key={`cover-${selected.id}`} draftId={selected.id} beforeGenerate={beforeGenerate} />}
+              {!readOnly && <DraftImages key={selected.id} draftId={selected.id} onDraftChange={syncGeneratedDraft} onImagesChange={(id, next) => {
                 if (editingIdRef.current === id) setImages(next);
-              }} />
+              }} />}
             </div>
           </>
         ) : (
@@ -612,7 +651,7 @@ export default function DraftsPage() {
               images={images}
             />
           </div>
-          <AiPanel
+          {!selected?.archivedAt && !readOnly && <AiPanel
             draft={selected}
             title={title}
             content={content}
@@ -621,7 +660,7 @@ export default function DraftsPage() {
             onApplyTags={(ts) =>
               update({ tags: Array.from(new Set([...tags, ...ts])) })
             }
-          />
+          />}
         </div>
       </aside>
     </div>

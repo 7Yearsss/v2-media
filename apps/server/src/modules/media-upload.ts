@@ -50,6 +50,7 @@ export function mediaUploadModule(deps: Deps) {
     const p = parsed.data;
     const [owned] = await deps.db.select().from(drafts).where(and(eq(drafts.id, p.draftId), eq(drafts.userId, userId)));
     if (!owned) return c.json({ error: "草稿不存在" }, 404);
+    if (owned.archivedAt) return c.json({ error: "草稿已归档，请恢复后再上传图片" }, 409);
     const bytes = Buffer.from(await file.arrayBuffer());
     try {
       const metadata = await sharp(bytes, { limitInputPixels: IMAGE_UPLOAD_LIMITS.pixels }).metadata();
@@ -67,6 +68,7 @@ export function mediaUploadModule(deps: Deps) {
         await tx.execute(sql`SELECT id FROM drafts WHERE id = ${p.draftId} AND user_id = ${userId} FOR UPDATE`);
         const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, p.draftId), eq(drafts.userId, userId)));
         if (!draft) return { code: 404 as const, error: "草稿不存在" };
+        if (draft.archivedAt) return { code: 409 as const, error: "草稿已归档，请恢复后再上传图片" };
         const [prior] = await tx.select().from(mediaAssets).where(and(eq(mediaAssets.userId, userId), eq(mediaAssets.uploadId, p.uploadId)));
         if (prior) {
           if (prior.draftId !== p.draftId || prior.sourceHash !== hash) return { code: 409 as const, error: "上传标识已被其他图片使用" };
@@ -109,7 +111,7 @@ export function mediaUploadModule(deps: Deps) {
     const result = await deps.db.transaction(async tx => {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${asset.draftId} FOR UPDATE`);
       const [draft] = await tx.select().from(drafts).where(eq(drafts.id, asset.draftId));
-      if (!draft?.images.some(i => i.assetId === asset.id)) return null;
+      if (draft?.archivedAt || !draft?.images.some(i => i.assetId === asset.id)) return null;
       const [updated] = await tx.update(mediaAssets).set({ status: "queued", error: null })
         .where(and(eq(mediaAssets.id, asset.id), eq(mediaAssets.status, "failed"))).returning();
       if (!updated) return null;

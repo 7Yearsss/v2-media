@@ -247,6 +247,7 @@ export function normalizeOverview(raw: unknown): OverviewStats {
 // ---------- 端点 ----------
 
 export const api = {
+  runtime: () => request<import("@v2media/shared").ServerRuntimeStatus>("/api/runtime"),
   collectionTasks: () => request<{ items: CollectionTask[] }>("/api/collection-tasks"),
   collectionTask: (id: number, offset = 0) => request<CollectionTaskDetail>(`/api/collection-tasks/${id}`, { query: { offset } }),
   createCollectionTask: (body: CollectionTaskRules) => request<CollectionTask>("/api/collection-tasks", { method: "POST", body }),
@@ -261,6 +262,8 @@ export const api = {
     request<AuthResponse>("/api/auth/login", { method: "POST", body }, session),
 
   accounts: () => request<HostedAccount[]>("/api/accounts"),
+  accountsIncludingArchived: () => request<HostedAccount[]>("/api/accounts", { query: { includeArchived: 1 } }),
+  restoreAccount: (id: number) => request<HostedAccount>(`/api/accounts/${id}/restore`, { method: "POST" }),
   updateAccountPersona: (id: number, body: AccountPersonaUpdateRequest) =>
     request<HostedAccount>(`/api/accounts/${id}`, { method: "PATCH", body }),
   deleteAccount: (id: number) =>
@@ -339,6 +342,8 @@ export const api = {
     request<{ affected: number }>("/api/notes/batch", { method: "POST", body }),
 
   drafts: () => request<Draft[]>("/api/drafts"),
+  draftsIncludingArchived: () => request<Draft[]>("/api/drafts", { query: { includeArchived: 1 } }),
+  restoreDraft: (id: number) => request<Draft>(`/api/drafts/${id}/restore`, { method: "POST" }),
   uploadImage: (draftId: number, imagesVersion: number, file: File, uploadId: string, session?: SessionContext) => {
     const form = new FormData();
     form.set("draftId", String(draftId));
@@ -357,8 +362,8 @@ export const api = {
     request<Draft>("/api/drafts", { method: "POST", body }),
   updateDraft: (id: number, body: DraftUpdateRequest, session?: SessionContext) =>
     request<Draft>(`/api/drafts/${id}`, { method: "PATCH", body }, session),
-  deleteDraft: (id: number) =>
-    request<void>(`/api/drafts/${id}`, { method: "DELETE" }),
+  deleteDraft: (id: number, session?: SessionContext) =>
+    request<void>(`/api/drafts/${id}`, { method: "DELETE" }, session),
 
   aiRewrite: (body: AiRewriteRequest, session?: SessionContext) =>
     request<AiRewriteResponse>("/api/ai/rewrite", { method: "POST", body }, session),

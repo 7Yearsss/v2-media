@@ -11,6 +11,7 @@ export function DraftAccount({ draftId, beforeChange }: { draftId: number; befor
   const draft = useQuery({ queryKey: ["draft-media", draftId], queryFn: () => api.draft(draftId) }).data;
   const [saving, setSaving] = useState(false);
   const account = accounts.data?.find(a => a.id === draft?.accountId);
+  const archivedTarget = !!draft?.accountId && accounts.isSuccess && !account;
   const change = async (value: string) => {
     setSaving(true);
     try {
@@ -30,9 +31,11 @@ export function DraftAccount({ draftId, beforeChange }: { draftId: number; befor
       <select aria-label="写作账号" value={draft?.accountId ?? ""} disabled={saving || !draft || accounts.isPending} onChange={e => void change(e.target.value)}
         className="min-w-0 flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm">
         <option value="">通用风格</option>{accounts.data?.map(a => <option key={a.id} value={a.id}>{a.nickname || a.xhsUserId}</option>)}
+        {archivedTarget && <option value={draft!.accountId!} disabled>已解绑账号 #{draft!.accountId}</option>}
       </select>
     </label>
     {accounts.isError && <p role="alert" className="text-xs text-destructive">账号读取失败 <button onClick={() => void accounts.refetch()} className="underline">重试</button></p>}
+    {archivedTarget && <p role="alert" className="text-xs text-amber-600">原写作账号已解绑，历史人设仍保留。请选择可用账号或通用风格后再调用 AI。</p>}
     {account?.positioning && <p className="line-clamp-2 text-xs text-muted-foreground">定位：{account.positioning}</p>}
     {account?.styleNotes && <p className="line-clamp-2 text-xs text-muted-foreground">风格：{account.styleNotes}</p>}
     {account?.redlines && <p className="text-xs leading-5 text-muted-foreground">红线：{account.redlines}</p>}

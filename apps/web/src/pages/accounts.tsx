@@ -12,17 +12,22 @@ import { api, ApiError, getToken, mediaUrl } from "@/lib/api";
 import { bridge } from "@/lib/bridge";
 import { ACCOUNT_STATUS_META, timeAgo } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 
 function AccountCard({
   account,
   onUnbind,
   unbinding,
   onEditPersona,
+  onRestore,
+  readOnly,
 }: {
   account: HostedAccount;
   onUnbind: () => void;
   unbinding: boolean;
   onEditPersona: () => void;
+  onRestore: () => void;
+  readOnly: boolean;
 }) {
   const meta = ACCOUNT_STATUS_META[account.status] ?? ACCOUNT_STATUS_META.unknown!;
   return (
@@ -50,10 +55,10 @@ function AccountCard({
           </div>
           <AnimatedBadge
             size="sm"
-            status={meta.status}
-            pulse={account.status === "online"}
+            status={account.archivedAt ? "neutral" : meta.status}
+            pulse={!account.archivedAt && account.status === "online"}
           >
-            {meta.label}
+            {account.archivedAt ? "已解绑" : meta.label}
           </AnimatedBadge>
         </div>
 
@@ -71,21 +76,22 @@ function AccountCard({
         ) : null}
 
         <div className="space-y-1 text-xs leading-5 text-muted-foreground">
+          {account.archivedAt && <p>发布记录、指标与人设已保留；恢复后不会自动重发。</p>}
           <p className="line-clamp-2">{account.positioning || "尚未设置人设，AI 按通用风格写作"}</p>
           {account.styleNotes && <p className="line-clamp-1">风格：{account.styleNotes}</p>}
           {account.redlines && <p className="line-clamp-1">红线：{account.redlines}</p>}
         </div>
         <div className="mt-auto flex justify-between border-t border-border pt-3">
-          <Button size="sm" variant="outline" onClick={onEditPersona}><PenLine className="size-3.5" />编辑人设</Button>
+          <Button size="sm" variant="outline" disabled={readOnly || !!account.archivedAt} onClick={onEditPersona}><PenLine className="size-3.5" />编辑人设</Button>
           <Button
             size="sm"
             variant="ghost"
             className="text-muted-foreground hover:text-destructive"
-            disabled={unbinding}
-            onClick={onUnbind}
+            disabled={unbinding || readOnly}
+            onClick={account.archivedAt ? onRestore : onUnbind}
           >
             <Unplug className="size-3.5" />
-            解绑
+            {account.archivedAt ? "恢复账号" : "解绑"}
           </Button>
         </div>
       </div>
@@ -157,10 +163,12 @@ export default function AccountsPage() {
   const queryClient = useQueryClient();
   const { online } = useExtensionStatus();
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const { readOnly } = useRuntime();
 
   const accountsQuery = useQuery({
-    queryKey: ["accounts"],
-    queryFn: api.accounts,
+    queryKey: includeArchived ? ["accounts", "history"] : ["accounts"],
+    queryFn: includeArchived ? api.accountsIncludingArchived : api.accounts,
     refetchInterval: 30_000,
   });
 
@@ -169,9 +177,17 @@ export default function AccountsPage() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["accounts"] });
       toast.success("已解绑账号");
+      setEditingId(null);
+      void queryClient.invalidateQueries({ queryKey: ["drafts"] });
+      void queryClient.invalidateQueries({ queryKey: ["publish-jobs"] });
     },
     onError: (err) =>
       toast.error("解绑失败", err instanceof Error ? err.message : undefined),
+  });
+  const restore = useMutation({
+    mutationFn: api.restoreAccount,
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["accounts"] }); toast.success("账号已恢复", "已取消的任务不会自动重启"); },
+    onError: err => toast.error("恢复失败", err instanceof Error ? err.message : undefined),
   });
 
   const authorize = async () => {
@@ -212,17 +228,18 @@ export default function AccountsPage() {
     <div className="w-full px-6 pb-8 pt-6">
       <div className="mb-4 flex flex-wrap items-center justify-end gap-3">
         <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" aria-pressed={includeArchived} onClick={() => setIncludeArchived(v => !v)}>{includeArchived ? "隐藏已解绑账号" : "包含已解绑账号"}</Button>
           <Button
             variant="outline"
             size="sm"
             onClick={() => void sync()}
-            disabled={online !== true}
+            disabled={online !== true || readOnly}
             title={online ? undefined : "需先检测到插件"}
           >
             <RefreshCcw className="size-3.5" />
             同步账号
           </Button>
-          <Button size="sm" onClick={() => void authorize()}>
+          <Button size="sm" disabled={readOnly} onClick={() => void authorize()}>
             <Zap className="size-3.5" />
             授权插件
           </Button>
@@ -249,7 +266,7 @@ export default function AccountsPage() {
           title="还没有托管账号"
           description="插件在小红书页面检测到登录态后，会通过心跳自动上报到这里"
           action={
-            <Button size="sm" onClick={() => void authorize()}>
+            <Button size="sm" disabled={readOnly} onClick={() => void authorize()}>
               <Zap className="size-3.5" />
               授权插件
             </Button>
@@ -262,8 +279,10 @@ export default function AccountsPage() {
             <AccountCard
               key={account.id}
               account={account}
-              unbinding={unbind.isPending}
+              unbinding={unbind.isPending || restore.isPending}
               onUnbind={() => unbind.mutate(account.id)}
+              onRestore={() => restore.mutate(account.id)}
+              readOnly={readOnly}
               onEditPersona={() => setEditingId(account.id)}
             />
           ))}

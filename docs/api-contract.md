@@ -18,7 +18,7 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/auth/register · /api/auth/login | `{email,password}` → `{token,user}` |
 | GET | /api/accounts | 托管账号列表 `HostedAccount[]` |
 | PATCH | /api/accounts/:id | `{version,positioning?,styleNotes?,redlines?}` 保存账号人设，返回 `HostedAccount` |
-| DELETE | /api/accounts/:id | 解绑 |
+| DELETE | /api/accounts/:id | 幂等归档解绑，保留历史与身份；恢复用 POST /:id/restore |
 | GET | /api/notes?keyword=&tag=&source=&collectionId=&cursor= | 内容库列表（分页 `{items,nextCursor}`；`collectionId` 数字=该库、`none`=未分组） |
 | GET | /api/collections | 采集库列表 `{items:[{id,name,noteCount,createdAt}]}` |
 | POST | /api/collections | `{name}` → `Collection`（同名幂等返回已有） |
@@ -50,6 +50,17 @@ Base: `http://127.0.0.1:3000`（web dev server 已代理 `/api`）。
 | POST | /api/publish/jobs/:id/cancel | |
 | POST | /api/publish/jobs/:id/retry | `{operationId:UUID}` 原版本重试；同一操作重复返回同一新任务；不接受当前稿替代参数 |
 | GET | /api/overview | 仪表盘计数 |
+
+## 历史归档与运行模式（R2）
+
+- `HostedAccount`/`Draft.archivedAt` 为 null 或 ISO 时间。账号/草稿列表默认只读活跃项，`?includeArchived=1` 含归档历史；草稿单条 GET 仍可读取归档内容。DELETE 按当前用户软归档，缺失/跨用户 404，重复不再增加版本；`POST /api/accounts/:id/restore` / `/api/drafts/:id/restore` 同 ID 恢复并返回对象，不重新执行已取消的任务。
+- 账号归档保留人设、原身份、发布、账号趋势、指标和复盘；取消 pending 发布/账号快照，并撤销该账号未完成成稿的代次。草稿归档保留原文/图集/ready 素材，增加文字/图片/生成/封面代次，取消未完成上传/成稿/封面与 pending 发布。归档后立即恢复也不接受旧 AI/素材处理结果。
+- 归档目标的新编辑、AI、发布、原稿重试、认领及下一次真实发布点击续租拒绝 409；已经运行的发布仍保留 running/未知现场，不能保证撤销已发送站点动作。已运行结果收据和历史 readback/metrics 继续入库，新账号快照不再认领。库和用户归属验证维持原规则。
+- 六条发布证据外键为 RESTRICT（发布→草稿/账号，账号快照→账号，素材→草稿，复盘/指标→发布），防止未来物理删除再次静默丢失历史。GC 继续保护归档草稿与发布快照引用的对象。
+- 心跳按 `(userId,platform,subType,xhsUserId)` 唯一身份原子 UPSERT，仅更新观测资料/状态，不改人设或 archivedAt。ID 必须非空、trim 后无空白/控制字符、≤128；非法/批内重复 400。不同用户与 pc/creator 仍分开。身份和每日账号快照排期同事务；并发心跳不创建重复账号/快照。旧重复/非规范身份阻塞迁移，`db:duplicates` 只报告，不合并删除。
+- `GET /api/runtime`（公共元数据）及 `/health` 返回 `{ok,runtimeMode,schemaVersion}`。默认 `local-isolated` 只用隔离 PGlite，拒绝 PostgreSQL URL；如配置真实 R2，必须 `LOCAL_R2_BUCKET=R2_BUCKET` 声明独立桶且不可为生产 `v2-media`。依赖注入的离线 mock 不受此配置入口限制。
+- `production-readonly` 要求专用 PG 角色、read-only 连接、有效 AUTH_SECRET；拒绝所有 API 写方法（403 `runtime_readonly`），仅允许无入库的登录，以及 GET/HEAD/OPTIONS。读取陈旧账号/分析、候选回采任务不回写状态。worker/上传/成稿/复盘/媒体维护的低层入口也停止，数据库有效角色权限独立限制写入；工作台提示只读状态。
+- `production-worker` 要求显式 PG URL、至少 32 字符 AUTH_SECRET、64 hex 字符 ENCRYPTION_KEY。生产两模式启动只读检查迁移账本/校验和、列和关键约束，不自动重放 DDL；版本不符拒绝启动。显式迁移事务包含业务升级和账本，迁移锁默认等待 10s，语句上限 120s，任何失败整体回滚。历史结构升级与首次写作账号回填只运行一次；已应用迁移不能改写。
 
 ## 账号人设与创作上下文
 

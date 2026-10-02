@@ -7,6 +7,7 @@ import type { Deps } from "../context";
 import { drafts, jobs, mediaAssets } from "../db/schema";
 import { env } from "../env";
 import { storeCreatedMedia } from "./created-media";
+import { isReadOnly } from "./runtime-policy";
 
 export const uploadDirectory = (deps: Deps) => deps.uploadDir ?? join(env.dataDir, "uploads");
 interface Payload { assetId: number; base: string; attempts?: number }
@@ -16,6 +17,7 @@ const fileFor = (deps: Deps, name: string) => {
 };
 
 export async function runUploadJobs(deps: Deps) {
+  if (isReadOnly(deps)) return;
   if (!deps.r2) return;
   const now = deps.now();
   await deps.db.update(jobs).set({ status: "queued", claimedAt: null }).where(and(
@@ -30,7 +32,7 @@ export async function runUploadJobs(deps: Deps) {
   const p = job.payload as Payload;
   const [asset] = await deps.db.select().from(mediaAssets).where(and(eq(mediaAssets.id, p.assetId), eq(mediaAssets.userId, job.userId)));
   const finish = async () => {
-    await deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(eq(jobs.id, job.id));
+    await deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(and(eq(jobs.id, job.id), eq(jobs.status, "processing")));
     if (asset) await unlink(fileFor(deps, asset.sourceFile)).catch(() => {});
   };
   if (!asset || asset.status === "canceled" || asset.status === "ready") { await finish(); return; }
@@ -38,7 +40,7 @@ export async function runUploadJobs(deps: Deps) {
     const active = await deps.db.transaction(async tx => {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${asset.draftId} FOR UPDATE`);
       const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, asset.draftId), eq(drafts.userId, job.userId)));
-      if (!draft?.images.some(i => i.assetId === asset.id)) {
+      if (draft?.archivedAt || !draft?.images.some(i => i.assetId === asset.id)) {
         await tx.update(mediaAssets).set({ status: "canceled" }).where(eq(mediaAssets.id, asset.id));
         return false;
       }
@@ -61,7 +63,7 @@ export async function runUploadJobs(deps: Deps) {
       const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, asset.draftId), eq(drafts.userId, job.userId)));
       const [current] = await tx.select().from(mediaAssets).where(eq(mediaAssets.id, asset.id));
       if (!current) return;
-      if (current.status === "canceled" || !draft?.images.some(i => i.assetId === asset.id)) {
+      if (current.status === "canceled" || draft?.archivedAt || !draft?.images.some(i => i.assetId === asset.id)) {
         await tx.update(mediaAssets).set({ status: "canceled", key, url }).where(eq(mediaAssets.id, asset.id));
         return;
       }
@@ -80,12 +82,13 @@ export async function runUploadJobs(deps: Deps) {
     await deps.db.update(jobs).set({
       status: attempts < 3 ? "queued" : "failed", payload: { ...p, attempts },
       dueAt: new Date(deps.now().getTime() + attempts * 30_000), error: message,
-    }).where(eq(jobs.id, job.id));
+    }).where(and(eq(jobs.id, job.id), eq(jobs.status, "processing")));
   }
 }
 
 /** Sweep orphan source files after a day; referenced failed uploads remain retryable. */
 export async function sweepUploadSources(deps: Deps) {
+  if (isReadOnly(deps)) return;
   const active = await deps.db.select().from(mediaAssets).where(inArray(mediaAssets.status, ["queued", "processing", "failed"]));
   const referenced = new Set(active.map(a => a.sourceFile));
   for (const file of await readdir(uploadDirectory(deps)).catch(() => [] as string[])) {
@@ -97,6 +100,7 @@ export async function sweepUploadSources(deps: Deps) {
 }
 
 export function startUploadWorker(deps: Deps) {
+  if (isReadOnly(deps)) return;
   let busy = false;
   const tick = async () => {
     if (busy) return;

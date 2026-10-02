@@ -20,12 +20,22 @@ import { topicsModule } from "./modules/topics";
 import { insightsModule } from "./modules/insights";
 import { postmortemModule } from "./modules/postmortem";
 import { collectionTasksModule } from "./modules/collection-tasks";
+import { isReadOnly } from "./runtime";
+import { EXPECTED_SCHEMA_VERSION } from "./db/migrate";
 
 export function createApp(deps: Deps) {
   const app = new Hono();
 
   app.use("/api/*", cors());
-  app.get("/health", (c) => c.json({ ok: true }));
+  app.use("/api/*", async (c, next) => {
+    if (isReadOnly(deps) && !["GET", "HEAD", "OPTIONS"].includes(c.req.method)
+      && !(c.req.method === "POST" && c.req.path === "/api/auth/login")) {
+      return c.json({ error: "此服务以生产只读模式运行", code: "runtime_readonly" }, 403);
+    }
+    await next();
+  });
+  app.get("/health", (c) => c.json({ ok: true, runtimeMode: deps.runtimeMode ?? "local-isolated", schemaVersion: EXPECTED_SCHEMA_VERSION }));
+  app.get("/api/runtime", (c) => c.json({ ok: true, runtimeMode: deps.runtimeMode ?? "local-isolated", schemaVersion: EXPECTED_SCHEMA_VERSION }));
 
   app.route("/api/auth", authModule(deps));
 

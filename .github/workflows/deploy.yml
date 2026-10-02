@@ -26,7 +26,7 @@ jobs:
         run: |
           npm ci
           npm run typecheck
-          npm test -w @v2media/server
+          npm test -w @v2media/server -- --maxWorkers=1 --minWorkers=1
           npm run build -w @v2media/web
           # 生产插件打包成 zip 供站内下载（须在 web build 后跑）
           bash scripts/package-extension.sh
@@ -54,10 +54,10 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
 
-      - name: Install deps + restart service
+      - name: Install deps + explicit migrations + restart service
         run: |
           ssh -i ~/.ssh/deploy_key "$SSH_USER@$SSH_HOST" \
-            'cd ~/apps/v2-media && npm install --no-audit --no-fund && sudo -n systemctl restart v2-media && sleep 2 && curl -sf http://127.0.0.1:3000/health'
+            'cd ~/apps/v2-media && npm install --no-audit --no-fund && npm run db:migrate -w @v2media/server && sudo -n systemctl restart v2-media && sleep 2 && curl -sf http://127.0.0.1:3000/health'
         env:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_HOST: ${{ secrets.SSH_HOST }}

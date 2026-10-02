@@ -3,6 +3,7 @@ import { and, asc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { ingestCollect } from "../lib/collect-ingest";
+import { observeAccount, observedAccountSchema } from "../lib/account-identity";
 
 import type {
   AccountSnapshotTaskPayload,
@@ -119,17 +120,8 @@ async function ensureSnapshotTask(
 }
 
 const heartbeatSchema = z.object({
-  accounts: z.array(
-    z.object({
-      xhsUserId: z.string().default(""),
-      nickname: z.string().default(""),
-      avatar: z.string().default(""),
-      subType: z.enum(["pc", "creator"]).default("pc"),
-      status: z.enum(["online", "expired"]).default("online"),
-      statusMessage: z.string().optional(),
-    }),
-  ),
-});
+  accounts: z.array(observedAccountSchema).max(50),
+}).refine(({ accounts }) => new Set(accounts.map(a => `${a.subType}:${a.xhsUserId}`)).size === accounts.length, "duplicate account identity");
 
 const resultSchema = browserReceiptFields.extend({
   status: z.enum(["done", "failed"]),
@@ -146,6 +138,17 @@ const metricsDataSchema = metricsRowSchema.partial().extend({ rows: z.array(metr
 const snapshotDataSchema = z.object({ followers: metricValue, likesTotal: metricValue, notesCount: metricValue, extra: z.record(z.unknown()).optional() }).refine(d => [d.followers, d.likesTotal, d.notesCount].some(v => typeof v === "number" && v >= 0 && v <= 2_147_483_647), "snapshot requires a valid metric");
 const metricNumber = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 2_147_483_647 ? Math.round(v) : null;
 
+/** SQL guard is evaluated as part of the execution transition, not a preceding check. */
+function activePublishTargets(userId: number) {
+  return sql`EXISTS (SELECT 1 FROM hosted_accounts a WHERE a.id = ${publishJobs.accountId} AND a.user_id = ${userId} AND a.archived_at IS NULL)
+    AND EXISTS (SELECT 1 FROM drafts d WHERE d.id = ${publishJobs.draftId} AND d.user_id = ${userId} AND d.archived_at IS NULL)`;
+}
+
+function snapshotTargetNotArchived(userId: number) {
+  return sql`(${jobs.type} <> 'account_snapshot' OR NOT EXISTS (
+    SELECT 1 FROM hosted_accounts a WHERE a.id::text = ${jobs.payload}->>'accountId' AND a.user_id = ${userId} AND a.archived_at IS NOT NULL))`;
+}
+
 export function extModule(deps: Deps) {
   const app = new Hono<{ Variables: { userId: number } }>();
 
@@ -154,54 +157,18 @@ export function extModule(deps: Deps) {
     const parsed = heartbeatSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad heartbeat" }, 400);
     const now = deps.now();
-    for (const acc of parsed.data.accounts) {
-      const [existing] = await deps.db
-        .select()
-        .from(hostedAccounts)
-        .where(
-          and(
-            eq(hostedAccounts.userId, userId),
-            eq(hostedAccounts.platform, "xhs"),
-            eq(hostedAccounts.subType, acc.subType),
-            eq(hostedAccounts.xhsUserId, acc.xhsUserId),
-          ),
-        )
-        .limit(1);
-      if (existing) {
-        await deps.db
-          .update(hostedAccounts)
-          .set({
-            nickname: acc.nickname || existing.nickname,
-            avatar: acc.avatar || existing.avatar,
-            status: acc.status,
-            statusMessage: acc.statusMessage ?? "",
-            lastSeenAt: now,
-          })
-          .where(eq(hostedAccounts.id, existing.id));
-        // 在线账号每日补一次概览快照（无排队任务且 20h 内无快照才排）
-        if (acc.status === "online") {
-          await ensureSnapshotTask(deps, userId, existing.id, acc.xhsUserId);
-        }
-      } else {
-        const [row] = await deps.db
-          .insert(hostedAccounts)
-          .values({
-            userId,
-            platform: "xhs",
-            subType: acc.subType,
-            xhsUserId: acc.xhsUserId,
-            nickname: acc.nickname,
-            avatar: acc.avatar,
-            status: acc.status,
-            statusMessage: acc.statusMessage ?? "",
-            lastSeenAt: now,
-          })
-          .returning({ id: hostedAccounts.id });
-        if (row && acc.status === "online") {
-          await ensureSnapshotTask(deps, userId, row.id, acc.xhsUserId);
+    // Stable lock order avoids deadlocks when two heartbeats contain the same identities.
+    const accounts = [...parsed.data.accounts].sort((a, b) => `${a.subType}:${a.xhsUserId}`.localeCompare(`${b.subType}:${b.xhsUserId}`));
+    await deps.db.transaction(async tx => {
+      const scoped = { ...deps, db: tx as unknown as Db };
+      for (const acc of accounts) {
+        const row = await observeAccount(scoped.db, userId, acc, now);
+        // The account UPSERT row lock also serializes the snapshot existence check and insert.
+        if (acc.status === "online" && !row.archivedAt) {
+          await ensureSnapshotTask(scoped, userId, row.id, row.xhsUserId);
         }
       }
-    }
+    });
     return c.json({ ok: true });
   });
 
@@ -226,6 +193,8 @@ export function extModule(deps: Deps) {
         and(
           eq(publishJobs.userId, userId),
           eq(publishJobs.status, "pending"),
+          isNull(drafts.archivedAt),
+          isNull(hostedAccounts.archivedAt),
           includeFuture
             ? undefined
             : or(isNull(publishJobs.scheduledAt), lt(publishJobs.scheduledAt, deps.now())),
@@ -259,6 +228,7 @@ export function extModule(deps: Deps) {
       if (!c.req.query("claimer") || r.job.claimedBy !== c.req.query("claimer")) return c.json({ error: "not found" }, 404);
       if (!hasLiveLease(r.job, deps.now())) return c.json({ error: "execution lease expired; reconcile required" }, 409);
     } else if (r.job.status !== "pending") return c.json(terminalMetadata(r.job));
+    if (r.draft.archivedAt || !r.account || r.account.archivedAt) return c.json({ error: "publish target archived; execution prohibited" }, 409);
     return c.json({ ...r.job, scheduledAt: r.job.scheduledAt?.getTime(), xhsUserId: r.account?.xhsUserId ?? "",
       draft: r.job.draftSnapshot ?? { title: r.draft.title, content: r.draft.content, tags: r.draft.tags, images: r.draft.images } });
   });
@@ -272,7 +242,7 @@ export function extModule(deps: Deps) {
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const [row] = await deps.db.update(publishJobs).set({ status: "running", claimedBy: parsed.data.claimedBy,
       leaseId: randomUUID(), attempt: sql`${publishJobs.attempt} + 1`, leaseUntil: new Date(deps.now().getTime() + publishLeaseMs), updatedAt: deps.now() })
-      .where(and(eq(publishJobs.id, id), eq(publishJobs.userId, userId), eq(publishJobs.status, "pending"))).returning();
+      .where(and(eq(publishJobs.id, id), eq(publishJobs.userId, userId), eq(publishJobs.status, "pending"), activePublishTargets(userId))).returning();
     if (!row) return c.json({ error: "not found or already claimed" }, 404);
     return c.json(row);
   });
@@ -286,8 +256,8 @@ export function extModule(deps: Deps) {
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const p = parsed.data, now = deps.now();
     const [row] = await deps.db.update(publishJobs).set({ leaseUntil: new Date(now.getTime() + publishLeaseMs), updatedAt: now })
-      .where(and(eq(publishJobs.id, id), eq(publishJobs.userId, userId), eq(publishJobs.status, "running"), eq(publishJobs.claimedBy, p.claimedBy), eq(publishJobs.leaseId, p.leaseId), eq(publishJobs.attempt, p.attempt), sql`${publishJobs.leaseUntil} > ${now}`)).returning();
-    return row ? c.json(terminalMetadata(row)) : c.json({ error: "execution lease expired or superseded; reconcile required" }, 409);
+      .where(and(eq(publishJobs.id, id), eq(publishJobs.userId, userId), eq(publishJobs.status, "running"), eq(publishJobs.claimedBy, p.claimedBy), eq(publishJobs.leaseId, p.leaseId), eq(publishJobs.attempt, p.attempt), sql`${publishJobs.leaseUntil} > ${now}`, activePublishTargets(userId))).returning();
+    return row ? c.json(terminalMetadata(row)) : c.json({ error: "execution lease expired, superseded or target archived; reconcile required" }, 409);
   });
 
   app.post("/publish/:id/result", async c => {
@@ -327,10 +297,9 @@ export function extModule(deps: Deps) {
   app.get("/tasks/pending", async c => {
     const userId = c.get("userId"), now = deps.now();
     const limit = Math.max(1, Math.min(Number(c.req.query("limit")) || 5, 20));
-    await deps.db.update(jobs).set({ status: "pending", claimedBy: null, claimedAt: null, leaseId: null, leaseUntil: null })
-      .where(and(eq(jobs.userId, userId), eq(jobs.status, "running"), inArray(jobs.type, attributionTypes), or(isNull(jobs.leaseId), isNull(jobs.leaseUntil), lte(jobs.leaseUntil, now))));
+    // Reads never reap leases. A subsequent claim atomically replaces an expired attempt.
     const rows = await deps.db.select({ id: jobs.id, type: jobs.type, payload: jobs.payload }).from(jobs)
-      .where(and(eq(jobs.userId, userId), eq(jobs.status, "pending"), inArray(jobs.type, attributionTypes), or(isNull(jobs.dueAt), lte(jobs.dueAt, now))))
+      .where(and(eq(jobs.userId, userId), or(eq(jobs.status, "pending"), and(eq(jobs.status, "running"), or(isNull(jobs.leaseId), isNull(jobs.leaseUntil), lte(jobs.leaseUntil, now)))), inArray(jobs.type, attributionTypes), snapshotTargetNotArchived(userId), or(isNull(jobs.dueAt), lte(jobs.dueAt, now))))
       .orderBy(asc(jobs.dueAt), asc(jobs.id)).limit(limit);
     return c.json({ tasks: rows });
   });
@@ -345,6 +314,12 @@ export function extModule(deps: Deps) {
       if (!c.req.query("claimer") || row.claimedBy !== c.req.query("claimer")) return c.json({ error: "not found" }, 404);
       if (!hasLiveLease(row, deps.now())) return c.json({ error: "execution lease expired; reconcile required" }, 409);
     } else if (row.status !== "pending") return c.json(terminalMetadata(row));
+    if (row.status === "pending" && row.type === "account_snapshot") {
+      const accountId = String((row.payload as { accountId?: unknown } | null)?.accountId ?? "");
+      const [archived] = await deps.db.select({ id: hostedAccounts.id }).from(hostedAccounts)
+        .where(and(eq(hostedAccounts.userId, userId), sql`${hostedAccounts.id}::text = ${accountId}`, sql`${hostedAccounts.archivedAt} IS NOT NULL`)).limit(1);
+      if (archived) return c.json({ error: "snapshot target archived; execution prohibited" }, 409);
+    }
     return c.json(row);
   });
 
@@ -358,7 +333,7 @@ export function extModule(deps: Deps) {
     const now = deps.now();
     const [row] = await deps.db.update(jobs).set({ status: "running", claimedBy: parsed.data.claimedBy, claimedAt: now, finishedAt: null,
       leaseId: randomUUID(), attempt: sql`${jobs.attempt} + 1`, leaseUntil: new Date(now.getTime() + attributionLeaseMs) })
-      .where(and(eq(jobs.id, id), eq(jobs.userId, userId), eq(jobs.status, "pending"), inArray(jobs.type, attributionTypes), or(isNull(jobs.dueAt), lte(jobs.dueAt, now)))).returning();
+      .where(and(eq(jobs.id, id), eq(jobs.userId, userId), or(eq(jobs.status, "pending"), and(eq(jobs.status, "running"), or(isNull(jobs.leaseId), isNull(jobs.leaseUntil), lte(jobs.leaseUntil, now)))), inArray(jobs.type, attributionTypes), snapshotTargetNotArchived(userId), or(isNull(jobs.dueAt), lte(jobs.dueAt, now)))).returning();
     return row ? c.json(row) : c.json({ error: "not found, not due or already claimed" }, 404);
   });
 

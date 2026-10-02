@@ -66,6 +66,7 @@ import { useAuth } from "@/lib/auth";
 import { bridge, useExtensionOnline } from "@/lib/bridge";
 import { JOB_STATUS_META } from "@/lib/format";
 import { useToast } from "@/lib/toast";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 
 const NAV = [
   { to: "/", label: "仪表盘", icon: LayoutDashboard, match: /^\/$/ },
@@ -102,6 +103,7 @@ export function useExtensionStatus() {
 }
 
 export function AppShell() {
+  const { readOnly } = useRuntime();
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
@@ -120,6 +122,7 @@ export function AppShell() {
     PAGE_TITLES.find(([re]) => re.test(location.pathname))?.[1] ?? "工作台";
 
   const authorizeExtension = useCallback(async () => {
+    if (readOnly) { toast.info("当前为只读连接，不能授权执行插件"); return; }
     const token = getToken();
     if (!token) {
       toast.error("请先登录");
@@ -135,9 +138,10 @@ export function AppShell() {
         err instanceof Error ? err.message : "请确认扩展已安装并刷新页面",
       );
     }
-  }, [toast]);
+  }, [toast, readOnly]);
 
   const createDraft = useCallback(async () => {
+    if (readOnly) { toast.info("当前为只读连接"); return; }
     try {
       const draft = await api.createDraft({ title: "", content: "" });
       void queryClient.invalidateQueries({ queryKey: ["drafts"] });
@@ -145,7 +149,7 @@ export function AppShell() {
     } catch (err) {
       toast.error("创建草稿失败", err instanceof Error ? err.message : undefined);
     }
-  }, [navigate, queryClient, toast]);
+  }, [navigate, queryClient, toast, readOnly]);
 
   const commands = useMemo<CommandItem[]>(
     () => [
@@ -189,8 +193,8 @@ export function AppShell() {
         keywords: ["ai", "rewrite", "改写"],
         onSelect: () => navigate("/drafts"),
       },
-    ],
-    [navigate, createDraft, authorizeExtension],
+    ].filter(item => !readOnly || item.group === "页面"),
+    [navigate, createDraft, authorizeExtension, readOnly],
   );
 
   const notificationItems = useMemo<NotificationStackItem[]>(() => {
@@ -382,6 +386,7 @@ export function AppShell() {
           </header>
 
           <main className="min-h-0 flex-1 overflow-y-auto">
+            {readOnly && <p role="status" className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">只读连接：可查看已有数据，修改与后台任务已停用。</p>}
             {import.meta.env.VITE_PREVIEW_NOTICE && <p role="status" className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-2 text-xs leading-5 text-amber-700 dark:text-amber-300">{import.meta.env.VITE_PREVIEW_NOTICE}</p>}
             <Outlet />
           </main>

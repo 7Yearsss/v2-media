@@ -2,7 +2,7 @@
 
 2026-10-02。写给接手的 AI。先读 `AGENTS.md`，再读本文件和 `docs/publish-smoke-test.md`。
 
-2026-10-02 架构复审指出基线 `ffd7c0e` 的发布自身点击、SW 恢复、验证码断网与回执可靠性缺口。R0 已在 `8873195` 修复，插件 0.1.9；详见 [`r0-execution-verification.md`](r0-execution-verification.md)。R1 已在 `codex/r1-content-context` 完成会话/个人本地数据隔离、草稿持久编辑与文字 CAS、分析来源/目标账号传递、原版本重试及新建确认版本检查，详见 [`r1-content-context-verification.md`](r1-content-context-verification.md)。历史保留（R2）及真实 Chrome/XHS/R2/模型联合验收（R5）仍未完成，最新分支不应直接部署。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R2–R6 顺序推进，生产测试痕迹保持原样。
+2026-10-02 架构复审后的 R0 `8873195`、R1 `a789d6c` 已完成；详见各自验收文档。R2 在 `codex/r2-history-runtime` 实现可恢复归档/历史证据、账号身份唯一、只读模式和版本迁移，已补真实 PostgreSQL 16.15 的双连接锁超时/回滚/重复预检/权限验证，详见 [`r2-history-runtime-verification.md`](r2-history-runtime-verification.md)。生产仍未迁移或部署，角色/密钥/旧身份预检与实际脱敏副本升级需部署前核对。继续按 [`research/architecture-ux-review-2026-10-02.md`](research/architecture-ux-review-2026-10-02.md) 的 R3–R6 推进；真实 XHS/R2/模型联合验收仍属 R5，生产测试痕迹保持原样。
 
 ## 现状（一句话）
 
@@ -20,6 +20,8 @@
 | 账号人设 | T3 分支实现三字段编辑/提示词注入/历史快照，生产待部署 | `lib/account-persona.ts`、`db/schema.ts` |
 
 ⚠️ 本地 `apps/server/.env` 的 `DATABASE_URL` 指向**生产库**（经 SSH 隧道 127.0.0.1:54330）。写操作都会落到线上。做开发/测试请换成本地 PGlite（去掉 `DATABASE_URL`），或明确知道自己在动生产。
+
+R2 新版默认 `local-isolated` 会拒绝该 URL；只读观察要明确设 `production-readonly` 并使用专用只读 PG 角色，不能沿用生产所有者账号或把 localhost 隧道当隔离。`SKIP_DB_MIGRATIONS`/`DISABLE_MEDIA_MAINTENANCE` 不等同只读。新生产启动只检查版本，先用显式迁移命令；旧重复身份阻塞时不能擅自删除或归并行。
 
 ## 任务（按顺序）
 

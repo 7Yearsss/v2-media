@@ -9,6 +9,7 @@ import { Button } from "@/components/motion/button";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { MetricTimeline } from "@/components/app/metric-timeline";
 import { useToast } from "@/lib/toast";
+import { useRuntime } from "@/lib/hooks/use-runtime";
 
 const LABELS: Record<MetricField, string> = { likes: "点赞", collects: "收藏", comments: "评论", shares: "分享", views: "浏览", exposure: "曝光" };
 const n = (v: number | null | undefined) => v === null || v === undefined ? "未采到" : v.toLocaleString();
@@ -38,6 +39,7 @@ function Report({ report }: { report: PostmortemReport }) {
   </section>;
 }
 function NoteReview({ id }: { id: number }) {
+  const { readOnly } = useRuntime();
   const toast = useToast(), client = useQueryClient();
   const [busy, setBusy] = useState(false), [field, setField] = useState<MetricField>("likes");
   const detail = useQuery({ queryKey: ["insight-note", id], queryFn: () => api.insightNote(id),
@@ -51,7 +53,7 @@ function NoteReview({ id }: { id: number }) {
   return <div className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
     <Link to="/insights" className="inline-flex items-center gap-2 text-xs text-muted-foreground"><ArrowLeft className="size-4" />返回数据洞察</Link>
     <div className="flex flex-wrap items-start justify-between gap-4"><div><h1 className="text-xl font-semibold">{note.title || "无标题笔记"}</h1><p className="mt-2 text-xs text-muted-foreground">{note.accountName}　发布任务 #{note.publishJobId}　{note.visibility === "public" ? "公开" : note.visibility === "private" ? "仅自己可见" : "好友可见"}　{note.outcome === "verified" ? "已核对" : "待核对"}</p></div>
-      <Button size="sm" onClick={() => void generate()} disabled={busy || running}><Sparkles className="size-4" />{busy || running ? "复盘生成中…" : reports.length ? "按最新数据重新复盘" : "生成单篇复盘"}</Button></div>
+      <Button size="sm" onClick={() => void generate()} disabled={readOnly || busy || running}><Sparkles className="size-4" />{busy || running ? "复盘生成中…" : reports.length ? "按最新数据重新复盘" : "生成单篇复盘"}</Button></div>
     <div className="grid gap-3 border-y border-border py-4 text-xs sm:grid-cols-3"><p>平台发布时间<br /><span className="mt-1 block font-medium">{date(note.publishedAt)}</span></p><p>读回核对时间<br /><span className="mt-1 block font-medium">{date(note.verifiedAt)}</span></p><p>最近实采时间<br /><span className="mt-1 block font-medium">{date(note.metric?.capturedAt)}</span></p></div>
     <div className="rounded-xl border border-border bg-muted/30 p-4 text-xs leading-6">
       <p className="font-medium">{evidence.gaps[0]}</p><details className="mt-1"><summary className="cursor-pointer text-muted-foreground">查看数据边界与缺口（{evidence.gaps.length}）</summary><ul className="mt-2 list-disc pl-4 text-muted-foreground">{evidence.gaps.map(g => <li key={g}>{g}</li>)}</ul></details>
@@ -73,7 +75,7 @@ export default function InsightsPage() {
     from: from ? new Date(`${from}T00:00:00`).getTime() : undefined, to: to ? new Date(`${to}T23:59:59.999`).getTime() : undefined };
   const overview = useQuery({ queryKey: ["insights", filters], queryFn: () => api.insightsOverview(filters), enabled: !id, refetchInterval: 30000 });
   const notes = useQuery({ queryKey: ["insight-notes", filters, offset], queryFn: () => api.insightsNotes({ ...filters, offset }), enabled: !id, refetchInterval: 30000 });
-  const accounts = useQuery({ queryKey: ["accounts"], queryFn: api.accounts });
+  const accounts = useQuery({ queryKey: ["accounts", "history"], queryFn: api.accountsIncludingArchived });
   const [trendField, setTrendField] = useState<"followers" | "likesTotal" | "notesCount">("followers");
   if (id) return <NoteReview key={id} id={Number(id)} />;
   const data = overview.data;

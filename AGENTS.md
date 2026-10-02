@@ -20,6 +20,10 @@ npm workspaces，TypeScript 全栈：
 
 ## 验证
 
+- 运行模式 `V2MEDIA_RUNTIME_MODE` 默认 `local-isolated`，拒绝 `DATABASE_URL`；不要用主目录生产 `.env` 启动开发服务。`production-readonly` 要用专用只读 PG 角色且无 worker/迁移；`production-worker` 必须显式配置生产密钥。具体配置见 `docs/r2-history-runtime-verification.md`。
+- 生产启动只检查迁移账本与 schema。使用 `npm run db:status -w @v2media/server` 及同工作区的 `db:check`、`db:duplicates`、`db:migrate` 显式命令；新结构追加版本，不修改已发布迁移或 checksum。重复账号迁移失败时保留全部行，不自动合并/删除。
+- 账号解绑/草稿删除是可恢复归档，不物理删除发布证据；`archivedAt` 控制活跃列表及新执行，历史回采/指标/复盘保留。自动心跳不恢复归档账号。
+
 - `npm run typecheck`（全仓）· `npm test`（server）· `npm run build:ext`
 - dev：`npm run dev:server`（:3000）+ `npm run dev:web`（:5173）+ `npm run build:ext` 后 chrome://extensions 加载 `apps/extension/dist`
 

@@ -34,8 +34,8 @@ async function fixture() {
   const accounts = await (await ctx.app.request("/api/accounts", authed(token))).json() as HostedAccount[];
   const save = (a: HostedAccount, fields: Record<string, unknown>, auth = token) =>
     ctx.app.request("/api/accounts/" + a.id, authed(auth, { method: "PATCH", body: JSON.stringify({ version: a.personaVersion, ...fields }) }));
-  const a = await (await save(accounts[0]!, { positioning: "家庭备餐", styleNotes: "短句、清单", redlines: "不编造体验" })).json() as HostedAccount;
-  const b = await (await save(accounts[1]!, { positioning: "露营装备", styleNotes: "轻松、讲原理", redlines: "不承诺效果" })).json() as HostedAccount;
+  const a = await (await save(accounts.find(account => account.xhsUserId === "food")!, { positioning: "家庭备餐", styleNotes: "短句、清单", redlines: "不编造体验" })).json() as HostedAccount;
+  const b = await (await save(accounts.find(account => account.xhsUserId === "camp")!, { positioning: "露营装备", styleNotes: "轻松、讲原理", redlines: "不承诺效果" })).json() as HostedAccount;
   const col = await (await ctx.app.request("/api/collections", authed(token, { method: "POST", body: JSON.stringify({ name: "生活" }) }))).json() as any;
   await ctx.app.request("/api/ext/collect", authed(token, { method: "POST", body: JSON.stringify({ collectionId: col.id,
     items: [{ noteId: "source", title: "准备清单", author: {}, cover: "", likes: 100 }],
@@ -56,8 +56,7 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     const f = await fixture();
     await f.heartbeat("备餐号的新昵称");
     let accounts = await (await f.app.request("/api/accounts", authed(f.token))).json() as HostedAccount[];
-    expect(accounts[0]).toMatchObject({ positioning: "家庭备餐", styleNotes: "短句、清单", redlines: "不编造体验", personaVersion: 1 });
-    expect(accounts[0]!.nickname).toBe("备餐号的新昵称");
+    expect(accounts.find(account => account.id === f.a.id)).toMatchObject({ positioning: "家庭备餐", styleNotes: "短句、清单", redlines: "不编造体验", personaVersion: 1, nickname: "备餐号的新昵称" });
     expect((await (await f.save(f.a, { styleNotes: f.a.styleNotes })).json() as HostedAccount).personaVersion).toBe(1);
     expect((await f.save({ ...f.a, personaVersion: 0 }, { styleNotes: "旧版本" })).status).toBe(409);
     expect((await f.save(f.a, { status: "online" })).status).toBe(400);
@@ -66,7 +65,7 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     expect((await f.save(f.a, { redlines: "" }, other)).status).toBe(404);
     expect((await f.save(f.a, { redlines: "" })).status).toBe(200);
     accounts = await (await f.app.request("/api/accounts", authed(f.token))).json() as HostedAccount[];
-    expect(accounts[0]!.redlines).toBe(""); expect(accounts[1]!.redlines).toBe("不承诺效果");
+    expect(accounts.find(account => account.id === f.a.id)!.redlines).toBe(""); expect(accounts.find(account => account.id === f.b.id)!.redlines).toBe("不承诺效果");
   });
 
   it("选题与深评分分别注入目标账号，快照记录当前规则", async () => {
@@ -194,6 +193,9 @@ describe("账号人设（内存 PGlite/mock AI，无外网）", () => {
     const topic = await f.createTopic(f.a.id);
     await f.db.update(topics).set({ draftId: draft.id }).where(eq(topics.id, topic.id));
     await f.db.execute(sql`ALTER TABLE drafts DROP COLUMN account_id`);
+    // Simulate a pre-ledger legacy database, not a corrupted current-version schema.
+    await f.db.execute(sql`DROP TABLE schema_migrations`);
+    await f.db.execute(sql`DROP INDEX hosted_accounts_identity`);
     await migrate(f.db);
     let current = await (await f.app.request("/api/drafts/" + draft.id, authed(f.token))).json() as Draft;
     expect(current.accountId).toBe(f.a.id);

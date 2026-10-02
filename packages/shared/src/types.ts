@@ -286,6 +286,8 @@ export interface CollectBatch {
 
 /** 托管账号：插件探测到的已登录小红书账号。 */
 export interface HostedAccount {
+  /** Explicit unbind preserves identity, persona and published history. */
+  archivedAt?: string | null;
   id: number;
   platform: "xhs";
   subType: "pc" | "creator";
@@ -364,6 +366,8 @@ export interface NotesSummary {
 }
 
 export interface Draft {
+  /** Soft archive keeps published evidence and assets; excluded from active lists. */
+  archivedAt?: string | null;
   id: number;
   collectedNoteId?: number;
   accountId: number | null;

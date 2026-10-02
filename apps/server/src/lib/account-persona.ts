@@ -12,7 +12,8 @@ export function snapshotPersona(account: Account, positioningOverride?: string):
 export async function resolveAccountPersona(db: Db, userId: number, accountId?: number | null, positioningOverride?: string) {
   if (accountId) {
     const [account] = await db.select().from(hostedAccounts).where(and(eq(hostedAccounts.id, accountId), eq(hostedAccounts.userId, userId)));
-    if (!account) return { error: "account not found" };
+    if (!account) return { error: "account not found", code: 404 as const };
+    if (account.archivedAt) return { error: "账号已归档，请恢复或选择活跃账号", code: 409 as const };
     return { snapshot: snapshotPersona(account, positioningOverride) };
   }
   return { snapshot: positioningOverride !== undefined

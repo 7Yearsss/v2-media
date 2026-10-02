@@ -2,16 +2,19 @@ import { and, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import type { Deps } from "../context";
 import { collectedNotes, jobs } from "../db/schema";
 import { persistCollectedMedia } from "./media-store";
+import { assertWritable, isReadOnly } from "./runtime-policy";
 
 interface Payload { noteIds: number[]; base: string; attempts?: number }
 
 /** Durable server-only states avoid exposing downloads to extension workers. */
 export async function enqueueMediaJob(deps: Deps, userId: number, noteIds: number[], base: string) {
+  assertWritable(deps);
   if (!deps.r2 || !noteIds.length || !base) return;
   await deps.db.insert(jobs).values({ userId, type: "media_store", status: "queued", payload: { noteIds, base } });
 }
 
 export async function runMediaJobs(deps: Deps) {
+  if (isReadOnly(deps)) return;
   if (!deps.r2) return;
   const now = deps.now();
   await deps.db.update(jobs).set({ status: "queued", claimedAt: null }).where(and(
@@ -43,6 +46,7 @@ export async function runMediaJobs(deps: Deps) {
 }
 
 export function startMediaWorker(deps: Deps) {
+  if (isReadOnly(deps)) return;
   let busy = false;
   const tick = async () => {
     if (busy) return;

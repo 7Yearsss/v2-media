@@ -2,7 +2,7 @@ import { serve } from "@hono/node-server";
 
 import { createApp } from "./app";
 import { createDb } from "./db";
-import { migrate } from "./db/migrate";
+import { assertSchemaCurrent, migrate } from "./db/migrate";
 import { env } from "./env";
 import { pruneMedia, sweepMediaBacklog } from "./lib/media-store";
 import { createR2 } from "./lib/r2";
@@ -14,27 +14,31 @@ import { createOpenAiClient } from "./modules/ai";
 
 async function main() {
   const db = await createDb();
-  if (!env.skipDbMigrations) await migrate(db);
+  if (env.runtimeMode === "local-isolated") await migrate(db, { runtimeMode: env.runtimeMode });
+  await assertSchemaCurrent(db);
   const r2 = createR2();
   const deps = {
     db,
     ai: createOpenAiClient(),
     r2,
     now: () => new Date(),
+    runtimeMode: env.runtimeMode,
   };
   const app = createApp(deps);
-  startPostmortemWorker(deps);
-  if (r2) startMediaWorker(deps);
-  if (r2) startUploadWorker(deps);
-  if (r2) startDraftWorker(deps);
+  if (env.runtimeMode !== "production-readonly") {
+    startPostmortemWorker(deps);
+    if (r2) startMediaWorker(deps);
+    if (r2) startUploadWorker(deps);
+    if (r2) startDraftWorker(deps);
+  }
   // 启动兜底：上次进程退出可能把媒体转存打断，扫一遍外链残留补转存
-  if (!env.disableMediaMaintenance) {
+  if (env.runtimeMode !== "production-readonly" && !env.disableMediaMaintenance) {
     void sweepMediaBacklog(deps).catch((err) =>
       console.warn("media sweep failed:", err),
     );
   }
   // 媒体 GC：清理无引用对象 + 桶容量上限（R2_MAX_BYTES）
-  if (r2 && !env.disableMediaMaintenance) {
+  if (env.runtimeMode !== "production-readonly" && r2 && !env.disableMediaMaintenance) {
     const gc = () =>
       pruneMedia(deps).catch((err) => console.warn("media gc failed:", err));
     void gc();

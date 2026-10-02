@@ -12,6 +12,7 @@ import type { Deps } from "../context";
 import { collectedNotes, drafts, mediaAssets, publishJobs, users } from "../db/schema";
 import { env } from "../env";
 import type { R2Storage } from "./r2";
+import { isReadOnly } from "./runtime-policy";
 
 /** xhscdn 图片需要 Referer；只允许拉白名单域。 */
 export const MEDIA_SRC_ALLOWED =
@@ -345,6 +346,7 @@ export async function persistCollectedMedia(
   noteIds: number[],
   base: string,
 ): Promise<void> {
+  if (isReadOnly(deps)) return;
   if (!deps.r2 || !noteIds.length || !base) return;
   const rows = await deps.db
     .select()
@@ -403,6 +405,7 @@ export async function persistCollectedMedia(
  * 覆盖上一次进程退出/部署中断留下的半成品。需要 PUBLIC_BASE_URL。
  */
 export async function sweepMediaBacklog(deps: Deps): Promise<void> {
+  if (isReadOnly(deps)) return;
   if (!deps.r2 || !env.publicBaseUrl) return;
   const rows = await deps.db
     .select({ id: collectedNotes.id })
@@ -461,6 +464,7 @@ async function referencedKeys(deps: Deps): Promise<Set<string>> {
  * 引用对象已超过上限时保留它们，由新上传的容量检查拒绝继续写入。
  */
 export async function pruneMedia(deps: Deps): Promise<void> {
+  if (isReadOnly(deps)) return;
   if (!deps.r2) return;
   const objects = [
     ...(await deps.r2.list("img/")),

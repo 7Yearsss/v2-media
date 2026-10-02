@@ -31,8 +31,8 @@ async function fixture() {
     const response = await request(`/api/accounts/${account.id}`, { version: account.personaVersion, ...fields }, "PATCH");
     expect(response.status).toBe(200); return await response.json() as HostedAccount;
   };
-  const a = await update(accounts[0]!, { positioning: "家庭备餐", styleNotes: "短句清单", redlines: "不编造体验" });
-  const b = await update(accounts[1]!, { positioning: "露营装备", styleNotes: "轻松讲原理", redlines: "不承诺效果" });
+  const a = await update(accounts.find(account => account.xhsUserId === "food")!, { positioning: "家庭备餐", styleNotes: "短句清单", redlines: "不编造体验" });
+  const b = await update(accounts.find(account => account.xhsUserId === "camp")!, { positioning: "露营装备", styleNotes: "轻松讲原理", redlines: "不承诺效果" });
   const col = await (await request("/api/collections", { name: "准备清单库" })).json() as { id: number };
   await request("/api/ext/collect", { collectionId: col.id,
     items: [{ noteId: "source", title: "原始准备清单", author: {}, cover: "", likes: 100 }],
@@ -140,7 +140,9 @@ describe("分析建议 → 选题 → 异步成稿（实际 API/内存 PGlite/mo
     const topic = await f.create(report);
     expect((await f.request(`/api/accounts/${f.a.id}`, undefined, "DELETE")).status).toBe(200);
     expect((await f.toDraft(topic)).status).toBe(409);
-    expect((await f.request("/api/topics", topicFromAnalysis(report, 0))).status).toBe(404);
+    expect((await f.request("/api/topics", topicFromAnalysis(report, 0))).status).toBe(409);
+    const preserved = await (await f.request("/api/accounts?includeArchived=1", undefined, "GET")).json() as Array<{ id: number; archivedAt: string | null }>;
+    expect(preserved.find(account => account.id === f.a.id)?.archivedAt).toEqual(expect.any(String));
     expect((await f.request(`/api/topics/${topic.id}`, { accountId: f.b.id }, "PATCH")).status).toBe(200);
     await f.db.update(collectedNotes).set({ collectionId: null }).where(eq(collectedNotes.id, topic.sourceNoteId!));
     expect((await f.toDraft(topic)).status).toBe(409);

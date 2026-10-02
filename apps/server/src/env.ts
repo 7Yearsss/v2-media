@@ -1,9 +1,10 @@
 import { fileURLToPath } from "node:url";
+import { runtimeMode } from "./runtime";
 
 export const env = {
+  runtimeMode: runtimeMode(process.env.V2MEDIA_RUNTIME_MODE),
   port: Number(process.env.PORT ?? 3000),
   databaseUrl: process.env.DATABASE_URL ?? "",
-  skipDbMigrations: process.env.SKIP_DB_MIGRATIONS === "1",
   disableMediaMaintenance: process.env.DISABLE_MEDIA_MAINTENANCE === "1",
   aiBaseUrl: (process.env.AI_BASE_URL ?? "").replace(/\/$/, ""),
   aiApiKey: process.env.AI_API_KEY ?? "",
@@ -22,6 +23,8 @@ export const env = {
   r2Bucket: process.env.R2_BUCKET ?? "",
   r2AccessKeyId: process.env.R2_ACCESS_KEY_ID ?? "",
   r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? "",
+  r2Configured: [process.env.R2_ENDPOINT, process.env.R2_BUCKET, process.env.R2_ACCESS_KEY_ID, process.env.R2_SECRET_ACCESS_KEY].every(Boolean),
+  localR2Bucket: process.env.LOCAL_R2_BUCKET ?? "",
   // 对外可达的站点地址（生成给插件用的绝对媒体 URL）；空则用请求 origin
   publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? "").replace(/\/$/, ""),
   // 媒体 GC：周期分钟数（默认每小时），桶容量上限字节（默认 ~5GB，R2 免费额度 10GB）

@@ -1,309 +1,124 @@
+import { createHash } from "node:crypto";
+import { getTableColumns, getTableName, is, sql } from "drizzle-orm";
+import { PgTable } from "drizzle-orm/pg-core";
+import type { RuntimeMode } from "../runtime";
 import type { Db } from "./index";
+import { LEGACY_DDL } from "./migrations/0001-legacy";
+import * as schema from "./schema";
 
-/** MVP：幂等 DDL，启动时执行。后续结构变更换 drizzle-kit 迁移流。 */
-const DDL = `
-CREATE TABLE IF NOT EXISTS users (
-  id serial PRIMARY KEY,
-  email varchar(255) NOT NULL UNIQUE,
-  password_hash text NOT NULL,
-  created_at timestamp DEFAULT now() NOT NULL
-);
-ALTER TABLE users ADD COLUMN IF NOT EXISTS plan varchar(16) NOT NULL DEFAULT 'free';
-CREATE TABLE IF NOT EXISTS hosted_accounts (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  platform varchar(32) NOT NULL DEFAULT 'xhs',
-  sub_type varchar(32) NOT NULL DEFAULT 'pc',
-  xhs_user_id varchar(128) NOT NULL DEFAULT '',
-  nickname varchar(128) NOT NULL DEFAULT '',
-  avatar text NOT NULL DEFAULT '',
-  status varchar(32) NOT NULL DEFAULT 'unknown',
-  status_message text NOT NULL DEFAULT '',
-  last_seen_at timestamp,
-  created_at timestamp DEFAULT now() NOT NULL
-);
-CREATE TABLE IF NOT EXISTS collected_notes (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  note_id varchar(128) NOT NULL,
-  type varchar(16) NOT NULL DEFAULT 'image',
-  title varchar(512) NOT NULL DEFAULT '',
-  content text NOT NULL DEFAULT '',
-  author_name varchar(128) NOT NULL DEFAULT '',
-  author_id varchar(128) NOT NULL DEFAULT '',
-  cover text NOT NULL DEFAULT '',
-  images jsonb NOT NULL DEFAULT '[]',
-  video_url text,
-  likes integer NOT NULL DEFAULT 0,
-  collects integer NOT NULL DEFAULT 0,
-  comments integer NOT NULL DEFAULT 0,
-  shares integer NOT NULL DEFAULT 0,
-  tags jsonb NOT NULL DEFAULT '[]',
-  comments_data jsonb NOT NULL DEFAULT '[]',
-  source varchar(32) NOT NULL DEFAULT 'search',
-  source_url text NOT NULL DEFAULT '',
-  raw_json jsonb,
-  saved_at timestamp DEFAULT now() NOT NULL
-);
-CREATE TABLE IF NOT EXISTS collections (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  name varchar(64) NOT NULL,
-  created_at timestamp DEFAULT now() NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS collections_user_name ON collections(user_id, name);
-ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS collection_id integer;
-ALTER TABLE collected_notes DROP CONSTRAINT IF EXISTS collected_notes_collection_id_fkey;
-ALTER TABLE collected_notes ADD CONSTRAINT collected_notes_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS collected_notes_user_note ON collected_notes(user_id, note_id);
-ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS title_fallback boolean NOT NULL DEFAULT false;
-ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS has_detail boolean NOT NULL DEFAULT false;
-ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS source_keyword varchar(255) NOT NULL DEFAULT '';
-ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS published_at timestamp;
-ALTER TABLE collected_notes ADD COLUMN IF NOT EXISTS ip_location varchar(64) NOT NULL DEFAULT '';
-CREATE TABLE IF NOT EXISTS collection_analyses (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  collection_id integer NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-  note_count integer NOT NULL DEFAULT 0,
-  data jsonb NOT NULL DEFAULT '{}',
-  report text NOT NULL DEFAULT '',
-  created_at timestamp DEFAULT now() NOT NULL
-);
-ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS data jsonb NOT NULL DEFAULT '{}';
-ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS status varchar(16) NOT NULL DEFAULT 'done';
-ALTER TABLE collection_analyses ADD COLUMN IF NOT EXISTS error text;
-CREATE INDEX IF NOT EXISTS collection_analyses_col ON collection_analyses(user_id, collection_id);
-CREATE TABLE IF NOT EXISTS drafts (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  collected_note_id integer REFERENCES collected_notes(id),
-  title varchar(512) NOT NULL DEFAULT '',
-  content text NOT NULL DEFAULT '',
-  tags jsonb NOT NULL DEFAULT '[]',
-  images jsonb NOT NULL DEFAULT '[]',
-  status varchar(32) NOT NULL DEFAULT 'draft',
-  created_at timestamp DEFAULT now() NOT NULL,
-  updated_at timestamp DEFAULT now() NOT NULL
-);
-CREATE TABLE IF NOT EXISTS publish_jobs (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  draft_id integer NOT NULL REFERENCES drafts(id),
-  account_id integer NOT NULL REFERENCES hosted_accounts(id),
-  status varchar(32) NOT NULL DEFAULT 'pending',
-  scheduled_at timestamp,
-  visibility varchar(32) NOT NULL DEFAULT 'public',
-  claimed_by varchar(128),
-  error text,
-  result_url text,
-  outcome varchar(32),
-  note_id varchar(128),
-  verified_at timestamp,
-  created_at timestamp DEFAULT now() NOT NULL,
-  updated_at timestamp DEFAULT now() NOT NULL
-);
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS outcome varchar(32);
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS note_id varchar(128);
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS verified_at timestamp;
-CREATE TABLE IF NOT EXISTS jobs (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  type varchar(64) NOT NULL,
-  payload jsonb NOT NULL DEFAULT '{}',
-  status varchar(32) NOT NULL DEFAULT 'pending',
-  due_at timestamp,
-  claimed_by varchar(128),
-  claimed_at timestamp,
-  error text,
-  created_at timestamp DEFAULT now() NOT NULL,
-  finished_at timestamp
-);
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS due_at timestamp;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS claimed_by varchar(128);
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS claimed_at timestamp;
-CREATE INDEX IF NOT EXISTS jobs_status_due ON jobs(status, due_at);
--- 幂等约束修补：删采集笔记保留草稿（SET NULL），删草稿/账号联动删除发布任务（CASCADE）
-ALTER TABLE drafts DROP CONSTRAINT IF EXISTS drafts_collected_note_id_fkey;
-ALTER TABLE drafts ADD CONSTRAINT drafts_collected_note_id_fkey FOREIGN KEY (collected_note_id) REFERENCES collected_notes(id) ON DELETE SET NULL;
-ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_draft_id_fkey;
-ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE CASCADE;
-ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_account_id_fkey;
-ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE CASCADE;
-CREATE TABLE IF NOT EXISTS topics (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  title varchar(512) NOT NULL DEFAULT '',
-  angle text NOT NULL DEFAULT '',
-  source_type varchar(32) NOT NULL DEFAULT 'manual',
-  collection_id integer,
-  source_note_id integer,
-  account_id integer,
-  status varchar(32) NOT NULL DEFAULT 'idea',
-  score integer,
-  score_detail jsonb,
-  planned_at timestamp,
-  draft_id integer,
-  publish_job_id integer,
-  created_at timestamp DEFAULT now() NOT NULL,
-  updated_at timestamp DEFAULT now() NOT NULL
-);
-ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_collection_id_fkey;
-ALTER TABLE topics ADD CONSTRAINT topics_collection_id_fkey FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE SET NULL;
-ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_source_note_id_fkey;
-ALTER TABLE topics ADD CONSTRAINT topics_source_note_id_fkey FOREIGN KEY (source_note_id) REFERENCES collected_notes(id) ON DELETE SET NULL;
-ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_account_id_fkey;
-ALTER TABLE topics ADD CONSTRAINT topics_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE SET NULL;
-ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_draft_id_fkey;
-ALTER TABLE topics ADD CONSTRAINT topics_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE SET NULL;
-ALTER TABLE topics DROP CONSTRAINT IF EXISTS topics_publish_job_id_fkey;
-ALTER TABLE topics ADD CONSTRAINT topics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE SET NULL;
-CREATE INDEX IF NOT EXISTS topics_user_status ON topics(user_id, status);
+export interface SchemaMigration { version: number; name: string; statements: string; backfillWritingAccount?: boolean }
+export const migrations: readonly SchemaMigration[] = [
+  { version: 1, name: "legacy-bootstrap", statements: LEGACY_DDL, backfillWritingAccount: true },
+  { version: 2, name: "history-account-identity", statements: `
+    ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS archived_at timestamp;
+    ALTER TABLE drafts ADD COLUMN IF NOT EXISTS archived_at timestamp;
+    ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_draft_id_fkey;
+    ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE RESTRICT;
+    ALTER TABLE publish_jobs DROP CONSTRAINT IF EXISTS publish_jobs_account_id_fkey;
+    ALTER TABLE publish_jobs ADD CONSTRAINT publish_jobs_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE RESTRICT;
+    ALTER TABLE account_snapshots DROP CONSTRAINT IF EXISTS account_snapshots_account_id_fkey;
+    ALTER TABLE account_snapshots ADD CONSTRAINT account_snapshots_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE RESTRICT;
+    ALTER TABLE media_assets DROP CONSTRAINT IF EXISTS media_assets_draft_id_fkey;
+    ALTER TABLE media_assets ADD CONSTRAINT media_assets_draft_id_fkey FOREIGN KEY (draft_id) REFERENCES drafts(id) ON DELETE RESTRICT;
+    ALTER TABLE postmortem_reports DROP CONSTRAINT IF EXISTS postmortem_reports_publish_job_id_fkey;
+    ALTER TABLE postmortem_reports ADD CONSTRAINT postmortem_reports_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE RESTRICT;
+    ALTER TABLE note_metrics DROP CONSTRAINT IF EXISTS note_metrics_publish_job_id_fkey;
+    ALTER TABLE note_metrics ADD CONSTRAINT note_metrics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE RESTRICT;
+    CREATE UNIQUE INDEX hosted_accounts_identity ON hosted_accounts(user_id, platform, sub_type, xhs_user_id);
+  ` },
+];
+export const EXPECTED_SCHEMA_VERSION = migrations.at(-1)!.version;
+export const migrationChecksum = (migration: SchemaMigration) => createHash("sha256").update(JSON.stringify({
+  version: migration.version, name: migration.name, statements: migration.statements.replace(/\r\n?/g, "\n"), backfillWritingAccount: !!migration.backfillWritingAccount,
+})).digest("hex");
+type AppliedMigration = { version: number; name: string; checksum: string; applied_at: string };
+type Rows<T> = { rows: T[] };
 
--- 归因底座（切片②）：已发笔记指标时序 + 账号概览快照
-CREATE TABLE IF NOT EXISTS note_metrics (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  publish_job_id integer,
-  note_id varchar(128) NOT NULL DEFAULT '',
-  note_url text,
-  captured_at timestamp DEFAULT now() NOT NULL,
-  views integer,
-  likes integer,
-  collects integer,
-  comments integer,
-  shares integer,
-  exposure integer,
-  extra jsonb
-);
-ALTER TABLE note_metrics DROP CONSTRAINT IF EXISTS note_metrics_publish_job_id_fkey;
-ALTER TABLE note_metrics ADD CONSTRAINT note_metrics_publish_job_id_fkey FOREIGN KEY (publish_job_id) REFERENCES publish_jobs(id) ON DELETE SET NULL;
-CREATE INDEX IF NOT EXISTS note_metrics_user_note ON note_metrics(user_id, note_id, captured_at);
+async function tableExists(db: Db, table: string) {
+  const result = await db.execute(sql`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=${table}) AS present`) as Rows<{ present: boolean }>;
+  return !!result.rows[0]?.present;
+}
 
-CREATE TABLE IF NOT EXISTS account_snapshots (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  account_id integer,
-  captured_at timestamp DEFAULT now() NOT NULL,
-  followers integer,
-  likes_total integer,
-  notes_count integer,
-  extra jsonb
-);
-ALTER TABLE account_snapshots DROP CONSTRAINT IF EXISTS account_snapshots_account_id_fkey;
-ALTER TABLE account_snapshots ADD CONSTRAINT account_snapshots_account_id_fkey FOREIGN KEY (account_id) REFERENCES hosted_accounts(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS account_snapshots_user_account ON account_snapshots(user_id, account_id, captured_at);
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS images_version integer NOT NULL DEFAULT 0;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS draft_snapshot jsonb;
-CREATE TABLE IF NOT EXISTS media_assets (
-  id serial PRIMARY KEY,
-  user_id integer NOT NULL REFERENCES users(id),
-  draft_id integer NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
-  upload_id varchar(36) NOT NULL,
-  filename varchar(255) NOT NULL,
-  source_file varchar(64) NOT NULL,
-  source_hash varchar(64) NOT NULL,
-  status varchar(16) NOT NULL DEFAULT 'queued',
-  key text,
-  url text,
-  width integer,
-  height integer,
-  error text,
-  created_at timestamp DEFAULT now() NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS media_assets_user_upload ON media_assets(user_id, upload_id);
-ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS kind varchar(16) NOT NULL DEFAULT 'upload';
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS text_version integer NOT NULL DEFAULT 0;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_state varchar(16) NOT NULL DEFAULT 'idle';
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_revision integer NOT NULL DEFAULT 0;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_error text;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS generation_warnings jsonb NOT NULL DEFAULT '[]';
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_spec jsonb;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_revision integer NOT NULL DEFAULT 0;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_state varchar(16) NOT NULL DEFAULT 'idle';
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_error text;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS cover_asset_id integer;
-ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS positioning text NOT NULL DEFAULT '';
-ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS style_notes text NOT NULL DEFAULT '';
-ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS redlines text NOT NULL DEFAULT '';
-ALTER TABLE hosted_accounts ADD COLUMN IF NOT EXISTS persona_version integer NOT NULL DEFAULT 0;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS account_id integer REFERENCES hosted_accounts(id) ON DELETE SET NULL;
-ALTER TABLE drafts ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS persona_snapshot jsonb;
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS score_method text;
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS score_model text;
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS scored_at timestamp;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS planning_snapshot jsonb;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS cover_snapshot jsonb;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS published_at timestamp;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS reported_at timestamp;
-CREATE TABLE IF NOT EXISTS postmortem_reports (
-  id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id),
-  publish_job_id integer NOT NULL REFERENCES publish_jobs(id) ON DELETE CASCADE,
-  status varchar(16) NOT NULL DEFAULT 'queued', model text NOT NULL, prompt_version text NOT NULL,
-  evidence jsonb NOT NULL, insight jsonb, error text,
-  created_at timestamp NOT NULL DEFAULT now(), finished_at timestamp
-);
-CREATE INDEX IF NOT EXISTS postmortem_reports_job ON postmortem_reports(user_id, publish_job_id, id);
-ALTER TABLE postmortem_reports ADD COLUMN IF NOT EXISTS engine varchar(16);
-CREATE INDEX IF NOT EXISTS note_metrics_job_time ON note_metrics(user_id, publish_job_id, captured_at, id);
-CREATE TABLE IF NOT EXISTS collection_tasks (
-  id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id),
-  collection_id integer REFERENCES collections(id) ON DELETE SET NULL, collection_name text NOT NULL, rules jsonb NOT NULL,
-  status varchar(16) NOT NULL DEFAULT 'queued', revision integer NOT NULL DEFAULT 0, phase varchar(16) NOT NULL DEFAULT 'search',
-  scroll_steps integer NOT NULL DEFAULT 0, reason text, lease_id varchar(36), claimed_by varchar(128), lease_until timestamp,
-  created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS collection_task_items (
-  id serial PRIMARY KEY, task_id integer NOT NULL REFERENCES collection_tasks(id) ON DELETE CASCADE,
-  note_id varchar(128) NOT NULL, card jsonb NOT NULL, status varchar(16) NOT NULL DEFAULT 'pending', reason text,
-  collected_note_id integer REFERENCES collected_notes(id) ON DELETE SET NULL, already_existed boolean NOT NULL DEFAULT false,
-  platform_comments integer, captured_comments integer NOT NULL DEFAULT 0, captured_replies integer NOT NULL DEFAULT 0,
-  comment_coverage varchar(16) NOT NULL DEFAULT 'not_requested'
-);
-CREATE UNIQUE INDEX IF NOT EXISTS collection_task_items_note ON collection_task_items(task_id, note_id);
-CREATE INDEX IF NOT EXISTS collection_tasks_user_status ON collection_tasks(user_id, status, id);
-ALTER TABLE collection_tasks ADD COLUMN IF NOT EXISTS control_revision integer NOT NULL DEFAULT 0;
-ALTER TABLE collection_tasks ADD COLUMN IF NOT EXISTS last_control_action varchar(16);
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS lease_id varchar(36);
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS lease_until timestamp;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_id varchar(36);
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attempt integer NOT NULL DEFAULT 0;
-ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_until timestamp;
-CREATE TABLE IF NOT EXISTS browser_execution_receipts (
-  id serial PRIMARY KEY, user_id integer NOT NULL REFERENCES users(id),
-  domain varchar(16) NOT NULL, execution_id integer NOT NULL,
-  receipt_id varchar(36) NOT NULL, body_hash varchar(64) NOT NULL, ack jsonb NOT NULL,
-  created_at timestamp NOT NULL DEFAULT now()
-);
-CREATE UNIQUE INDEX IF NOT EXISTS browser_execution_receipts_user_receipt ON browser_execution_receipts(user_id, receipt_id);
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS account_snapshot jsonb;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS retry_of_job_id integer;
-ALTER TABLE publish_jobs ADD COLUMN IF NOT EXISTS retry_operation_id varchar(36);
-CREATE UNIQUE INDEX IF NOT EXISTS publish_jobs_user_retry_operation ON publish_jobs(user_id, retry_operation_id);
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS analysis_source jsonb;
-`;
+export async function migrationStatus(db: Db) {
+  const applied = await tableExists(db, "schema_migrations")
+    ? (await db.execute(sql`SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version`) as Rows<AppliedMigration>).rows : [];
+  return { expectedVersion: EXPECTED_SCHEMA_VERSION, applied, pending: migrations.filter(m => !applied.some(a => a.version === m.version)).map(m => ({ version: m.version, name: m.name })) };
+}
 
-export async function migrate(db: Db) {
-  // drizzle 的 execute 走底层驱动；pglite/node-postgres 都支持单字符串多语句？pg 驱动默认不允许。
-  const stmts = DDL.split(";").map((s) => s.trim()).filter(Boolean);
-  const { sql } = await import("drizzle-orm");
+function validateLedger(applied: AppliedMigration[], expected: readonly SchemaMigration[]) {
+  for (let index = 0; index < applied.length; index++) {
+    const row = applied[index]!;
+    const migration = expected[index];
+    if (!migration || row.version !== migration.version || row.name !== migration.name || row.checksum !== migrationChecksum(migration)) {
+      throw new Error(`schema migration ledger mismatch at version ${row.version}; refusing migration/startup`);
+    }
+  }
+}
+
+/** Startup only inspects this ledger; production DDL belongs to the explicit migration CLI. */
+export async function assertSchemaCurrent(db: Db) {
+  const status = await migrationStatus(db);
+  validateLedger(status.applied, migrations);
+  if (status.pending.length) throw new Error(`schema version is not current (expected ${EXPECTED_SCHEMA_VERSION}); run the explicit db:migrate command before starting`);
+  const columns = (await db.execute(sql`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema=current_schema()`) as Rows<{ table_name: string; column_name: string }>).rows;
+  const actual = new Set(columns.map(row => `${row.table_name}.${row.column_name}`));
+  for (const table of Object.values(schema)) {
+    if (!is(table, PgTable)) continue;
+    for (const column of Object.values(getTableColumns(table))) {
+      if (!actual.has(`${getTableName(table)}.${column.name}`)) throw new Error(`schema column missing: ${getTableName(table)}.${column.name}; refusing startup`);
+    }
+  }
+  const policy = (await db.execute(sql`SELECT
+    EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND tablename='hosted_accounts' AND indexname='hosted_accounts_identity' AND indexdef LIKE 'CREATE UNIQUE INDEX% (user_id, platform, sub_type, xhs_user_id)') AS identity_unique,
+    (SELECT count(*) FROM pg_constraint WHERE connamespace=(SELECT oid FROM pg_namespace WHERE nspname=current_schema())
+      AND conname IN ('publish_jobs_draft_id_fkey','publish_jobs_account_id_fkey','account_snapshots_account_id_fkey','media_assets_draft_id_fkey','postmortem_reports_publish_job_id_fkey','note_metrics_publish_job_id_fkey') AND confdeltype='r')=6 AS history_restrict`) as Rows<{ identity_unique: boolean; history_restrict: boolean }>).rows[0];
+  if (!policy?.identity_unique || !policy.history_restrict) throw new Error("schema history/identity constraints are missing; refusing startup");
+  return status;
+}
+
+export interface AccountIdentityProblem { user_id: number; platform: string; sub_type: string; xhs_user_id: string; ids: number[]; reason: string }
+/** Read-only preflight. Archived records reserve their historical identity; input is never normalized here. */
+export async function duplicateAccountIdentities(db: Db): Promise<AccountIdentityProblem[]> {
+  if (!await tableExists(db, "hosted_accounts")) return [];
+  const rows = (await db.execute(sql`SELECT id, user_id, platform, sub_type, xhs_user_id FROM hosted_accounts ORDER BY user_id, platform, sub_type, xhs_user_id, id`) as Rows<{ id: number; user_id: number; platform: string; sub_type: string; xhs_user_id: string }>).rows;
+  const groups = new Map<string, AccountIdentityProblem>();
+  for (const { id, ...row } of rows) {
+    const key = JSON.stringify([row.user_id, row.platform, row.sub_type, row.xhs_user_id]);
+    const invalid = [row.platform, row.sub_type, row.xhs_user_id].some(value => !value || value !== value.trim() || /[\s\u0000-\u001f\u007f]/u.test(value));
+    const group = groups.get(key) ?? { ...row, ids: [], reason: invalid ? "blank or noncanonical identity" : "duplicate identity" };
+    group.ids.push(id); groups.set(key, group);
+  }
+  return [...groups.values()].filter(group => group.ids.length > 1 || group.reason !== "duplicate identity");
+}
+
+/** Every change and ledger entry commits together; legacy identities never get merged or removed. */
+export async function migrate(db: Db, options: { runtimeMode?: RuntimeMode; lockTimeoutMs?: number; migrations?: readonly SchemaMigration[] } = {}) {
+  if (options.runtimeMode === "production-readonly") throw new Error("production-readonly refuses schema migrations");
+  const plan = options.migrations ?? migrations;
+  if (plan.some((migration, index) => migration.version !== index + 1)) throw new Error("migration versions must be contiguous from 1");
+  const timeout = options.lockTimeoutMs ?? 10_000;
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 60_000) throw new Error("invalid migration lock timeout");
   await db.transaction(async tx => {
-    const before = await tx.execute(sql`SELECT EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema = current_schema() AND table_name = 'drafts' AND column_name = 'account_id'
-    ) AS present`) as { rows: Array<{ present: boolean }> };
-    for (const stmt of stmts) await tx.execute(sql.raw(stmt));
-    // Backfill once when adding the writing-account field. Later explicit "通用风格" stays null.
-    if (!before.rows[0]?.present) await tx.execute(sql`
-      UPDATE drafts d SET account_id = t.account_id
-      FROM (
-        SELECT DISTINCT ON (draft_id, user_id) draft_id, user_id, account_id
-        FROM topics WHERE draft_id IS NOT NULL AND account_id IS NOT NULL
-        ORDER BY draft_id, user_id, updated_at DESC, id DESC
-      ) t WHERE d.id = t.draft_id AND d.user_id = t.user_id AND d.account_id IS NULL
-    `);
+    await tx.execute(sql`SELECT set_config('lock_timeout', ${`${timeout}ms`}, true)`);
+    await tx.execute(sql`SELECT set_config('statement_timeout', '120s', true)`);
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(1446149476, 2)`);
+    await tx.execute(sql`CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, name text NOT NULL, checksum varchar(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`);
+    const applied = (await tx.execute(sql`SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version`) as Rows<AppliedMigration>).rows;
+    validateLedger(applied, plan);
+    for (const migration of plan.slice(applied.length)) {
+      if (migration.version === 2) {
+        const problems = await duplicateAccountIdentities(tx as unknown as Db);
+        if (problems.length) throw new Error(`invalid or duplicate hosted account identities block migration; ${problems.length} group(s), run db:duplicates for IDs; no rows were changed`);
+      }
+      const before = migration.backfillWritingAccount ? (await tx.execute(sql`SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='drafts' AND column_name='account_id'
+      ) AS present`) as Rows<{ present: boolean }>).rows[0]?.present : true;
+      for (const statement of migration.statements.split(";").map(s => s.trim()).filter(Boolean)) await tx.execute(sql.raw(statement));
+      if (!before) await tx.execute(sql`UPDATE drafts d SET account_id=t.account_id FROM (
+        SELECT DISTINCT ON (draft_id, user_id) draft_id, user_id, account_id FROM topics
+        WHERE draft_id IS NOT NULL AND account_id IS NOT NULL ORDER BY draft_id, user_id, updated_at DESC, id DESC
+      ) t WHERE d.id=t.draft_id AND d.user_id=t.user_id AND d.account_id IS NULL`);
+      await tx.execute(sql`INSERT INTO schema_migrations (version, name, checksum) VALUES (${migration.version}, ${migration.name}, ${migrationChecksum(migration)})`);
+    }
   });
 }

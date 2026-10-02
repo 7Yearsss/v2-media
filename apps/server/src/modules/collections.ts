@@ -1,4 +1,4 @@
-import { and, count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -10,6 +10,7 @@ import { computeSignals, engagementOf, type SignalNote } from "../lib/analysis-s
 import { collectedNotes, collectionAnalyses, collections } from "../db/schema";
 import { ACCOUNT_PERSONA_LIMITS } from "@v2media/shared";
 import { resolveAccountPersona } from "../lib/account-persona";
+import { isReadOnly } from "../lib/runtime-policy";
 
 /** 一次分析喂给模型的笔记上限（按互动量取 top）。 */
 const ANALYZE_LIMIT = 40;
@@ -117,7 +118,7 @@ export function collectionsModule(deps: Deps) {
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const body = parsed.data;
     const persona = await resolveAccountPersona(deps.db, userId, body.accountId, body.positioning);
-    if ("error" in persona) return c.json({ error: persona.error }, 404);
+    if ("error" in persona) return c.json({ error: persona.error }, persona.code ?? 404);
     const positioning = persona.snapshot?.positioning ?? "";
     const personaData = { persona: persona.snapshot, ...(positioning ? { positioning } : {}) };
     const notes = await deps.db
@@ -268,6 +269,7 @@ export function collectionsModule(deps: Deps) {
 
   /** running 太久（进程重启/AI 挂死）的行标记失败，避免页面永远转圈。 */
   const reapStale = (colId: number) =>
+    isReadOnly(deps) ? Promise.resolve() :
     deps.db
       .update(collectionAnalyses)
       .set({ status: "failed", error: "分析中断（服务重启或超时），请重试" })
@@ -292,11 +294,12 @@ export function collectionsModule(deps: Deps) {
         status: collectionAnalyses.status,
         error: collectionAnalyses.error,
         createdAt: collectionAnalyses.createdAt,
+        expired: sql<boolean>`${collectionAnalyses.status}='running' AND ${collectionAnalyses.createdAt} < now() - make_interval(secs => ${ANALYZE_STALE_MS / 1000})`,
       })
       .from(collectionAnalyses)
       .where(eq(collectionAnalyses.collectionId, col.id))
       .orderBy(desc(collectionAnalyses.id));
-    return c.json({ items: rows });
+    return c.json({ items: rows.map(({ expired, ...row }) => expired ? { ...row, status: "failed", error: "分析中断（服务重启或超时），请重试" } : row) });
   });
 
   app.get("/:id/analyses/:aid", async (c) => {
@@ -305,7 +308,7 @@ export function collectionsModule(deps: Deps) {
     const aid = Number(c.req.param("aid"));
     await reapStale(col.id);
     const [row] = await deps.db
-      .select()
+      .select({ ...getTableColumns(collectionAnalyses), expired: sql<boolean>`${collectionAnalyses.status}='running' AND ${collectionAnalyses.createdAt} < now() - make_interval(secs => ${ANALYZE_STALE_MS / 1000})` })
       .from(collectionAnalyses)
       .where(
         and(
@@ -315,7 +318,8 @@ export function collectionsModule(deps: Deps) {
       )
       .limit(1);
     if (!row) return c.json({ error: "not found" }, 404);
-    return c.json(row);
+    const { expired, ...view } = row;
+    return c.json(expired ? { ...view, status: "failed", error: "分析中断（服务重启或超时），请重试" } : view);
   });
 
   return app;

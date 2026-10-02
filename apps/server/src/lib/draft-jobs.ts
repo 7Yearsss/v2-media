@@ -7,16 +7,19 @@ import { generateDraft, type DraftSource } from "./draft-gen";
 import { automaticCoverSpec } from "./cover-spec";
 import { queueCover, runCoverJobs } from "./cover-jobs";
 import { resolveAccountPersona } from "./account-persona";
+import { assertWritable, isReadOnly } from "./runtime-policy";
 
 interface Payload { draftId: number; revision: number; textVersion: number; source: DraftSource; referenceKind: string; base: string; positioningOverride?: string; analysisSource?: TopicAnalysisSource | null }
 
 export async function createTopicDraft(deps: Deps, userId: number, id: number, opts: TopicToDraftRequest, base: string) {
+  assertWritable(deps);
   return deps.db.transaction(async tx => {
     await tx.execute(sql`SELECT id FROM topics WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`);
     const [topic] = await tx.select().from(topics).where(and(eq(topics.id, id), eq(topics.userId, userId)));
     if (!topic) return { error: "选题不存在", code: 404 as const };
     if (topic.draftId) {
       const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, topic.draftId), eq(drafts.userId, userId)));
+      if (draft?.archivedAt) return { error: "关联草稿已归档，请恢复原稿，不会自动创建替代稿", code: 409 as const };
       if (draft) return { draft, topic, code: 200 as const };
     }
     if (opts.ai && !deps.r2) return { error: "自动成稿需要 R2 图片存储，请配置后再生成", code: 503 as const };
@@ -43,7 +46,7 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
       && topic.accountId === (topic.analysisSource.persona?.accountId ?? null) ? topic.analysisSource.positioning : undefined);
     if (topic.accountId) await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${topic.accountId} AND user_id = ${userId} FOR SHARE`);
     const persona = await resolveAccountPersona(tx as unknown as Db, userId, topic.accountId, positioningOverride);
-    if ("error" in persona) return { error: persona.error, code: 404 as const };
+    if ("error" in persona) return { error: persona.error, code: persona.code };
     if (topic.sourceNoteId) await tx.execute(sql`SELECT id FROM collected_notes WHERE id = ${topic.sourceNoteId} AND user_id = ${userId} FOR SHARE`);
     const [note] = topic.sourceNoteId ? await tx.select().from(collectedNotes)
       .where(and(eq(collectedNotes.id, topic.sourceNoteId), eq(collectedNotes.userId, userId))) : [];
@@ -77,10 +80,12 @@ export async function createTopicDraft(deps: Deps, userId: number, id: number, o
 }
 
 export async function retryDraftGeneration(deps: Deps, userId: number, id: number, base: string) {
+  assertWritable(deps);
   return deps.db.transaction(async tx => {
     await tx.execute(sql`SELECT id FROM drafts WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`);
     const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, id), eq(drafts.userId, userId)));
     if (!draft) return { error: "草稿不存在", code: 404 as const };
+    if (draft.archivedAt) return { error: "草稿已归档，请恢复后再成稿", code: 409 as const };
     if (!deps.r2) return { error: "请配置 R2 图片存储后重试", code: 503 as const };
     if (draft.generationState !== "failed") return { error: "只有失败的成稿任务可以重试", code: 409 as const };
     const [prior] = await tx.select().from(jobs).where(and(eq(jobs.type, "draft_generate"), eq(jobs.userId, userId),
@@ -89,7 +94,7 @@ export async function retryDraftGeneration(deps: Deps, userId: number, id: numbe
     const previous = prior.payload as Payload;
     const positioningOverride = draft.accountId === previous.source.persona?.accountId ? previous.positioningOverride : undefined;
     const persona = await resolveAccountPersona(tx as unknown as Db, userId, draft.accountId, positioningOverride);
-    if ("error" in persona) return { error: persona.error, code: 404 as const };
+    if ("error" in persona) return { error: persona.error, code: persona.code };
     const revision = draft.generationRevision + 1;
     const [updated] = await tx.update(drafts).set({ generationState: "queued", generationRevision: revision, generationError: null, updatedAt: deps.now() })
       .where(eq(drafts.id, id)).returning();
@@ -103,6 +108,7 @@ export async function retryDraftGeneration(deps: Deps, userId: number, id: numbe
 }
 
 export async function runDraftJobs(deps: Deps) {
+  if (isReadOnly(deps)) return;
   if (!deps.r2) return;
   await deps.db.update(jobs).set({ status: "queued", claimedAt: null }).where(and(
     eq(jobs.type, "draft_generate"), eq(jobs.status, "processing"), lt(jobs.claimedAt, new Date(deps.now().getTime() - 12 * 60_000)),
@@ -115,18 +121,23 @@ export async function runDraftJobs(deps: Deps) {
   if (!claimed) return;
   const p = job.payload as Payload;
   const [draft] = await deps.db.select().from(drafts).where(and(eq(drafts.id, p.draftId), eq(drafts.userId, job.userId)));
-  const finish = () => deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(eq(jobs.id, job.id));
-  if (!draft || draft.generationRevision !== p.revision || draft.generationState === "done") { await finish(); return; }
+  const finish = () => deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(and(eq(jobs.id, job.id), eq(jobs.status, "processing")));
+  if (!draft || draft.archivedAt || draft.generationRevision !== p.revision || draft.generationState === "done") { await finish(); return; }
   try {
+    const persona = await resolveAccountPersona(deps.db, job.userId, draft.accountId);
+    if ("error" in persona) throw new Error(persona.error);
     if (draft.textVersion !== p.textVersion || draft.accountId !== (p.source.persona?.accountId ?? null))
       throw new Error("生成期间你已编辑文字或更换账号，已保留修改；确认后可重新成稿");
     await deps.db.update(drafts).set({ generationState: "writing", generationError: null }).where(and(
       eq(drafts.id, draft.id), eq(drafts.generationRevision, p.revision)));
     const generated = await generateDraft(deps, p.source);
     await deps.db.transaction(async tx => {
+      if (draft.accountId) await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${draft.accountId} AND user_id = ${job.userId} FOR SHARE`);
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${draft.id} FOR UPDATE`);
       const [current] = await tx.select().from(drafts).where(and(eq(drafts.id, draft.id), eq(drafts.userId, job.userId)));
-      if (!current || current.generationRevision !== p.revision || current.generationState === "done") return;
+      if (!current || current.archivedAt || current.generationRevision !== p.revision || current.generationState === "done") return;
+      const target = await resolveAccountPersona(tx as unknown as Db, job.userId, current.accountId);
+      if ("error" in target) throw new Error(target.error);
       if (current.textVersion !== p.textVersion || current.accountId !== (p.source.persona?.accountId ?? null))
         throw new Error("生成期间你已编辑文字或更换账号，已保留修改；确认后可重新成稿");
       const spec: CoverSpec = automaticCoverSpec(generated.cover || generated.title, p.referenceKind, {
@@ -145,12 +156,13 @@ export async function runDraftJobs(deps: Deps) {
   } catch (error) {
     const message = error instanceof Error ? error.message : "AI 成稿失败";
     await deps.db.update(drafts).set({ generationState: "failed", generationError: message, updatedAt: deps.now() })
-      .where(and(eq(drafts.id, p.draftId), eq(drafts.userId, job.userId), eq(drafts.generationRevision, p.revision)));
-    await deps.db.update(jobs).set({ status: "failed", error: message, finishedAt: deps.now() }).where(eq(jobs.id, job.id));
+      .where(and(eq(drafts.id, p.draftId), eq(drafts.userId, job.userId), isNull(drafts.archivedAt), eq(drafts.generationRevision, p.revision)));
+    await deps.db.update(jobs).set({ status: "failed", error: message, finishedAt: deps.now() }).where(and(eq(jobs.id, job.id), eq(jobs.status, "processing")));
   }
 }
 
 export function startDraftWorker(deps: Deps) {
+  if (isReadOnly(deps)) return;
   let writing = false, rendering = false;
   const write = async () => {
     if (writing) return;

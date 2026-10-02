@@ -8,7 +8,11 @@
     "start": "tsx --env-file-if-exists=.env src/index.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file-if-exists=.env scripts/database.ts migrate",
+    "db:status": "tsx --env-file-if-exists=.env scripts/database.ts status",
+    "db:check": "tsx --env-file-if-exists=.env scripts/database.ts check",
+    "db:duplicates": "tsx --env-file-if-exists=.env scripts/database.ts duplicates"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.4",

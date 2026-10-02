@@ -69,7 +69,7 @@ export function topicsModule(deps: Deps) {
         .from(collections)
         .where(and(eq(collections.id, refs.collectionId), eq(collections.userId, userId)))
         .limit(1);
-      if (!r) return "collection not found";
+      if (!r) return { error: "collection not found", code: 404 as const };
     }
     if (refs.sourceNoteId) {
       const [r] = await db
@@ -77,15 +77,16 @@ export function topicsModule(deps: Deps) {
         .from(collectedNotes)
         .where(and(eq(collectedNotes.id, refs.sourceNoteId), eq(collectedNotes.userId, userId)))
         .limit(1);
-      if (!r) return "source note not found";
+      if (!r) return { error: "source note not found", code: 404 as const };
     }
     if (refs.accountId) {
       const [r] = await db
-        .select({ id: hostedAccounts.id })
+        .select({ id: hostedAccounts.id, archivedAt: hostedAccounts.archivedAt })
         .from(hostedAccounts)
         .where(and(eq(hostedAccounts.id, refs.accountId), eq(hostedAccounts.userId, userId)))
         .limit(1);
-      if (!r) return "account not found";
+      if (!r) return { error: "account not found", code: 404 as const };
+      if (r.archivedAt) return { error: "账号已归档，请恢复或选择活跃账号", code: 409 as const };
     }
     return null;
   };
@@ -144,7 +145,7 @@ export function topicsModule(deps: Deps) {
       if (accountId) await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${accountId} AND user_id = ${userId} FOR SHARE`);
       if (p.sourceNoteId) await tx.execute(sql`SELECT id FROM collected_notes WHERE id = ${p.sourceNoteId} AND user_id = ${userId} FOR SHARE`);
       const refErr = await checkRefs(userId, { ...p, accountId }, tx as unknown as Db);
-      if (refErr) return { error: refErr, code: 404 as const };
+      if (refErr) return refErr;
       if (analysisSource && p.sourceNoteId) {
         const [note] = await tx.select({ collectionId: collectedNotes.collectionId }).from(collectedNotes)
           .where(and(eq(collectedNotes.id, p.sourceNoteId), eq(collectedNotes.userId, userId)));
@@ -180,7 +181,7 @@ export function topicsModule(deps: Deps) {
     const p = parsed.data;
     if (p.accountId) {
       const refErr = await checkRefs(userId, { accountId: p.accountId });
-      if (refErr) return c.json({ error: refErr }, 404);
+      if (refErr) return c.json({ error: refErr.error }, refErr.code);
     }
     // 状态约束：drafted/published 只能由系统流转（to-draft / 发布回填），手动归档除外
     if (p.status === "drafted" || p.status === "published") {

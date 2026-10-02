@@ -1,9 +1,9 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 
 import type { Deps } from "../context";
-import { collectedNotes, drafts, hostedAccounts, mediaAssets } from "../db/schema";
+import { collectedNotes, drafts, hostedAccounts, jobs, mediaAssets, publishJobs } from "../db/schema";
 import { draftWithUploads } from "../lib/draft-media";
 import { IMAGE_UPLOAD_LIMITS } from "@v2media/shared";
 
@@ -35,7 +35,7 @@ export function draftsModule(deps: Deps) {
     const rows = await deps.db
       .select()
       .from(drafts)
-      .where(eq(drafts.userId, c.get("userId")))
+      .where(and(eq(drafts.userId, c.get("userId")), c.req.query("includeArchived") === "1" ? undefined : isNull(drafts.archivedAt)))
       .orderBy(desc(drafts.updatedAt));
     return c.json(rows);
   });
@@ -46,37 +46,42 @@ export function draftsModule(deps: Deps) {
     const parsed = createSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const p = parsed.data;
-    if (p.accountId) {
-      const [account] = await deps.db.select({ id: hostedAccounts.id }).from(hostedAccounts).where(and(eq(hostedAccounts.id, p.accountId), eq(hostedAccounts.userId, userId)));
-      if (!account) return c.json({ error: "account not found" }, 404);
-    }
-    let values = {
-      userId,
-      title: p.title ?? "",
-      content: p.content ?? "",
-      tags: p.tags ?? [],
-      images: p.images ?? [],
-    };
-    if (p.collectedNoteId) {
-      const [note] = await deps.db
-        .select()
-        .from(collectedNotes)
-        .where(and(eq(collectedNotes.id, p.collectedNoteId), eq(collectedNotes.userId, userId)))
-        .limit(1);
-      if (!note) return c.json({ error: "collected note not found" }, 404);
-      values = {
+    const result = await deps.db.transaction(async tx => {
+      if (p.accountId) {
+        await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${p.accountId} AND user_id = ${userId} FOR SHARE`);
+        const [account] = await tx.select().from(hostedAccounts).where(and(eq(hostedAccounts.id, p.accountId), eq(hostedAccounts.userId, userId)));
+        if (!account) return { error: "account not found", code: 404 as const };
+        if (account.archivedAt) return { error: "账号已归档，请恢复后再创建草稿", code: 409 as const };
+      }
+      let values = {
         userId,
-        title: note.title,
-        content: note.content || note.title,
-        tags: note.tags,
-        images: note.images.map((i) => ({ url: i.url })),
+        title: p.title ?? "",
+        content: p.content ?? "",
+        tags: p.tags ?? [],
+        images: p.images ?? [],
       };
-    }
-    const [draft] = await deps.db
-      .insert(drafts)
-      .values({ ...values, collectedNoteId: p.collectedNoteId, accountId: p.accountId })
-      .returning();
-    return c.json(draft);
+      if (p.collectedNoteId) {
+        const [note] = await tx
+          .select()
+          .from(collectedNotes)
+          .where(and(eq(collectedNotes.id, p.collectedNoteId), eq(collectedNotes.userId, userId)))
+          .limit(1);
+        if (!note) return { error: "collected note not found", code: 404 as const };
+        values = {
+          userId,
+          title: note.title,
+          content: note.content || note.title,
+          tags: note.tags,
+          images: note.images.map((i) => ({ url: i.url })),
+        };
+      }
+      const [draft] = await tx
+        .insert(drafts)
+        .values({ ...values, collectedNoteId: p.collectedNoteId, accountId: p.accountId })
+        .returning();
+      return { draft: draft! };
+    });
+    return "error" in result ? c.json({ error: result.error }, result.code!) : c.json(result.draft);
   });
 
   app.get("/:id", async (c) => getOwned(c, deps));
@@ -86,17 +91,20 @@ export function draftsModule(deps: Deps) {
     const parsed = updateSchema.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: "bad payload" }, 400);
     const result = await deps.db.transaction(async tx => {
+      if (parsed.data.accountId) await tx.execute(sql`SELECT id FROM hosted_accounts WHERE id = ${parsed.data.accountId} AND user_id = ${userId} FOR SHARE`);
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`);
       const [existing] = await tx.select().from(drafts).where(and(eq(drafts.id, id), eq(drafts.userId, userId)));
       if (!existing) return { error: "not found", code: 404 as const };
+      if (existing.archivedAt) return { error: "草稿已归档，请恢复后再编辑", code: 409 as const };
       const { imagesVersion, textVersion, ...patch } = parsed.data;
       const editsText = patch.title !== undefined || patch.content !== undefined || patch.tags !== undefined || patch.accountId !== undefined;
       if (editsText && textVersion === undefined) return { error: "修改文字或写作账号需要 textVersion", code: 428 as const };
       if (textVersion !== undefined && textVersion !== existing.textVersion)
         return { error: "草稿文字或写作账号已更新，请核对最新版本后保存；本地编辑应保留", code: 409 as const };
       if (patch.accountId) {
-        const [account] = await tx.select({ id: hostedAccounts.id }).from(hostedAccounts).where(and(eq(hostedAccounts.id, patch.accountId), eq(hostedAccounts.userId, userId)));
+        const [account] = await tx.select().from(hostedAccounts).where(and(eq(hostedAccounts.id, patch.accountId), eq(hostedAccounts.userId, userId)));
         if (!account) return { error: "account not found", code: 404 as const };
+        if (account.archivedAt) return { error: "账号已归档，请选择活跃账号或恢复原账号", code: 409 as const };
       }
       if (patch.images) {
         if ((existing.images.some(i => i.assetId) || patch.images.some(i => i.assetId)) && imagesVersion === undefined)
@@ -137,10 +145,43 @@ export function draftsModule(deps: Deps) {
   });
 
   app.delete("/:id", async (c) => {
-    await deps.db
-      .delete(drafts)
-      .where(and(eq(drafts.id, Number(c.req.param("id"))), eq(drafts.userId, c.get("userId"))));
-    return c.json({ ok: true });
+    const id = Number(c.req.param("id")), userId = c.get("userId");
+    if (!Number.isSafeInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
+    const found = await deps.db.transaction(async tx => {
+      await tx.execute(sql`SELECT id FROM drafts WHERE id = ${id} AND user_id = ${userId} FOR UPDATE`);
+      const [draft] = await tx.select().from(drafts).where(and(eq(drafts.id, id), eq(drafts.userId, userId)));
+      if (!draft) return false;
+      if (draft.archivedAt) return true;
+      const generationActive = ["queued", "writing"].includes(draft.generationState);
+      const coverActive = ["queued", "processing"].includes(draft.coverState);
+      await tx.update(drafts).set({ archivedAt: deps.now(), updatedAt: deps.now(),
+        textVersion: draft.textVersion + 1, imagesVersion: draft.imagesVersion + 1,
+        generationRevision: draft.generationRevision + 1, coverRevision: draft.coverRevision + 1,
+        ...(generationActive ? { generationState: "failed", generationError: "草稿已归档，成稿已停止；恢复后可手动重试" } : {}),
+        ...(coverActive ? { coverState: "failed", coverError: "草稿已归档，封面任务已停止；恢复后可手动重新生成" } : {}),
+      }).where(eq(drafts.id, id));
+      const assets = await tx.select({ id: mediaAssets.id }).from(mediaAssets).where(and(eq(mediaAssets.userId, userId), eq(mediaAssets.draftId, id)));
+      await tx.update(mediaAssets).set({ status: "canceled", error: "草稿已归档，素材处理已停止" })
+        .where(and(eq(mediaAssets.userId, userId), eq(mediaAssets.draftId, id), inArray(mediaAssets.status, ["queued", "processing"])));
+      await tx.update(jobs).set({ status: "canceled", error: "草稿已归档", finishedAt: deps.now() })
+        .where(and(eq(jobs.userId, userId), inArray(jobs.type, ["draft_generate", "cover_generate"]),
+          inArray(jobs.status, ["queued", "processing"]), sql`${jobs.payload}->>'draftId' = ${String(id)}`));
+      if (assets.length) await tx.update(jobs).set({ status: "canceled", error: "草稿已归档", finishedAt: deps.now() })
+        .where(and(eq(jobs.userId, userId), eq(jobs.type, "media_upload"), inArray(jobs.status, ["queued", "processing"]),
+          sql`${jobs.payload}->>'assetId' IN (${sql.join(assets.map(a => sql`${String(a.id)}`), sql`, `)})`));
+      await tx.update(publishJobs).set({ status: "canceled", error: "草稿已归档，未开始的发布已取消", updatedAt: deps.now() })
+        .where(and(eq(publishJobs.userId, userId), eq(publishJobs.draftId, id), eq(publishJobs.status, "pending")));
+      return true;
+    });
+    return found ? c.json({ ok: true }) : c.json({ error: "not found" }, 404);
+  });
+
+  app.post("/:id/restore", async c => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isSafeInteger(id) || id <= 0) return c.json({ error: "bad id" }, 400);
+    const [draft] = await deps.db.update(drafts).set({ archivedAt: null, updatedAt: deps.now() })
+      .where(and(eq(drafts.id, id), eq(drafts.userId, c.get("userId")))).returning();
+    return draft ? c.json(await draftWithUploads(deps.db, draft)) : c.json({ error: "not found" }, 404);
   });
 
   return app;

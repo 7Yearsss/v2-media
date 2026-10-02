@@ -4,6 +4,7 @@ import type { PostmortemInsight, PostmortemReport } from "@v2media/shared";
 import type { Deps } from "../context";
 import { jobs, postmortemReports } from "../db/schema";
 import { env } from "../env";
+import { isReadOnly } from "./runtime-policy";
 
 export const POSTMORTEM_PROMPT_VERSION = "evidence-review-v1";
 export const postmortemModel = () => env.aiAnalysisModel || env.aiModel;
@@ -18,6 +19,7 @@ const insightSchema = z.object({
   experiments: z.array(z.object({ change: z.string().min(1).max(1000), observe: z.string().min(1).max(1000) }).strict()).min(1).max(5),
 }).strict();
 export async function runPostmortemJobs(deps: Deps) {
+  if (isReadOnly(deps)) return;
   const cutoff = new Date(deps.now().getTime() - 12 * 60_000);
   const expired = await deps.db.update(jobs).set({ status: "failed", error: "复盘中断或超时，请重新生成", finishedAt: deps.now() })
     .where(and(eq(jobs.type, "postmortem"), eq(jobs.status, "processing"), lt(jobs.claimedAt, cutoff))).returning();
@@ -59,6 +61,7 @@ export async function runPostmortemJobs(deps: Deps) {
   }
 }
 export function startPostmortemWorker(deps: Deps) {
+  if (isReadOnly(deps)) return;
   let busy = false;
   const tick = async () => { if (busy) return; busy = true;
     try { await runPostmortemJobs(deps); } catch (e) { console.warn("postmortem worker failed", e); } finally { busy = false; } };

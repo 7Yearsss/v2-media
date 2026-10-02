@@ -7,6 +7,7 @@ import { drafts, jobs, mediaAssets } from "../db/schema";
 import { renderCover, COVER_RENDER_VERSION } from "./cover-render";
 import { coverTemplateName } from "./cover-spec";
 import { storeCreatedMedia } from "./created-media";
+import { assertWritable, isReadOnly } from "./runtime-policy";
 
 type DraftRow = typeof drafts.$inferSelect;
 export class CoverInputError extends Error {}
@@ -14,6 +15,8 @@ interface Payload { draftId: number; assetId: number; revision: number; base: st
 
 /** Caller owns and locks draft. Queueing and its placeholder are one DB transaction. */
 export async function queueCover(db: Db, deps: Deps, draft: DraftRow, spec: CoverSpec, base: string) {
+  assertWritable(deps);
+  if (draft.archivedAt) throw new CoverInputError("草稿已归档，请恢复后再生成封面");
   const previous = draft.images.find(i => i.assetId === draft.coverAssetId);
   if (!previous && draft.images.length >= IMAGE_UPLOAD_LIMITS.images) throw new CoverInputError("请先移除一张图片，为封面留出位置");
   if (spec.backgroundAssetId) {
@@ -48,6 +51,7 @@ export async function queueCover(db: Db, deps: Deps, draft: DraftRow, spec: Cove
 }
 
 export async function runCoverJobs(deps: Deps) {
+  if (isReadOnly(deps)) return;
   if (!deps.r2) return;
   await deps.db.update(jobs).set({ status: "queued", claimedAt: null }).where(and(eq(jobs.type, "cover_generate"),
     eq(jobs.status, "processing"), lt(jobs.claimedAt, new Date(deps.now().getTime() - 20 * 60_000))));
@@ -58,7 +62,7 @@ export async function runCoverJobs(deps: Deps) {
     .where(and(eq(jobs.id, job.id), eq(jobs.status, "queued"))).returning();
   if (!claimed) return;
   const p = job.payload as Payload;
-  const done = () => deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(eq(jobs.id, job.id));
+  const done = () => deps.db.update(jobs).set({ status: "done", error: null, finishedAt: deps.now() }).where(and(eq(jobs.id, job.id), eq(jobs.status, "processing")));
   const obsolete = async () => {
     await deps.db.update(mediaAssets).set({ status: "canceled" }).where(and(eq(mediaAssets.id, p.assetId), eq(mediaAssets.userId, job.userId)));
     await done();
@@ -66,7 +70,7 @@ export async function runCoverJobs(deps: Deps) {
   const [draft] = await deps.db.select().from(drafts).where(and(eq(drafts.id, p.draftId), eq(drafts.userId, job.userId)));
   const [asset] = await deps.db.select().from(mediaAssets).where(and(eq(mediaAssets.id, p.assetId), eq(mediaAssets.draftId, p.draftId),
     eq(mediaAssets.userId, job.userId), eq(mediaAssets.kind, "cover")));
-  if (!draft || !asset || !draft.coverSpec || draft.coverRevision !== p.revision || asset.status === "canceled") { await obsolete(); return; }
+  if (!draft || draft.archivedAt || !asset || !draft.coverSpec || draft.coverRevision !== p.revision || asset.status === "canceled") { await obsolete(); return; }
   if (asset.status === "ready") { await done(); return; }
   try {
     const [active] = await deps.db.update(mediaAssets).set({ status: "processing", error: null }).where(and(
@@ -90,7 +94,7 @@ export async function runCoverJobs(deps: Deps) {
       await tx.execute(sql`SELECT id FROM drafts WHERE id = ${draft.id} FOR UPDATE`);
       const [current] = await tx.select().from(drafts).where(and(eq(drafts.id, draft.id), eq(drafts.userId, job.userId)));
       const [currentAsset] = await tx.select().from(mediaAssets).where(eq(mediaAssets.id, asset.id));
-      if (!current || current.coverRevision !== p.revision || currentAsset?.status === "canceled") {
+      if (!current || current.archivedAt || current.coverRevision !== p.revision || currentAsset?.status === "canceled") {
         await tx.update(mediaAssets).set({ status: "canceled", ...stored }).where(eq(mediaAssets.id, asset.id));
         return;
       }
@@ -111,10 +115,10 @@ export async function runCoverJobs(deps: Deps) {
     await deps.db.update(mediaAssets).set({ status: attempts < 3 ? "queued" : "failed", error: message })
       .where(and(eq(mediaAssets.id, asset.id), inArray(mediaAssets.status, ["queued", "processing"])));
     await deps.db.update(drafts).set({ coverState: attempts < 3 ? "queued" : "failed", coverError: message })
-      .where(and(eq(drafts.id, draft.id), eq(drafts.coverRevision, p.revision)));
+      .where(and(eq(drafts.id, draft.id), isNull(drafts.archivedAt), eq(drafts.coverRevision, p.revision)));
     await deps.db.update(jobs).set({
       status: attempts < 3 ? "queued" : "failed", payload: { ...p, attempts }, error: message,
       dueAt: new Date(deps.now().getTime() + attempts * 30_000),
-    }).where(eq(jobs.id, job.id));
+    }).where(and(eq(jobs.id, job.id), eq(jobs.status, "processing")));
   }
 }

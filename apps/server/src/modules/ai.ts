@@ -182,8 +182,9 @@ export function aiModule(deps: Deps) {
   const loadText = async (userId: number, body: z.infer<typeof rewriteSchema>) => {
     const [d] = body.draftId ? await deps.db.select().from(drafts).where(and(eq(drafts.id, body.draftId), eq(drafts.userId, userId))).limit(1) : [];
     if (body.draftId && !d) return { error: "draft not found", code: 404 as const };
+    if (d?.archivedAt) return { error: "草稿已归档，请恢复后再使用 AI", code: 409 as const };
     const persona = await resolveAccountPersona(deps.db, userId, body.accountId !== undefined ? body.accountId : d?.accountId);
-    if ("error" in persona) return { error: persona.error, code: 404 as const };
+    if ("error" in persona) return { error: persona.error, code: persona.code };
     return { title: body.title ?? d?.title ?? "", content: body.content ?? d?.content ?? "", persona: persona.snapshot };
   };
 
@@ -266,7 +267,7 @@ export function aiModule(deps: Deps) {
       .limit(1);
     if (!col) return c.json({ error: "collection not found" }, 404);
     const persona = await resolveAccountPersona(deps.db, userId, accountId);
-    if ("error" in persona) return c.json({ error: persona.error }, 404);
+    if ("error" in persona) return c.json({ error: persona.error }, persona.code);
     const notes = await deps.db
       .select({
         title: collectedNotes.title,
@@ -346,7 +347,7 @@ export function aiModule(deps: Deps) {
       .limit(1);
     if (!topic) return c.json({ error: "not found" }, 404);
     const persona = await resolveAccountPersona(deps.db, userId, topic.accountId);
-    if ("error" in persona) return c.json({ error: persona.error }, 404);
+    if ("error" in persona) return c.json({ error: persona.error }, persona.code);
     let raw: string;
     try {
       raw = await deps.ai.complete(
