@@ -30,4 +30,8 @@
 
 ## 构建验证
 
-全仓 `npm run typecheck`、最终 `npm run build -w @v2media/web` 与 `git diff --check` 通过。主包约 184.38KB gzip，仍有原来的 500KB 构建提示；登录路由约 1.44KB gzip，沿用系统字体与路由拆包。既有 server 测试和插件打包由 main 的部署 Action 继续执行。
+全仓 `npm run typecheck`、最终 `npm run build -w @v2media/web` 与 `git diff --check` 通过。主包约 184.38KB gzip，仍有原来的 500KB 构建提示；登录路由约 1.44KB gzip，沿用系统字体与路由拆包。
+
+代码提交 `6d0bb33` 的 [Action #37085097741](https://github.com/7Yearsss/v2-media/actions/runs/37085097741) 已成功：34 个 server 测试文件 / 272 项既有测试通过，web 与插件打包、显式版本检查/迁移、服务重启完成。没有新增单测。
+
+线上首页 200，`/health` 返回 ok / production-worker / schemaVersion=3。主资源为 `index-C9UCI0_B.js` 与 `index-BK0_4DKW.css`，和本地最终构建一致；CSS 包含新版首页、登录布局和平板断点。线上登录页已在浏览器重新加载核对，截图保存在同一预览目录。
