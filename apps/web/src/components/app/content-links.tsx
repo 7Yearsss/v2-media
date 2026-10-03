@@ -8,7 +8,7 @@ export interface ContentLink { label: string; to: string }
 export function ContentLinks({ items, current, className }: {
   items: ContentLink[]; current?: string; className?: string;
 }) {
-  if (!items.length && !current) return null;
+  if (!items.length) return null;
   return <nav aria-label="内容关系" className={cn("flex flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-6", className)}>
     {items.map((item, index) => <span key={`${item.to}-${index}`} className="inline-flex min-w-0 items-center gap-2">
       {index > 0 && <ChevronRight aria-hidden="true" className="size-3 shrink-0 text-muted-foreground" />}

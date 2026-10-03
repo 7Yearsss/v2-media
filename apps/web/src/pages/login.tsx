@@ -4,11 +4,9 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { motion, useReducedMotion } from "motion/react";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
-import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
 import { ThemeToggle } from "@/components/motion/theme-toggle";
 import { useAuth } from "@/lib/auth";
 import { ApiError } from "@/lib/api";
-import { SPRING_PANEL } from "@/lib/ease";
 
 export default function LoginPage() {
   const { token, login, register } = useAuth();
@@ -45,8 +43,9 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="relative flex min-h-dvh items-center justify-center bg-background px-4">
-      <div className="absolute right-4 top-4">
+    <div className="auth-shell relative">
+      <header className="auth-brand"><span className="grid size-9 place-items-center rounded-xl bg-primary text-primary-foreground"><Layers className="size-5" /></span>v2-media</header>
+      <div className="absolute right-8 top-8">
         <ThemeToggle
           variant="rectangle"
           className="size-8 rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -54,43 +53,9 @@ export default function LoginPage() {
         />
       </div>
 
-      <motion.div
-        initial={reduce ? false : { opacity: 0, y: 16, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={SPRING_PANEL}
-        className="w-full max-w-sm"
-      >
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="grid size-11 place-items-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20">
-            <Layers className="size-5" />
-          </div>
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight text-foreground">
-              v2-media 工作台
-            </h1>
-          </div>
-        </div>
-
-        <div className="rounded-3xl border border-border bg-card p-6 shadow-sm">
-          <Tabs
-            value={mode}
-            onValueChange={(v) => {
-              setMode(v as "login" | "register");
-              setError(null);
-            }}
-            variant="segment"
-            className="mb-6"
-          >
-            <TabsList className="w-full">
-              <TabsTrigger value="login" className="flex-1">
-                登录
-              </TabsTrigger>
-              <TabsTrigger value="register" className="flex-1">
-                注册
-              </TabsTrigger>
-            </TabsList>
-          </Tabs>
-
+      <main className="auth-layout">
+        <motion.section initial={reduce ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .18 }} className="auth-form">
+          <h1>{mode === "login" ? "登录工作台" : "创建账号"}</h1>
           <form onSubmit={submit} className="flex flex-col gap-4">
             <Input
               label="邮箱"
@@ -119,7 +84,7 @@ export default function LoginPage() {
             <Button
               type="submit"
               size="lg"
-              className="mt-1 w-full"
+              className="workspace-action mt-2 w-full"
               disabled={pending}
             >
               {pending ? (
@@ -128,12 +93,12 @@ export default function LoginPage() {
               {mode === "login" ? "登录" : "创建账号"}
             </Button>
           </form>
-        </div>
-
-        <p className="mt-6 text-center text-xs text-muted-foreground">
-          登录后在「账号」页授权插件
-        </p>
-      </motion.div>
+          <p className="mt-6 text-sm text-muted-foreground">{mode === "login" ? "还没有账号？" : "已有账号？"}<button type="button" className="ml-2 rounded font-medium text-foreground underline-offset-4 hover:underline" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(null); }}>{mode === "login" ? "创建账号" : "登录"}</button></p>
+        </motion.section>
+        <aside className="auth-visual" aria-label="封面示例">
+          <div className="auth-cover"><p className="text-xs tracking-wide">封面示例</p><h2>周末备餐<br />三步清单</h2><ol><li>01　准备容器</li><li>02　整理食材</li><li>03　安排顺序</li></ol><span className="absolute bottom-9 left-8 text-xs">1080 × 1440</span></div>
+        </aside>
+      </main>
     </div>
   );
 }

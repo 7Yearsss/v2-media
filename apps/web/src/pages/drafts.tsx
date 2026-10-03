@@ -320,7 +320,7 @@ export default function DraftsPage() {
           <span className="min-w-0 flex-1">
             <span
               className={cn(
-                "block truncate text-[13px] leading-5",
+                "block line-clamp-2 text-[13px] leading-5",
                 active ? "font-semibold" : "font-medium",
                 "text-foreground",
               )}
@@ -328,11 +328,8 @@ export default function DraftsPage() {
               {d.title || "未命名草稿"}
             </span>
             <span className="mt-0.5 block truncate text-[11px] leading-4 text-muted-foreground">
-              {d.archivedAt ? "已归档 · " : ""}{d.content ? d.content.slice(0, 40) : "（空正文）"}
+              {d.archivedAt ? "已归档 · " : ""}{timeAgo(d.updatedAt)}
             </span>
-          </span>
-          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-            {timeAgo(d.updatedAt)}
           </span>
         </button>
       );
@@ -341,7 +338,7 @@ export default function DraftsPage() {
   );
 
   return (
-    <div inert={preparingPublish || undefined} aria-busy={preparingPublish} className="workspace-editor grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
+    <div inert={preparingPublish || undefined} aria-busy={preparingPublish} className="workspace-editor grid min-h-full grid-cols-1 lg:grid-cols-[208px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[216px_minmax(0,1fr)_320px]">
       <button type="button" aria-label="选择草稿" aria-expanded={queueOpen || !selected} aria-controls="draft-queue" onClick={() => setQueueOpen(value => !value)}
         className="flex min-h-12 items-center gap-2 border-b border-border bg-[var(--workspace-rail)] px-4 text-left text-sm lg:hidden">
         <FileText className="size-4 shrink-0 text-muted-foreground" /><span>草稿</span><span className="text-xs tabular-nums text-muted-foreground">{drafts.length}</span>
@@ -477,7 +474,7 @@ export default function DraftsPage() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-7 sm:px-7 xl:px-6">
-              <div className="mx-auto w-full max-w-[720px] space-y-5">
+              <div className="mx-auto w-full max-w-[680px] space-y-6">
               <ContentLinks current="当前草稿" items={[
                 ...(selected.collectedNoteId ? [{ label: "来源笔记", to: libraryReturn ?? `/library?note=${selected.collectedNoteId}` }] : []),
                 ...(topicsQuery.data?.items.filter(topic => topic.draftId === selected.id).flatMap(topic => [
@@ -504,7 +501,7 @@ export default function DraftsPage() {
                 onChange={(e) => update({ title: e.target.value })}
                 placeholder="填写标题，最多 20 字"
                 aria-label="标题"
-                className="w-full bg-transparent px-1 text-[22px] font-semibold leading-8 tracking-tight outline-none placeholder:text-muted-foreground/45"
+                className="w-full bg-transparent px-1 text-[26px] font-semibold leading-9 tracking-tight outline-none placeholder:text-muted-foreground/45"
               />
 
               <RiskTextarea
@@ -689,7 +686,7 @@ export default function DraftsPage() {
       </section>
 
       {/* 右栏：小红书卡片实时预览 + AI 助手 */}
-      <aside className="min-h-0 overflow-y-auto bg-background p-4 lg:col-span-2 xl:col-span-1">
+      <aside className="workspace-editor-tools min-h-0 overflow-y-auto p-5 lg:col-span-2 xl:col-span-1">
         <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-1">
           <div className="mx-auto w-full max-w-[280px] xl:max-w-none">
             <p className="mb-3 text-[11px] font-medium text-muted-foreground">

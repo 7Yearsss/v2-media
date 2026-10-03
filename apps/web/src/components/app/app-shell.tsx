@@ -230,21 +230,21 @@ function WorkspaceShell() {
   return (
     <ExtensionCtx.Provider value={{ online }}>
       <a href="#workspace-main" className="workspace-skip-link">跳到内容</a>
-      <AnimatedSidebarProvider style={{ "--sidebar-width": "232px", "--sidebar-width-icon": "60px" }} className="workspace-shell h-dvh min-h-0 w-full overflow-hidden bg-background">
+      <AnimatedSidebarProvider style={{ "--sidebar-width": "200px", "--sidebar-width-icon": "64px" }} className="workspace-shell h-dvh min-h-0 w-full overflow-hidden bg-background">
         <AnimatedSidebar
           ariaLabel="v2-media 工作台"
           collapsible="icon"
           variant="inset"
           className="workspace-sidebar min-h-0"
-          panelClassName="w-[calc(100%_-_16px)] rounded-3xl border border-border bg-[var(--workspace-rail)]"
+          panelClassName="w-full border-0 bg-transparent"
         >
-          <AnimatedSidebarHeader className="p-3 pb-4">
+          <AnimatedSidebarHeader className="p-4 pb-5">
             <div className="flex min-h-11 items-center gap-3 overflow-hidden px-2">
-              <div className="grid size-7 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
+              <div className="grid size-8 shrink-0 place-items-center rounded-[11px] bg-primary text-primary-foreground">
                 <Layers aria-hidden className="size-4" />
               </div>
               <div className="min-w-0 flex-1 group-data-[state=collapsed]/sidebar:hidden">
-                <p className="truncate text-sm font-semibold text-foreground">
+                <p className="truncate text-[15px] font-semibold tracking-tight text-foreground">
                   v2-media
                 </p>
               </div>

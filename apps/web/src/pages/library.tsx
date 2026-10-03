@@ -481,7 +481,8 @@ export default function LibraryPage() {
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
       <div className={cn("relative min-h-0 min-w-0 flex-1 flex-col", selected !== null ? "hidden lg:flex" : "flex")}>
-        <div className="shrink-0 space-y-4 px-4 pt-5 sm:px-6 sm:pt-6">
+        <div className="shrink-0 space-y-5 px-4 pt-5 sm:px-7 sm:pt-7">
+          <h1 className="workspace-page-title">资料库</h1>
           <div className="flex flex-wrap items-center gap-3">
             {summary ? <LibraryStats summary={summary} /> : null}
             <div className="w-full min-w-0 sm:ml-auto sm:w-72">
@@ -662,10 +663,10 @@ export default function LibraryPage() {
               }
               minColumnWidth={view === "list" ? 1 : 220}
               maxColumns={view === "list" ? 1 : 5}
-              gap={view === "list" ? 0 : 14}
+              gap={view === "list" ? 0 : 20}
               animateItems={view !== "list"}
               ariaLabel={view === "list" ? "笔记列表" : "笔记瀑布流"}
-              className={cn("min-h-0 flex-1", view === "list" && "rounded-none border-0 bg-card p-0")}
+              className="min-h-0 flex-1 rounded-none border-0 bg-card p-0"
             />
             </div>
           )}
