@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/motion/select";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
+import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { api, ApiError, captureSession, isCurrentSession } from "@/lib/api";
 import { AiOperationIds, isActiveAiRun, latestTopicRun, topicRunPollInterval } from "@/lib/topic-run-flow";
 import { useRuntime } from "@/lib/hooks/use-runtime";
@@ -200,6 +201,7 @@ function NewTopicDrawer({
                 <SelectValue placeholder="不关联" />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="">不关联</SelectItem>
                 {collections.map((cl) => (
                   <SelectItem key={cl.id} value={String(cl.id)}>
                     {cl.name}（{cl.noteCount}）
@@ -568,6 +570,7 @@ export default function TopicsPage() {
   const topicRequested = params.has("topic");
   const [newOpen, setNewOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [deletingTopic, setDeletingTopic] = useState<TopicRow | null>(null);
   const prefill = useMemo<TopicPrefill | undefined>(() => params.get("new") === "1" ? {
     title: (params.get("title") ?? "").slice(0, 512),
     angle: (params.get("angle") ?? "").slice(0, 4000),
@@ -697,11 +700,11 @@ export default function TopicsPage() {
       ) : (
         <div className="workspace-panel divide-y divide-border overflow-hidden">
           {items.map((t) => (
-            <button
+            <article
               key={t.id}
-              onClick={() => selectTopic(t.id)}
-              className="group block w-full px-5 py-4 text-left transition-colors hover:bg-muted/30"
+              className="group relative px-5 py-4 transition-colors hover:bg-muted/30"
             >
+              <button type="button" aria-label={`查看选题：${t.title}`} onClick={() => selectTopic(t.id)} className="block w-full rounded-lg text-left">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-foreground">{t.title}</p>
@@ -715,6 +718,7 @@ export default function TopicsPage() {
                   </span>
                 )}
               </div>
+              </button>
               <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 <AnimatedBadge status={STATUS_META[t.status].badge} showIcon={false}>
                   {STATUS_META[t.status].label}
@@ -728,40 +732,36 @@ export default function TopicsPage() {
                     {fmtDateTime(t.plannedAt)}
                   </span>
                 )}
-                {!readOnly && <span className="ml-auto flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    className="rounded-lg p-1 hover:bg-muted"
+                {!readOnly && <span className="workspace-hover-actions ml-auto flex gap-1 transition-opacity">
+                  <button
+                    type="button"
+                    disabled={archiveMut.isPending}
+                    aria-label={t.status === "archived" ? `恢复选题：${t.title}` : `归档选题：${t.title}`}
+                    className="grid size-8 place-items-center rounded-lg hover:bg-muted disabled:opacity-50"
                     title={t.status === "archived" ? "恢复为想法" : "归档"}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      archiveMut.mutate(t);
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && archiveMut.mutate(t)}
+                    onClick={() => archiveMut.mutate(t)}
                   >
                     <Archive className="size-3.5" />
-                  </span>
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    className="rounded-lg p-1 text-rose-500 hover:bg-muted"
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`删除选题：${t.title}`}
+                    className="grid size-8 place-items-center rounded-lg text-destructive hover:bg-muted"
                     title="删除"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteMut.mutate(t.id);
-                    }}
-                    onKeyDown={(e) => e.key === "Enter" && deleteMut.mutate(t.id)}
+                    onClick={() => setDeletingTopic(t)}
                   >
                     <Trash2 className="size-3.5" />
-                  </span>
+                  </button>
                 </span>}
               </div>
-            </button>
+            </article>
           ))}
         </div>
       )}
 
+      <ConfirmDialog open={deletingTopic !== null} onOpenChange={open => { if (!open) setDeletingTopic(null); }} title="删除选题？"
+        description={deletingTopic ? `「${deletingTopic.title}」将被删除，无法恢复。` : undefined} confirmLabel="删除" destructive busy={deleteMut.isPending}
+        onConfirm={() => { const target = deletingTopic; if (target) deleteMut.mutate(target.id, { onSuccess: () => setDeletingTopic(current => current === target ? null : current) }); }} />
       <NewTopicDrawer
         key={prefill ? JSON.stringify(prefill) : "manual"}
         open={newOpen}

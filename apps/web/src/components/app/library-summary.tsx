@@ -1,7 +1,6 @@
 import { Hash, Heart, MessageCircle, NotebookText, Star } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { NotesSummary } from "@v2media/shared";
-import { NumberTicker } from "@/components/motion/number-ticker";
 import { formatCount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -23,7 +22,7 @@ export function LibraryStats({ summary }: { summary: NotesSummary }) {
           <Icon className="size-3.5 self-center" />
           {label}
           <b className="text-sm font-semibold text-foreground">
-            <NumberTicker value={value} locale={!format} format={format} suffix={plus ? "+" : undefined} startOnView={false} duration={0.7} />
+            {format ? format(value) : value.toLocaleString()}{plus ? "+" : ""}
           </b>
         </span>
       ))}
@@ -67,7 +66,7 @@ export function LibraryTopics({
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          "inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+          "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
           activeTag ? "border-primary/60 bg-primary/10 text-primary" : "border-border bg-background text-muted-foreground hover:text-foreground",
         )}
       >

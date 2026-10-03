@@ -46,7 +46,7 @@ export function PageError({
       <div className="grid size-11 place-items-center rounded-2xl border border-destructive/30 bg-destructive/10 text-destructive">
         <TriangleAlert className="size-5" />
       </div>
-      <p className="text-sm font-medium text-foreground">{message}</p>
+      <p role="alert" className="max-w-md break-words px-4 text-sm font-medium leading-6 text-foreground">{message}</p>
       {onRetry ? (
         <Button variant="outline" size="sm" onClick={onRetry}>
           <RotateCcw className="size-3.5" />

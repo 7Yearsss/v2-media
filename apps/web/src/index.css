@@ -11,19 +11,22 @@
   --color-card-foreground: #20242c;
   --color-popover: #ffffff;
   --color-popover-foreground: #20242c;
-  --color-primary: #d94038;
+  --color-primary: #c43a33;
   --color-primary-foreground: #ffffff;
   --color-secondary: #eef0f4;
   --color-secondary-foreground: #20242c;
   --color-muted: #f0f2f5;
-  --color-muted-foreground: #747b88;
+  --color-muted-foreground: #626b78;
   --color-accent: #eef0f4;
   --color-accent-foreground: #20242c;
   --color-destructive: #dc2626;
   --color-destructive-foreground: #ffffff;
   --color-border: #e6e8ed;
   --color-input: #e6e8ed;
-  --color-ring: #d94038;
+  --color-ring: #c43a33;
+  --color-success: #047857;
+  --color-warning: #92400e;
+  --color-border-strong: #bcc3ce;
   --radius-sm: 0.5rem;
   --radius-md: 0.625rem;
   --radius-lg: 0.75rem;
@@ -39,19 +42,22 @@
   --color-card-foreground: #ecedf1;
   --color-popover: #1c1f26;
   --color-popover-foreground: #ecedf1;
-  --color-primary: #e8544c;
-  --color-primary-foreground: #ffffff;
+  --color-primary: #f47b73;
+  --color-primary-foreground: #231817;
   --color-secondary: #252933;
   --color-secondary-foreground: #ecedf1;
   --color-muted: #252933;
-  --color-muted-foreground: #979eac;
+  --color-muted-foreground: #a6adbb;
   --color-accent: #252933;
   --color-accent-foreground: #ecedf1;
   --color-destructive: #ef4444;
   --color-destructive-foreground: #ffffff;
   --color-border: #303540;
   --color-input: #3a414f;
-  --color-ring: #e8544c;
+  --color-ring: #f47b73;
+  --color-success: #6ee7b7;
+  --color-warning: #fbbf24;
+  --color-border-strong: #687183;
 }
 
 .dark,
@@ -74,13 +80,38 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   font-size: 14px;
+  font-optical-sizing: auto;
 }
+
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 3px;
+}
+:where(button, a, input, textarea, select) { -webkit-tap-highlight-color: transparent; }
+:where(button, a) { touch-action: manipulation; }
+input::placeholder, textarea::placeholder { color: var(--color-muted-foreground); opacity: 1; }
+.workspace-input:focus-visible, .workspace-command-input:focus-visible { outline: none; }
+.workspace-command-field:has(input:focus-visible) { box-shadow: inset 0 -2px var(--color-ring); }
+.workspace-drawer[data-close-button="true"] > :first-child > h2 { padding-right: 2.5rem; }
+:where(main, aside, [role="dialog"], .workspace-scroll, [class*="overflow-y-auto"], [class*="overflow-auto"]) {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 32%, transparent) transparent;
+}
+.workspace-skip-link {
+  position: fixed; top: 12px; left: 50%; z-index: 200;
+  transform: translate(-50%, -160%); border-radius: 12px;
+  padding: 10px 16px; background: var(--color-card); color: var(--color-foreground);
+  box-shadow: 0 4px 20px #0002;
+}
+.workspace-skip-link:focus { transform: translate(-50%, 0); }
 
 .workspace-shell { --workspace-rail: #f3f4f7; }
 .dark .workspace-shell { --workspace-rail: #191c22; }
 .workspace-shell [data-slot="sidebar"] { background: transparent; }
 .workspace-sidebar[data-mobile="true"] { top: 8px; bottom: 8px; left: 8px; height: calc(100dvh - 16px); border: 1px solid var(--color-border); border-radius: 24px; }
-.workspace-nav-item { min-height: 36px; font-size: 13px; border-radius: 12px; }
+.workspace-nav-item { min-height: 42px; font-size: 14px; border-radius: 12px; }
+.workspace-nav-item[aria-current="page"] { color: var(--color-foreground); font-weight: 600; }
+.workspace-nav-item[aria-current="page"] > span:first-child { background: var(--color-card); box-shadow: 0 1px 4px #20242c0a; }
 .workspace-nav-item > span:first-child { border-radius: 12px; }
 .workspace-nav-heading { padding: 18px 14px 7px; color: var(--color-muted-foreground); font-size: 11px; font-weight: 500; }
 .workspace-page { width: 100%; max-width: 1480px; margin-inline: auto; padding: 28px 32px; }
@@ -97,7 +128,19 @@ body {
 .workspace-section-title { font-size: 14px; font-weight: 600; line-height: 22px; }
 .workspace-metric { border-right: 1px solid var(--color-border); padding: 18px 24px; }
 .workspace-metric:last-child { border-right: 0; }
+.workspace-metric:first-child { border-radius: 20px 0 0 20px; }
+.workspace-metric:last-child { border-radius: 0 20px 20px 0; }
+.workspace-metric:focus-visible { outline-offset: -3px; }
+.workspace-library-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.workspace-library-tools > .workspace-library-trail { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.workspace-hover-actions { opacity: 1; }
+@media (hover: hover) and (pointer: fine) {
+  .workspace-hover-actions { opacity: 0; }
+  .group:hover .workspace-hover-actions, .group:focus-within .workspace-hover-actions,
+  [class~="group/row"]:hover .workspace-hover-actions, [class~="group/row"]:focus-within .workspace-hover-actions { opacity: 1; }
+}
 @media (max-width: 767px) {
+  :where(input:not([aria-label="标题"]), textarea, select) { font-size: 16px; }
   .workspace-page { padding: 22px 18px; }
   .workspace-page-title { font-size: 22px; }
   .workspace-page-header h1 { font-size: 22px; }
@@ -106,6 +149,25 @@ body {
   .workspace-metric { padding: 16px; }
   .workspace-metric:nth-child(2) { border-right: 0; }
   .workspace-metric:nth-child(-n+2) { border-bottom: 1px solid var(--color-border); }
+  .workspace-metric:first-child { border-radius: 20px 0 0 0; }
+  .workspace-metric:nth-child(2) { border-radius: 0 20px 0 0; }
+  .workspace-metric:nth-child(3) { border-radius: 0 0 0 20px; }
+  .workspace-metric:last-child { border-radius: 0 0 20px 0; }
+  .workspace-library-tools > .workspace-library-trail { margin-left: 0; }
+}
+
+@media (prefers-contrast: more) {
+  :root { --color-border: #9199a6; --color-input: #9199a6; }
+  .dark { --color-border: #8e97a8; --color-input: #8e97a8; }
+  .workspace-chrome { background: var(--color-card); backdrop-filter: none; }
+}
+@media (forced-colors: active) {
+  :where(button, a, input, textarea, select, [tabindex]):focus-visible { outline-color: Highlight; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; }
+  .animate-pulse, .animate-spin { animation: none; }
+  .workspace-drawer { transform: none !important; }
 }
 
 ::selection {

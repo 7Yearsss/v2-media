@@ -27,8 +27,8 @@ export function FilterSelect({
   panelClassName?: string;
 }) {
   return (
-    <Select value={value} onValueChange={onChange} disabled={disabled} className={cn("w-32 has-[[aria-expanded=true]]:z-30", className)}>
-      <SelectTrigger className="h-8 rounded-lg px-2.5 py-0 text-xs">
+    <Select value={value} onValueChange={onChange} disabled={disabled} className={cn("w-32 shrink-0 has-[[aria-expanded=true]]:z-30", className)}>
+      <SelectTrigger className="h-9 rounded-lg px-2.5 py-0 text-xs">
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent className={cn("text-xs", panelClassName)}>

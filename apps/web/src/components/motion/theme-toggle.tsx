@@ -41,7 +41,7 @@ html[data-beui-vt="rect"]::view-transition-old(root) {
 }
 html[data-beui-vt="rect"]::view-transition-new(root) {
   mix-blend-mode: normal;
-  animation: beui-rect-reveal 400ms ease-out;
+  animation: beui-rect-reveal 220ms ease-out;
 }
 html[data-beui-vt="circle"]::view-transition-old(root),
 html[data-beui-vt="circle-blur"]::view-transition-old(root) {
@@ -186,7 +186,7 @@ export function ThemeToggle({
   return (
     <button
       type="button"
-      aria-label={mounted && isDark ? "Switch to light mode" : "Switch to dark mode"}
+      aria-label={mounted && isDark ? "切换浅色模式" : "切换深色模式"}
       onClick={toggle}
       className={cn("flex items-center justify-center", className)}
       {...rest}

@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   List,
   Search,
+  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
@@ -24,10 +25,6 @@ import { useCollectionPrefs } from "@/lib/hooks/use-collection-prefs";
 import { ConfirmDialog } from "@/components/app/confirm-dialog";
 import { InfiniteMasonry } from "@/components/motion/infinite-masonry";
 import { Loader } from "@/components/motion/loader";
-import {
-  MorphingSearch,
-  type MorphingSearchItem,
-} from "@/components/motion/morphing-search";
 import { EmptyState, PageError, PageLoading } from "@/components/app/states";
 import { LibraryNoteDetail } from "@/components/app/library-note-detail";
 import { useWorkspaceAccount } from "@/lib/account-context";
@@ -481,51 +478,43 @@ export default function LibraryPage() {
     onError: (err) => { if (!(err instanceof SessionChangedError)) toast.error("送入草稿失败", err instanceof Error ? err.message : undefined); },
   });
 
-  const searchItems = useMemo<MorphingSearchItem[]>(
-    () =>
-      items.slice(0, 8).map((n) => ({
-        id: `note-${n.id}`,
-        title: n.title || "（无标题）",
-        description: `${n.authorName || "未知作者"} · ${formatCount(n.likes)} 赞`,
-        icon: Search,
-        onSelect: () => openNote(n.id),
-      })),
-    [items, openNote],
-  );
-
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
       <div className={cn("relative min-h-0 min-w-0 flex-1 flex-col", selected !== null ? "hidden lg:flex" : "flex")}>
-        <div className="shrink-0 space-y-4 px-6 pt-6">
+        <div className="shrink-0 space-y-4 px-4 pt-5 sm:px-6 sm:pt-6">
           <div className="flex flex-wrap items-center gap-3">
             {summary ? <LibraryStats summary={summary} /> : null}
-            <div className="ml-auto">
-              <MorphingSearch
-                items={searchItems}
+            <div className="w-full min-w-0 sm:ml-auto sm:w-72">
+              <Input
+                type="search"
+                aria-label="搜索笔记"
                 placeholder="搜索标题 / 作者…"
-                shortcut=""
                 value={keyword}
-                onQueryChange={setKeyword}
-                emptyMessage="没有匹配的笔记"
+                onChange={setKeyword}
+                leftIcon={<Search />}
+                rightIcon={keyword ? <button type="button" aria-label="清除关键词" onClick={() => setKeyword("")}><X /></button> : undefined}
+                classNames={{ field: "h-10 bg-card", input: "text-base sm:text-sm [&::-webkit-search-cancel-button]:appearance-none" }}
               />
-              {keyword && <button type="button" aria-label="清除关键词" onClick={() => setKeyword("")} className="ml-2 inline-flex max-w-48 items-center gap-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground"><span className="truncate">关键词：{keyword}</span><span aria-hidden>×</span></button>}
             </div>
           </div>
 
           <LibraryFilterBar
             value={range}
             onChange={setRange}
+            activeLeadCount={Number(Boolean(source)) + Number(Boolean(tag))}
             lead={
+              <>
               <FilterSelect
                 value={source}
                 onChange={setSource}
                 options={SOURCE_OPTIONS}
                 className="w-36"
               />
+              {summary ? <LibraryTopics summary={summary} activeTag={tag} onTag={setTag} /> : null}
+              </>
             }
             trail={
               <>
-                {summary ? <LibraryTopics summary={summary} activeTag={tag} onTag={setTag} /> : null}
                 <FilterSelect
                   value={`${sort}-${direction}`}
                   onChange={(v) => {
@@ -533,23 +522,24 @@ export default function LibraryPage() {
                     setSortBy(field as NoteSortField, order as NoteSortDirection);
                   }}
                   options={SORT_OPTIONS}
-                  className="w-36"
+                  className="w-32 shrink-0 lg:w-36"
                   panelClassName="right-0 left-auto w-44"
                 />
                 <div role="group" aria-label="内容库视图" className="inline-flex shrink-0 items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5">
                   {([{ value: "grid", label: "网格", icon: LayoutGrid }, { value: "list", label: "列表", icon: List }] as const).map(({ value, label, icon: Icon }) =>
-                    <button key={value} type="button" aria-pressed={view === value} onClick={() => changeView(value)} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Icon className="size-3.5" />{label}</button>)}
+                    <button key={value} type="button" aria-label={`${label}视图`} title={label} aria-pressed={view === value} onClick={() => changeView(value)} className={cn("inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring", view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}><Icon className="size-3.5" /><span className="hidden sm:inline">{label}</span></button>)}
                 </div>
                 <Button
                   variant="outline"
                   size="sm"
+                  aria-label="导出当前筛选结果"
                   className="h-8 rounded-lg px-2.5 text-xs"
                   disabled={exporting || items.length === 0}
                   onClick={() => void exportCsv()}
                   title="导出当前筛选结果为 CSV（Excel 可直接打开）"
                 >
                   <Download className="size-3.5" />
-                  {exporting ? "导出中…" : "导出"}
+                  <span className="hidden sm:inline">{exporting ? "导出中…" : "导出"}</span>
                 </Button>
               </>
             }
@@ -573,7 +563,7 @@ export default function LibraryPage() {
           </div>
         </div>
 
-        <div className={cn("min-h-0 flex-1 px-6 pb-6 pt-3", checked.size > 0 && "pb-24")}>
+        <div className={cn("min-h-0 flex-1 px-4 pb-6 pt-4 sm:px-6", checked.size > 0 && "pb-24")}>
           {notesQuery.isPending ? (
             <div aria-busy="true" aria-label="加载内容库…" className="grid h-full grid-cols-[repeat(auto-fill,minmax(220px,1fr))] content-start gap-3.5 overflow-hidden">
               {Array.from({ length: 10 }, (_, i) => (
@@ -667,7 +657,7 @@ export default function LibraryPage() {
               }
               endState={
                 <p className="py-6 text-center text-xs text-muted-foreground">
-                  — 到底啦 —
+                  已显示全部
                 </p>
               }
               minColumnWidth={view === "list" ? 1 : 220}

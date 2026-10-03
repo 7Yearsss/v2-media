@@ -84,7 +84,7 @@ export function PromptInput({
   className,
   disabled,
   placeholder = "Ask the agent to do something…",
-  "aria-label": ariaLabel = "Prompt",
+  "aria-label": ariaLabel = "AI 指令",
   onKeyDown,
   ...textareaProps
 }: PromptInputProps) {
@@ -300,7 +300,7 @@ export function PromptInput({
           type={loading ? "button" : "submit"}
           size="icon"
           disabled={loading ? !onStop : !canSubmit}
-          aria-label={loading ? "Stop generating" : "Send prompt"}
+          aria-label={loading ? "停止生成" : "发送指令"}
           onClick={loading ? onStop : undefined}
           className="ml-auto size-8 rounded-full"
         >

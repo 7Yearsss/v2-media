@@ -45,7 +45,7 @@ import { bridge } from "@/lib/bridge";
 import { comparePublishVersion, publishVersionLabels, selectOriginalRetry, submitOriginalRetry, type RetrySelection } from "@/lib/publish-version";
 import {
   fmtDateTime,
-  JOB_STATUS_META,
+  publicationStatusMeta,
   timeAgo,
   VISIBILITY_LABEL,
 } from "@/lib/format";
@@ -457,9 +457,9 @@ export default function PublishPage() {
         cell: (row) => (
           <AnimatedBadge
             size="sm"
-            status={JOB_STATUS_META[row.status]?.status ?? "neutral"}
+            status={publicationStatusMeta(row).status}
           >
-            {JOB_STATUS_META[row.status]?.label ?? row.status}
+            {publicationStatusMeta(row).label}
           </AnimatedBadge>
         ),
       },
@@ -656,7 +656,7 @@ export default function PublishPage() {
           {jobsQuery.isPending ? <PageLoading /> : jobsQuery.isError ? <PageError error={jobsQuery.error} onRetry={jobsQuery.refetch} /> : !detailJob ? <p role="alert" className="text-sm text-muted-foreground">此发布记录无法读取，可能已不存在或不属于当前登录用户。</p> : <>
             <ContentLinks items={[{ label: "原草稿", to: `/drafts/${detailJob.draftId}` }, { label: "目标账号", to: `/accounts?account=${detailJob.accountId}` }, ...(detailJob.status === "done" ? [{ label: "表现与复盘", to: `/insights/${detailJob.id}` }] : [])]} current="发布记录" />
             <p className="text-lg font-semibold">{detailJob.draftSnapshot?.title || `草稿 #${detailJob.draftId}`}</p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm"><dt className="text-muted-foreground">执行状态</dt><dd>{JOB_STATUS_META[detailJob.status].label}</dd><dt className="text-muted-foreground">站点核对</dt><dd>{detailJob.outcome === "verified" ? "已核实笔记" : detailJob.status === "running" ? "等待现场或站点核对，结果未知" : detailJob.outcome || "尚无核对结果"}</dd><dt className="text-muted-foreground">目标账号</dt><dd>{detailJob.personaSnapshot?.nickname || `账号 #${detailJob.accountId}`}</dd><dt className="text-muted-foreground">可见性</dt><dd>{VISIBILITY_LABEL[detailJob.visibility ?? "public"]}</dd><dt className="text-muted-foreground">笔记 ID</dt><dd className="break-all">{detailJob.noteId || "尚未核对到"}</dd><dt className="text-muted-foreground">创建时间</dt><dd>{fmtDateTime(detailJob.createdAt)}</dd></dl>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm"><dt className="text-muted-foreground">执行状态</dt><dd>{publicationStatusMeta(detailJob).label}</dd><dt className="text-muted-foreground">站点核对</dt><dd>{detailJob.outcome === "verified" ? "已核实笔记" : detailJob.status === "running" ? "等待现场或站点核对，结果未知" : detailJob.outcome || "尚无核对结果"}</dd><dt className="text-muted-foreground">目标账号</dt><dd>{detailJob.personaSnapshot?.nickname || `账号 #${detailJob.accountId}`}</dd><dt className="text-muted-foreground">可见性</dt><dd>{VISIBILITY_LABEL[detailJob.visibility ?? "public"]}</dd><dt className="text-muted-foreground">笔记 ID</dt><dd className="break-all">{detailJob.noteId || "尚未核对到"}</dd><dt className="text-muted-foreground">创建时间</dt><dd>{fmtDateTime(detailJob.createdAt)}</dd></dl>
             {detailJob.error && <p className="whitespace-pre-wrap rounded-lg bg-muted p-3 text-xs leading-6">{detailJob.error}</p>}
             <div className="whitespace-pre-wrap rounded-lg border border-border p-4 text-sm leading-7">{detailJob.draftSnapshot?.content || "此历史记录未保存原正文"}</div>
             {detailJob.draftSnapshot?.images.length ? <div className="grid grid-cols-3 gap-2">{detailJob.draftSnapshot.images.map((image, index) => <img key={index} src={mediaUrl(image.url)} alt={`发布图 ${index + 1}`} className="aspect-[3/4] w-full rounded-md object-cover" />)}</div> : null}

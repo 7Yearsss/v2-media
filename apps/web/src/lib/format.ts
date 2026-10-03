@@ -1,4 +1,4 @@
-import type { CollectSource, PublishJobStatus } from "@v2media/shared";
+import type { CollectSource, PublishJob, PublishJobStatus } from "@v2media/shared";
 import type { AnimatedBadgeStatus } from "@/components/motion/animated-badge";
 
 /** 小红书风格计数：1.2万 / 3.4亿。 */
@@ -61,6 +61,12 @@ export const JOB_STATUS_META: Record<
   failed: { label: "失败", status: "danger" },
   canceled: { label: "已取消", status: "neutral" },
 };
+
+export const UNKNOWN_PUBLICATION_MESSAGE = "发布执行租约已失效，执行结果未知，请人工核对，勿直接重发";
+export function publicationStatusMeta(job: Pick<PublishJob, "status" | "error">): { label: string; status: AnimatedBadgeStatus } {
+  return job.status === "running" && job.error === UNKNOWN_PUBLICATION_MESSAGE
+    ? { label: "结果未知", status: "warning" } : (JOB_STATUS_META[job.status] ?? { label: job.status, status: "neutral" });
+}
 
 export const ACCOUNT_STATUS_META: Record<
   string,

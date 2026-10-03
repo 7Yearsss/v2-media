@@ -2,6 +2,7 @@ import {
   ListTodo,
   ChartNoAxesCombined,
   SearchCheck,
+  Search,
   BrainCircuit,
   ChevronsUpDown,
   Layers,
@@ -23,6 +24,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -133,6 +135,7 @@ function WorkspaceShell() {
 
   const pageTitle =
     PAGE_TITLES.find(([re]) => re.test(location.pathname))?.[1] ?? "工作台";
+  useEffect(() => { document.title = `${pageTitle} · v2-media`; }, [pageTitle]);
 
   const authorizeExtension = useCallback(async () => {
     if (readOnly) { toast.info("当前为只读连接，不能授权执行插件"); return; }
@@ -226,6 +229,7 @@ function WorkspaceShell() {
 
   return (
     <ExtensionCtx.Provider value={{ online }}>
+      <a href="#workspace-main" className="workspace-skip-link">跳到内容</a>
       <AnimatedSidebarProvider style={{ "--sidebar-width": "232px", "--sidebar-width-icon": "60px" }} className="workspace-shell h-dvh min-h-0 w-full overflow-hidden bg-background">
         <AnimatedSidebar
           ariaLabel="v2-media 工作台"
@@ -244,7 +248,7 @@ function WorkspaceShell() {
                   v2-media
                 </p>
               </div>
-              <AnimatedSidebarClose className="ml-auto text-muted-foreground hover:bg-muted md:hidden">
+              <AnimatedSidebarClose aria-label="关闭导航" className="ml-auto text-muted-foreground hover:bg-muted md:hidden">
                 <X aria-hidden className="size-4" />
               </AnimatedSidebarClose>
             </div>
@@ -322,12 +326,12 @@ function WorkspaceShell() {
             </Popover>
           </AnimatedSidebarFooter>
 
-          <AnimatedSidebarRail />
+          <AnimatedSidebarRail aria-label="切换导航" title="切换导航" />
         </AnimatedSidebar>
 
         <AnimatedSidebarInset className="workspace-content min-h-0 bg-background">
-          <header className="workspace-chrome flex h-14 shrink-0 items-center gap-3 border-border border-b px-5">
-            <AnimatedSidebarTrigger className="text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
+          <header className="workspace-chrome flex h-14 shrink-0 items-center gap-2 border-border border-b px-3 sm:gap-3 sm:px-5">
+            <AnimatedSidebarTrigger aria-label="切换导航" className="text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
               <PanelLeft aria-hidden className="size-4" />
             </AnimatedSidebarTrigger>
             <p className="text-sm font-semibold text-foreground">{pageTitle}</p>
@@ -340,21 +344,22 @@ function WorkspaceShell() {
 
               <button
                 type="button"
+                aria-label="搜索与命令"
                 onClick={() => setPaletteOpen(true)}
-                className="hidden h-8 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs text-muted-foreground transition-colors hover:bg-muted xl:inline-flex"
+                className="flex size-9 items-center justify-center gap-2 rounded-lg text-xs text-muted-foreground transition-colors hover:bg-muted xl:w-auto xl:border xl:border-border xl:bg-card xl:px-3"
               >
-                <PanelLeft className="hidden" aria-hidden />
-                搜索
-                <kbd className="rounded border border-border bg-muted px-1 font-mono text-[10px]">
-                  ⌘K
+                <Search className="size-4 xl:hidden" aria-hidden />
+                <span className="hidden xl:inline">搜索</span>
+                <kbd className="hidden rounded border border-border bg-muted px-1 text-[10px] xl:inline">
+                  {navigator.platform.includes("Mac") ? "⌘ K" : "Ctrl K"}
                 </kbd>
               </button>
 
-              <button type="button" aria-label="任务中心" onClick={() => setTasksOpen(true)} className="flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted focus-visible:outline focus-visible:outline-ring"><ListTodo className="size-4" /><span className="hidden sm:inline">任务</span></button>
+              <button type="button" aria-label="任务中心" onClick={() => setTasksOpen(true)} className="flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted focus-visible:outline focus-visible:outline-ring"><ListTodo className="size-4" /><span className="hidden sm:inline">任务</span></button>
 
               <ThemeToggle
-                variant="circle-blur"
-                className="size-8 rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                variant="rectangle"
+                className="size-9 rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 iconClassName="size-4"
               />
             </div>
@@ -367,7 +372,7 @@ function WorkspaceShell() {
             <WorkspaceAccountSelector label="默认账号" showDetails={false} className="ml-auto max-w-full lg:hidden" />
           </div>
 
-          <main className="min-h-0 flex-1 overflow-y-auto">
+          <main id="workspace-main" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto focus-visible:outline-offset-[-3px]">
             <Outlet />
           </main>
         </AnimatedSidebarInset>

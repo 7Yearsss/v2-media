@@ -678,7 +678,7 @@ export const AnimatedSidebarRail = forwardRef<
       type={type}
       data-side={panel.side}
       aria-label={props["aria-label"] ?? "Toggle sidebar"}
-      title="Toggle sidebar"
+      title={props.title ?? "Toggle sidebar"}
       tabIndex={-1}
       onClick={(event) => {
         onClick?.(event);
@@ -695,14 +695,14 @@ export const AnimatedSidebarRail = forwardRef<
 });
 
 export interface AnimatedSidebarInsetProps
-  extends HTMLMotionProps<"main"> {}
+  extends HTMLMotionProps<"div"> {}
 
 export const AnimatedSidebarInset = forwardRef<
-  HTMLElement,
+  HTMLDivElement,
   AnimatedSidebarInsetProps
 >(function AnimatedSidebarInset({ className, ...props }, forwardedRef) {
   return (
-    <motion.main
+    <motion.div
       {...props}
       ref={forwardedRef}
       data-slot="sidebar-inset"

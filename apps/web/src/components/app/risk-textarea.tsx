@@ -3,7 +3,7 @@ import { BANNED_KIND_META, type BannedHit } from "@v2media/shared";
 import { cn } from "@/lib/utils";
 
 /** 文字排版：输入层和高亮层必须一模一样，高亮才会对得上。 */
-const TYPO = "px-1 py-1 text-[15px] leading-7 tracking-normal whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
+const TYPO = "px-1 py-1 text-base sm:text-[15px] leading-7 tracking-normal whitespace-pre-wrap break-words [overflow-wrap:anywhere]";
 
 /**
  * 正文输入框：违禁/限流词直接在文字上高亮（Grammarly 式），点到高亮词弹出建议。

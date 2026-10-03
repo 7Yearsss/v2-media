@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ChevronDown,
   FileText,
   Loader2,
   PenLine,
@@ -58,6 +59,8 @@ export default function DraftsPage() {
   const { readOnly } = useRuntime();
   const workspaceAccount = useWorkspaceAccount();
   const [includeArchived, setIncludeArchived] = useState(false);
+  const [queueOpen, setQueueOpen] = useState(false);
+  useEffect(() => { setQueueOpen(false); }, [selectedId]);
   const session = useMemo(() => captureSession(), []);
   const editor = useMemo(() => new DraftEditSession({
     userId: session.user!.id, writerId: crypto.randomUUID(), storage: localStorage,
@@ -339,8 +342,13 @@ export default function DraftsPage() {
 
   return (
     <div inert={preparingPublish || undefined} aria-busy={preparingPublish} className="workspace-editor grid min-h-full grid-cols-1 lg:grid-cols-[220px_minmax(0,1fr)] xl:h-full xl:min-h-0 xl:grid-cols-[232px_minmax(0,1fr)_300px]">
+      <button type="button" aria-label="选择草稿" aria-expanded={queueOpen || !selected} aria-controls="draft-queue" onClick={() => setQueueOpen(value => !value)}
+        className="flex min-h-12 items-center gap-2 border-b border-border bg-[var(--workspace-rail)] px-4 text-left text-sm lg:hidden">
+        <FileText className="size-4 shrink-0 text-muted-foreground" /><span>草稿</span><span className="text-xs tabular-nums text-muted-foreground">{drafts.length}</span>
+        <span className="ml-auto min-w-0 truncate text-xs text-muted-foreground">{selected?.title || "选择一篇"}</span><ChevronDown className={cn("size-4 shrink-0 text-muted-foreground", (queueOpen || !selected) && "rotate-180")} />
+      </button>
       {/* 左栏：草稿队列（滑动删除） */}
-      <aside className="flex max-h-[240px] min-h-0 flex-col border-b border-border bg-[var(--workspace-rail)] lg:max-h-[calc(100dvh-96px)] lg:border-b-0 lg:border-r xl:max-h-none">
+      <aside id="draft-queue" className={cn("flex max-h-[280px] min-h-0 flex-col border-b border-border bg-[var(--workspace-rail)] lg:max-h-[calc(100dvh-96px)] lg:border-b-0 lg:border-r xl:max-h-none", selected && !queueOpen && "hidden lg:flex")}>
         <div className="flex min-h-14 items-center justify-between border-b border-border px-4 py-2.5">
           <p className="text-[13px] font-semibold text-foreground">草稿</p>
           <Button
@@ -439,7 +447,7 @@ export default function DraftsPage() {
                 </span>
               </div>
               <Button size="sm" className="rounded-md" variant="ghost" disabled={readOnly || remove.isPending} onClick={() => remove.mutate(selected.id)}>归档草稿</Button>
-              <Button size="sm" className="rounded-md" disabled={preparingPublish || readOnly || !title.trim() || !images.length || images.some(image => !image.url) || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || saveState === "saving" || saveState === "conflict"} onClick={() => void (async () => {
+              <Button size="sm" className="rounded-md" aria-describedby={!images.length && !["queued", "writing"].includes(selected.generationState) && !["queued", "processing"].includes(selected.coverState) ? "draft-publish-images" : undefined} disabled={preparingPublish || readOnly || !title.trim() || !images.length || images.some(image => !image.url) || ["queued", "writing"].includes(selected.generationState) || ["queued", "processing"].includes(selected.coverState) || saveState === "saving" || saveState === "conflict"} onClick={() => void (async () => {
                 const draftId = selected.id;
                 setPreparingPublish(true);
                 try {
@@ -465,6 +473,7 @@ export default function DraftsPage() {
                   {selected.status === "ready" ? "取消就绪" : "标记就绪"}
                 </Button>
               ) : null}
+              {!images.length && !["queued", "writing"].includes(selected.generationState) && !["queued", "processing"].includes(selected.coverState) && <p id="draft-publish-images" role="status" className="w-full text-xs text-muted-foreground">添加图片后可发布</p>}
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-5 py-7 sm:px-7 xl:px-6">
@@ -526,7 +535,7 @@ export default function DraftsPage() {
                     "ml-auto flex items-center gap-1.5 rounded-full px-3 py-1 font-medium transition-colors",
                     banned.length || limits.length
                       ? "bg-rose-500/10 text-rose-600 hover:bg-rose-500/15"
-                      : "bg-emerald-500/10 text-emerald-600",
+                      : "bg-emerald-500/10 text-success",
                   )}
                 >
                   <i className={cn("size-1.5 rounded-full", banned.length || limits.length ? "bg-rose-500" : "bg-emerald-500")} />
@@ -629,7 +638,7 @@ export default function DraftsPage() {
                         onClick={() =>
                           update({ tags: tags.filter((x) => x !== t) })
                         }
-                        className="grid size-3.5 place-items-center rounded-full opacity-0 transition-opacity hover:bg-primary/20 group-hover:opacity-100"
+                        className="grid size-5 place-items-center rounded-full text-muted-foreground transition-colors hover:bg-primary/20 hover:text-foreground"
                       >
                         <X className="size-2.5" />
                       </button>
@@ -645,6 +654,7 @@ export default function DraftsPage() {
                       }
                     }}
                     placeholder="+ 加标签"
+                    aria-label="添加话题标签"
                     className="w-28"
                     classNames={{ field: "h-7 border-dashed", input: "pl-2.5 pr-2.5 text-xs" }}
                   />

@@ -26,7 +26,7 @@ export function NoteSelectBox({
       }}
       onKeyDown={(e) => e.stopPropagation()}
       className={cn(
-        "grid size-5 place-items-center rounded-md border shadow-sm outline-none transition-opacity focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring",
+        "grid size-6 place-items-center rounded-md border shadow-sm outline-none transition-opacity focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring",
         checked
           ? "border-primary bg-primary text-primary-foreground"
           : "border-white/80 bg-black/35 text-transparent backdrop-blur-sm hover:bg-black/55",

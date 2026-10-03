@@ -21,7 +21,7 @@ export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, d
   const cover = mediaUrl(note.cover || note.images[0]?.url);
   const badges = noteBadges(note, hotAt);
   const act = selecting ? () => onToggle() : onOpen;
-  return <div role="button" tabIndex={0} aria-label={`查看笔记：${note.title || "（无标题）"}`} aria-pressed={selecting ? checked : selected}
+  return <div role="button" tabIndex={0} aria-label={`${selecting ? "选择" : "查看"}笔记：${note.title || "（无标题）"}`} aria-pressed={selecting ? checked : selected}
     data-note-index={index} onPointerEnter={onHover}
     onClick={event => (selecting ? onToggle(event.shiftKey) : onOpen())} onKeyDown={noteKeyHandler(act)}
     draggable={Boolean(dragIds)} onDragStart={event => {
@@ -34,7 +34,7 @@ export function LibraryNoteRow({ note, selected, onOpen, onEnqueue, enqueuing, d
       <div className="relative grid h-14 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-muted">
         {cover ? <img src={cover} alt="" loading="lazy" decoding="async" className="h-full w-full object-cover" /> : <ImageOff className="size-4 text-muted-foreground" />}
         {note.type === "video" ? <span className="absolute inset-x-0 bottom-0 bg-black/60 text-center text-[9px] text-white">视频</span> : null}
-        <NoteSelectBox checked={checked} label={`选择笔记：${note.title || "（无标题）"}`} onToggle={onToggle} className={cn("absolute left-1 top-1 size-4", !checked && !selecting && "opacity-0 group-hover/row:opacity-100")} />
+        <NoteSelectBox checked={checked} label={`选择笔记：${note.title || "（无标题）"}`} onToggle={onToggle} className={cn("absolute left-1 top-1", !checked && !selecting && "workspace-hover-actions")} />
       </div>
       <div className="min-w-0">
         <p className={cn("line-clamp-2 text-sm font-medium leading-5", viewed && !selected ? "text-muted-foreground" : "text-foreground")} title={note.title}>{badges.map(b => <span key={b.key} title={b.hint} className={cn("mr-1.5 rounded px-1 py-px align-[1px] text-[10px] font-semibold", b.key === "hot" ? "bg-primary text-primary-foreground" : "bg-amber-400 text-amber-950")}>{b.label}</span>)}{note.title || "（无标题）"}</p>

@@ -40,6 +40,7 @@ npm workspaces，TypeScript 全栈：
 ## 工作区上下文（R4）
 
 - UI 标题直接用功能名，删除口号式标题与重复常态说明；必要的错误、确认、未知结果和数据边界保留。视觉使用柔和圆角矩形，规则见 `docs/design.md`；颜色、类名和静态布局不写镜像单测。
+- 前端以 Awwwards / Webby Awards / FWA 获奖品质为目标，按 `docs/ui-quality-standard.md` 自检、修正与复验；检查完整交互、响应式、主题和可访问性，不以单张截图或虚构评分宣布达标。
 
 - 前端五工作区保持原有 URL；当前对象与研究/洞察筛选存 URL。`WorkspaceAccountProvider` 只为新动作提供默认账号，先检查 `canCreate`；失效选择保留并要求用户明确选择，不能在切换上下文时 PATCH 已有草稿或历史任务。
 - 内容关系只用本用户 API 实际返回的 ID，不从标题或相邻 ID 猜测。复盘实验预填手工选题，由用户确认，不伪造 `analysisSource`。

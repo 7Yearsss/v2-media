@@ -1,7 +1,7 @@
 import { Layers, Loader2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { Button } from "@/components/motion/button";
 import { Input } from "@/components/motion/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/motion/tabs";
@@ -12,6 +12,7 @@ import { SPRING_PANEL } from "@/lib/ease";
 
 export default function LoginPage() {
   const { token, login, register } = useAuth();
+  const reduce = useReducedMotion();
   const navigate = useNavigate();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
@@ -47,14 +48,14 @@ export default function LoginPage() {
     <div className="relative flex min-h-dvh items-center justify-center bg-background px-4">
       <div className="absolute right-4 top-4">
         <ThemeToggle
-          variant="circle-blur"
+          variant="rectangle"
           className="size-8 rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           iconClassName="size-4"
         />
       </div>
 
       <motion.div
-        initial={{ opacity: 0, y: 16, scale: 0.98 }}
+        initial={reduce ? false : { opacity: 0, y: 16, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={SPRING_PANEL}
         className="w-full max-w-sm"

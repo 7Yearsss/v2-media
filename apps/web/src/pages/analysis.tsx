@@ -226,7 +226,7 @@ function LegacyView({ a }: { a: CollectionAnalysis }) {
         <div className="rounded-2xl border border-border bg-card p-5">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <TrendingUp className="size-4 text-emerald-500" />
-            高频标签 · 库里在聚什么话题
+            高频标签
           </div>
           <div className="mt-4 flex flex-col gap-3.5">
             {stats.topTags.length ? (

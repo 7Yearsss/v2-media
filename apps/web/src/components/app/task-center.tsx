@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowUpRight, Check, Clock3, Loader2, Pause, RefreshCw, TriangleAlert, X } from "lucide-react";
 import type { WorkspaceTask, WorkspaceTaskFilter } from "@v2media/shared";
@@ -45,29 +45,13 @@ export interface TaskCenterProps { open: boolean; onOpenChange: (open: boolean) 
 export function TaskCenter({ open, onOpenChange, accountId }: TaskCenterProps) {
   const [filter, setFilter] = useState<WorkspaceTaskFilter>("active");
   const query = useTaskCenter(open, { filter, accountId });
-  const content = useRef<HTMLDivElement>(null), closeButton = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    closeButton.current?.focus();
-    const trap = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
-      const controls = content.current?.querySelectorAll<HTMLElement>("a[href],button:not([disabled]),[tabindex='0']");
-      if (!controls?.length) return;
-      const first = controls[0]!, last = controls[controls.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    window.addEventListener("keydown", trap);
-    return () => { window.removeEventListener("keydown", trap); previous?.focus(); };
-  }, [open]);
   const data = query.data;
-  return <Drawer open={open} onOpenChange={onOpenChange} ariaLabel="任务中心" className="w-[480px] max-w-full bg-card" backdropClassName="bg-black/20 backdrop-blur-none">
-    <div ref={content} className="flex min-h-0 flex-1 flex-col">
+  return <Drawer open={open} onOpenChange={onOpenChange} ariaLabel="任务中心" showCloseButton={false} className="w-[480px] max-w-full bg-card" backdropClassName="bg-black/20 backdrop-blur-none">
+    <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-5 py-4">
         <div className="min-w-0 flex-1"><h2 className="text-base font-semibold">任务</h2><p className="mt-1 text-xs text-muted-foreground">{accountId ? "当前账号" : "全部账号"}</p></div>
         <Button size="icon" variant="ghost" aria-label="刷新任务" disabled={!query.available || query.isFetching} onClick={() => void query.refetch()}><RefreshCw className={cn("size-4", query.isFetching && "motion-safe:animate-spin")} /></Button>
-        <button ref={closeButton} type="button" aria-label="关闭任务中心" onClick={() => onOpenChange(false)} className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"><X className="size-4" /></button>
+        <button data-dialog-autofocus type="button" aria-label="关闭任务中心" onClick={() => onOpenChange(false)} className="flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring"><X className="size-4" /></button>
       </header>
       <div className="flex shrink-0 gap-1 border-b border-border px-5 py-3" aria-label="任务状态筛选">
         {filters.map(item => <button type="button" key={item.value} onClick={() => setFilter(item.value)} aria-pressed={filter === item.value} className={cn("rounded-md px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring", filter === item.value && "bg-muted font-medium text-foreground")}>

@@ -1,8 +1,8 @@
 "use client";
 // beui.dev/components/blocks/command-palette
 
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { Search, type LucideIcon } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
+import { Search, X, type LucideIcon } from "lucide-react";
 import {
   type ReactNode,
   useCallback,
@@ -13,13 +13,13 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { EASE_OUT } from "@/lib/ease";
 import { useOnOpen } from "@/lib/hooks/use-on-open";
 import { useRowCursor } from "@/lib/hooks/use-row-cursor";
 import { useTouchCapable } from "@/lib/hooks/use-touch-capable";
 import { PresenceGate } from "@/lib/presence-gate";
 import { cn } from "@/lib/utils";
 import { searchCommands } from "@/lib/command-search";
+import { useDialogFocus } from "@/lib/hooks/use-dialog-focus";
 
 export type CommandItem = {
   id: string;
@@ -41,15 +41,6 @@ export interface CommandPaletteProps {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }
-
-// Opened via a keyboard shortcut many times a day — entrance must read as
-// instant. Tight spring, even faster exit.
-const PANEL_SPRING = {
-  type: "spring",
-  stiffness: 560,
-  damping: 40,
-  mass: 0.5,
-} as const;
 
 export function CommandPalette({
   items,
@@ -75,10 +66,11 @@ export function CommandPalette({
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const uid = useId();
-  const reduce = useReducedMotion();
   const canTouch = useTouchCapable();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(open && mounted, dialogRef, () => setOpen(false));
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -89,10 +81,6 @@ export function CommandPalette({
         e.preventDefault();
         setOpen(!open);
         return;
-      }
-      if (e.key === "Escape" && open) {
-        e.preventDefault();
-        setOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -144,12 +132,6 @@ export function CommandPalette({
     moveTo(null);
   });
 
-  useEffect(() => {
-    if (!open) return;
-    const frame = requestAnimationFrame(() => inputRef.current?.focus());
-    return () => cancelAnimationFrame(frame);
-  }, [open]);
-
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -191,17 +173,17 @@ export function CommandPalette({
           {({ gate }) => (
             <motion.button
               type="button"
-              aria-label="Close command palette"
-              initial={{ opacity: 0 }}
+              aria-label="关闭搜索"
+              tabIndex={-1}
+              initial={false}
               animate={{ opacity: 1 }}
               exit={{
                 opacity: 0,
-                transition: { duration: 0.12, ease: EASE_OUT },
               }}
-              transition={{ duration: 0.18, ease: EASE_OUT }}
+              transition={{ duration: 0 }}
               {...gate}
               onClick={() => setOpen(false)}
-              className="pointer-events-auto fixed inset-0 z-[100] bg-background/5 [backdrop-filter:blur(12px)_saturate(140%)] [-webkit-backdrop-filter:blur(12px)_saturate(140%)]"
+              className="pointer-events-auto fixed inset-0 z-[100] bg-black/25 backdrop-blur-sm"
             />
           )}
         </PresenceGate>
@@ -217,27 +199,20 @@ export function CommandPalette({
               className="pointer-events-none fixed inset-x-4 bottom-4 top-[18vh] z-[100] flex items-start justify-center"
             >
               <motion.div
+                ref={dialogRef}
+                tabIndex={-1}
                 role="dialog"
                 aria-modal="true"
-                aria-label="Command palette"
-                initial={{
-                  opacity: 0,
-                  y: reduce ? 0 : -8,
-                  scale: reduce ? 1 : 0.97,
-                }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{
-                  opacity: 0,
-                  y: reduce ? 0 : -8,
-                  scale: reduce ? 1 : 0.97,
-                  transition: { duration: 0.12, ease: EASE_OUT },
-                }}
-                transition={reduce ? { duration: 0.1 } : PANEL_SPRING}
+                aria-label="搜索与命令"
+                initial={false}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0 }}
                 {...gate}
                 onKeyDown={onKeyDown}
-                className="pointer-events-auto w-full max-w-xl overflow-hidden rounded-2xl border border-border bg-card shadow-2xl will-change-transform"
+                className="pointer-events-auto w-full max-w-xl overflow-hidden rounded-3xl border border-border bg-card shadow-[0_24px_80px_-24px_rgb(0_0_0_/_0.3)]"
               >
-                <div className="flex items-center gap-3 border-b border-border px-4">
+                <div className="workspace-command-field flex items-center gap-3 border-b border-border px-4">
                   <Search className="h-4 w-4 text-muted-foreground" />
                   <input
                     ref={inputRef}
@@ -245,6 +220,7 @@ export function CommandPalette({
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder={placeholder}
                     role="combobox"
+                    aria-label="搜索页面或操作"
                     // The field only exists while the palette is open.
                     aria-expanded="true"
                     aria-controls={`${uid}-list`}
@@ -253,7 +229,7 @@ export function CommandPalette({
                     }
                     aria-autocomplete="list"
                     className={cn(
-                      "h-12 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none",
+                      "workspace-command-input h-12 min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none",
                       // The palette focuses this field the moment it opens, and iOS
                       // zooms the page in on a focused field under 16px: the fixed
                       // overlay is magnified off-center — clipped leading edge, half
@@ -265,12 +241,13 @@ export function CommandPalette({
                   <kbd className="hidden rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground sm:inline-block">
                     ESC
                   </kbd>
+                  <button type="button" aria-label="关闭搜索" onClick={() => setOpen(false)} className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground hover:bg-muted"><X className="size-4" /></button>
                 </div>
                 <div
                   ref={listRef}
                   id={`${uid}-list`}
                   role="listbox"
-                  aria-label="Commands"
+                  aria-label="命令"
                   className="max-h-[60vh] overflow-y-auto overscroll-contain p-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 >
                   {rows.length === 0 ? (
@@ -282,7 +259,7 @@ export function CommandPalette({
                       <div key={group} className="mb-1 last:mb-0">
                         <div
                           aria-hidden
-                          className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+                          className="px-3 py-2 text-xs font-medium text-muted-foreground"
                         >
                           {group}
                         </div>
@@ -297,6 +274,7 @@ export function CommandPalette({
                               type="button"
                               id={`${uid}-opt-${idx}`}
                               role="option"
+                              tabIndex={-1}
                               aria-selected={isActive}
                               data-index={idx}
                               onMouseEnter={() => moveTo(it.id)}
@@ -305,28 +283,14 @@ export function CommandPalette({
                                 setOpen(false);
                               }}
                               className={cn(
-                                "relative isolate flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors",
+                                "relative isolate flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm",
                                 isActive
                                   ? "text-foreground"
                                   : "text-muted-foreground",
                               )}
                             >
                               {isActive ? (
-                                <motion.span
-                                  layoutId={`${uid}-active`}
-                                  className="absolute inset-0 z-0 rounded-md bg-muted/60"
-                                  transition={
-                                    reduce
-                                      ? { duration: 0 }
-                                      : // Tracks rapid arrow-key navigation — keep it tighter
-                                        // than SPRING_LAYOUT so it never lags the active row.
-                                        {
-                                          type: "spring",
-                                          stiffness: 480,
-                                          damping: 38,
-                                        }
-                                  }
-                                />
+                                <span className="absolute inset-0 z-0 rounded-xl bg-muted" />
                               ) : null}
                               {Icon ? (
                                 <Icon className="relative z-10 h-4 w-4" />

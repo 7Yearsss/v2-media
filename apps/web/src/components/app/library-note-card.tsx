@@ -1,7 +1,6 @@
 import { Check, Heart, ImageOff, Images, MessageCircle, SendToBack, Star } from "lucide-react";
 import type { CollectedNote } from "@v2media/shared";
 import { Button } from "@/components/motion/button";
-import { TiltCard } from "@/components/motion/tilt-card";
 import { mediaUrl } from "@/lib/api";
 import { formatCount, formatDuration } from "@/lib/format";
 import { noteBadges, statLabel } from "@/lib/note-insight";
@@ -55,9 +54,10 @@ export function LibraryNoteCard({
   const incomplete = !note.title && !cover && note.images.length === 0;
   const act = selecting ? () => onToggle() : onOpen;
   return (
-    <TiltCard max={6} glare={false} className="h-full">
+    <div className="h-full">
       <div
         role="button"
+        aria-label={`${selecting ? "选择" : "查看"}笔记：${note.title || "（无标题）"}`}
         tabIndex={0}
         aria-pressed={selecting ? checked : selected}
         data-note-index={index}
@@ -83,7 +83,8 @@ export function LibraryNoteCard({
               src={cover}
               alt={note.title}
               loading="lazy"
-              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+              decoding="async"
+              className="h-full w-full object-cover"
             />
           ) : (
             <div className="grid h-full w-full place-items-center text-muted-foreground">
@@ -97,7 +98,7 @@ export function LibraryNoteCard({
             checked={checked}
             label={`选择笔记：${note.title || "（无标题）"}`}
             onToggle={onToggle}
-            className={cn("absolute left-2 top-2", !checked && !selecting && "opacity-0 group-hover:opacity-100")}
+            className={cn("absolute left-2 top-2", !checked && !selecting && "workspace-hover-actions")}
           />
           <div className="absolute right-2 top-2 flex flex-col items-end gap-1">
             {note.type === "video" ? (
@@ -128,7 +129,7 @@ export function LibraryNoteCard({
             </div>
           ) : null}
           {!selecting ? (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end bg-gradient-to-t from-black/45 to-transparent p-2 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+            <div className="workspace-hover-actions pointer-events-none absolute inset-x-0 bottom-0 flex justify-end bg-gradient-to-t from-black/45 to-transparent p-2 transition-opacity duration-150">
               <Button
                 size="sm"
                 variant="secondary"
@@ -193,6 +194,6 @@ export function LibraryNoteCard({
           </div>
         </div>
       </div>
-    </TiltCard>
+    </div>
   );
 }

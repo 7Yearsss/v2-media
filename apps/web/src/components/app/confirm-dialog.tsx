@@ -1,8 +1,10 @@
-import { useEffect, type ReactNode } from "react";
+import { useId, useRef, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Button } from "@/components/motion/button";
 import { EASE_OUT } from "@/lib/ease";
 import { cn } from "@/lib/utils";
+import { useDialogFocus } from "@/lib/hooks/use-dialog-focus";
+import { PresenceGate } from "@/lib/presence-gate";
 
 /**
  * 居中确认弹窗，替代 window.confirm / window.prompt。
@@ -32,20 +34,13 @@ export function ConfirmDialog({
   children?: ReactNode;
 }) {
   const reduce = useReducedMotion();
-
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onOpenChange(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onOpenChange]);
+  const dialog = useRef<HTMLDivElement>(null), uid = useId();
+  useDialogFocus(open, dialog, () => onOpenChange(false));
 
   return (
     <AnimatePresence>
       {open ? (
-        <div className="fixed inset-0 z-50 grid place-items-center p-4">
+        <PresenceGate>{({ gate }) => <div {...gate} className="fixed inset-0 z-50 grid place-items-center p-4">
           <motion.button
             type="button"
             aria-label="取消"
@@ -58,20 +53,23 @@ export function ConfirmDialog({
             className="absolute inset-0 cursor-default bg-black/40 backdrop-blur-sm"
           />
           <motion.div
+            ref={dialog}
+            tabIndex={-1}
             role="alertdialog"
             aria-modal="true"
-            aria-label={title}
+            aria-labelledby={`${uid}-title`}
+            aria-describedby={description ? `${uid}-description` : undefined}
             initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 8 }}
             animate={reduce ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
             exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-            transition={reduce ? { duration: 0.15 } : { type: "spring", duration: 0.35, bounce: 0.15 }}
-            className="relative w-full max-w-sm rounded-2xl border border-border bg-background p-5 shadow-2xl"
+            transition={{ duration: reduce ? 0.1 : 0.18, ease: EASE_OUT }}
+            className="relative max-h-[calc(100dvh-32px)] w-full max-w-sm overflow-y-auto rounded-3xl border border-border bg-card p-6 shadow-[0_24px_80px_-24px_rgb(0_0_0_/_0.3)]"
           >
-            <h2 className="text-base font-semibold">{title}</h2>
-            {description ? <p className="mt-1.5 text-sm text-muted-foreground">{description}</p> : null}
+            <h2 id={`${uid}-title`} className="text-lg font-semibold tracking-tight">{title}</h2>
+            {description ? <p id={`${uid}-description`} className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p> : null}
             {children ? <div className="mt-3">{children}</div> : null}
             <div className="mt-5 flex justify-end gap-2">
-              <Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>
+              <Button size="sm" variant="outline" data-dialog-autofocus={children ? undefined : true} onClick={() => onOpenChange(false)}>
                 取消
               </Button>
               <Button
@@ -85,7 +83,7 @@ export function ConfirmDialog({
               </Button>
             </div>
           </motion.div>
-        </div>
+        </div>}</PresenceGate>
       ) : null}
     </AnimatePresence>
   );

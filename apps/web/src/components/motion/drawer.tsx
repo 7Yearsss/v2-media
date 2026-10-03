@@ -2,10 +2,12 @@
 // beui.dev/components/motion/drawer
 
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { useEffect, type ReactNode } from "react";
+import { X } from "lucide-react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { EASE_OUT, SPRING_PANEL } from "@/lib/ease";
 import { PresenceGate } from "@/lib/presence-gate";
 import { cn } from "@/lib/utils";
+import { useDialogFocus } from "@/lib/hooks/use-dialog-focus";
 
 export interface DrawerProps {
   open: boolean;
@@ -19,6 +21,7 @@ export interface DrawerProps {
   ariaLabel?: string;
   /** Close when the backdrop is clicked. Default true. */
   dismissable?: boolean;
+  showCloseButton?: boolean;
 }
 
 export function Drawer({
@@ -30,22 +33,20 @@ export function Drawer({
   backdropClassName,
   ariaLabel,
   dismissable = true,
+  showCloseButton = true,
 }: DrawerProps) {
   const reduce = useReducedMotion();
+  const dialog = useRef<HTMLElement>(null);
+  useDialogFocus(open, dialog, () => onOpenChange(false));
 
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onOpenChange(false);
-    };
-    window.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
-      window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [open, onOpenChange]);
+  }, [open]);
 
   const offscreen = side === "right" ? "100%" : "-100%";
 
@@ -61,8 +62,8 @@ export function Drawer({
           {({ gate }) => (
             <motion.button
               type="button"
-              aria-label="Close"
-              tabIndex={dismissable ? 0 : -1}
+              aria-label="关闭面板"
+              tabIndex={-1}
               onClick={() => dismissable && onOpenChange(false)}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -81,18 +82,21 @@ export function Drawer({
         <PresenceGate key="panel">
           {({ gate }) => (
             <motion.aside
+              ref={dialog}
+              tabIndex={-1}
               role="dialog"
               aria-modal="true"
               aria-label={ariaLabel}
-              initial={reduce ? { opacity: 0 } : { x: offscreen }}
-              animate={reduce ? { opacity: 1 } : { x: 0 }}
-              exit={reduce ? { opacity: 0 } : { x: offscreen }}
+              data-close-button={showCloseButton}
+              initial={reduce ? { opacity: 0 } : { transform: `translateX(${offscreen})` }}
+              animate={reduce ? { opacity: 1 } : { transform: "translateX(0%)" }}
+              exit={reduce ? { opacity: 0 } : { transform: `translateX(${offscreen})` }}
               transition={
                 reduce ? { duration: 0.2, ease: EASE_OUT } : SPRING_PANEL
               }
               {...gate}
               className={cn(
-                "fixed inset-y-0 z-50 flex w-80 max-w-[85vw] flex-col overflow-hidden rounded-[24px] border border-border bg-background shadow-[0_16px_48px_-16px_rgb(0_0_0_/_0.24)] sm:inset-y-2",
+                "workspace-drawer fixed inset-y-0 z-50 flex w-80 max-w-[85vw] flex-col overflow-hidden rounded-[24px] border border-border bg-card shadow-[0_16px_48px_-16px_rgb(0_0_0_/_0.24)] sm:inset-y-2",
                 side === "right"
                   ? "right-0 sm:right-2"
                   : "left-0 sm:left-2",
@@ -100,6 +104,7 @@ export function Drawer({
               )}
             >
               {children}
+              {showCloseButton && <button type="button" aria-label={ariaLabel ? `关闭${ariaLabel}` : "关闭面板"} onClick={() => onOpenChange(false)} className="absolute right-3 top-3 z-10 grid size-9 place-items-center rounded-xl bg-card/90 text-muted-foreground hover:bg-muted hover:text-foreground"><X className="size-4" aria-hidden /></button>}
             </motion.aside>
           )}
         </PresenceGate>
