@@ -39,7 +39,9 @@
 
 ## 验证与边界
 
-全仓 typecheck、web 构建已通过；最终 main 部署仍由既有 Action 执行 server 回归与插件打包，部署结果另见 Action。没有新增单测。
+全仓 typecheck、web 构建已通过；main 提交 `212af74` 的 [Action #37081572414](https://github.com/7Yearsss/v2-media/actions/runs/37081572414) 已成功，34 个 server 测试文件 / 272 项既有测试通过，插件打包、显式版本检查/迁移和服务重启完成。没有新增单测。
+
+线上 `/health` 返回 ok / production-worker / schemaVersion=3，首页 200；资源为 `index-CKHVCZIt.js` 和 `index-aM1z5ktX.css`，CSS 中核对到本轮品牌色、焦点跳转和窄屏工具栏规则。发布表单的真实生产执行仍留在 R5 验收范围。
 
 构建保留路由拆包，没有新增依赖或外部字体。主 JS 包仍有 Vite 的 500KB 提示（约 184KB gzip）；这是后续持续性能优化的依据，不通过提高警告阈值隐藏它。
 
